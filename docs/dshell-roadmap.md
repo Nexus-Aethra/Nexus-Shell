@@ -83,6 +83,29 @@ Acceptance check:
 - The sidebar shows one flat session list; no workspace picker or
   grouping anywhere in the UI.
 
+## Phase 1.6 — New-session dialog
+
+Goal: session naming and start directory are chosen at creation time.
+
+Covers decision: 4.7 (naming paragraph).
+
+Plugins touched:
+
+- `dshell-workspace` (browser face) — the flat list gains a new-session
+  dialog (optional name + starting directory); `uiWorkspace.startSession`
+  (the shell's stock New-Session button) opens the same dialog instead of
+  creating silently; the stock hero workspace chip is hidden by an
+  interim stylesheet until the Phase 4 scaffold takeover removes the
+  whole hero row.
+
+Acceptance check:
+
+- `＋ 新会话` (list header) and the shell's `新会话` button both open the
+  dialog.
+- Creating with a name lands in the sidebar under that name; creating
+  with a custom directory creates the session in it.
+- The hero workspace chip no longer renders.
+
 ## Phase 2 — Main shell lifecycle
 
 Goal: bridge owns a `name: 'main'` PTY for the active agent; the PTY
@@ -129,49 +152,58 @@ Acceptance check:
 - The ws respects `{ kind: 'bind', sessionId }` authorization: a bind
   with a wrong id is rejected and closed.
 
-## Phase 4 — xterm.js canvas + interleaved view
+## Phase 4 — Terminal scaffold + xterm.js canvas
 
-Goal: PTY bytes render in xterm.js in the terminal target; session
-events render in the same canvas with the merging rule from 4.4.
+Goal: dshell owns the whole conversation surface. The stock
+`conversation` slot occupant is shadowed at a lower priority by
+dshell's terminal scaffold (design 4.8): a full-bleed xterm.js canvas
+renders PTY bytes and session events interleaved by the merge rule from
+4.4 — no hero, no chat cards, no stock composer.
 
 Covers decisions: 4.1 (ViewBuilder per session), 4.4 (interleaved
-rendering).
+rendering), 4.8 (terminal layout).
 
 Plugins touched:
 
-- `dshell-conversation` (browser face) — materializes `Snapshot.rows`
-  into one xterm.js buffer; serializes session nodes to ANSI.
+- `dshell-conversation` (browser face) — registers the shadowing
+  scaffold; materializes `Snapshot.rows` into one xterm.js buffer;
+  serializes session nodes to ANSI; drops the Phase 1.6 interim
+  stylesheet.
 - `dshell-conversation` (host face) — drives the ViewBuilder from
   both the PTY byte source and the dsh engine's `replace` / `apply`
   calls.
 
 Acceptance check:
 
-- Open a session, set default target to `terminal` in settings.
+- With a session open, the content area is one xterm canvas edge to
+  edge: the stock hero, workspace chip and chat composer are gone.
 - An agent turn (`/agent hello`) and a shell command (`/shell echo
   hi`) appear interleaved in one xterm scrollback, ordered by `time`.
 - Switching to a different session shows that session's terminal
   surface independently; switching back shows the original buffer
   preserved.
 
-## Phase 5 — Composer mode toggle + `/agent` / `/shell`
+## Phase 5 — Input dock + mode toggle + `/agent` / `/shell`
 
-Goal: user controls where the next message goes.
+Goal: the user controls where the next message goes from the slim
+input dock under the canvas (design 4.8); focus follows mode.
 
-Covers decisions: 4.5 (mode state).
+Covers decisions: 4.5 (mode state), 4.8 (dock).
 
 Plugins touched:
 
 - `dshell-mode` (new, browser face) — owns the per-session mode store;
-  patches the composer `inputActions` to dispatch by mode; parses
-  `/agent` and `/shell` prefixes before dispatch.
+  drives the dock's Enter to dispatch by mode; parses `/agent` and
+  `/shell` prefixes before dispatch; keeps canvas focus in `shell`
+  mode.
 - `dshell-mode` (new, host face) — exposes the main PTY session id to
   the browser side through the same channel used by 4.4.
 
 Acceptance check:
 
-- In `shell` mode, Enter sends text to `startSend(mainId, text)`.
-- In `agent` mode, Enter sends text to `agent.inject`.
+- In `shell` mode, Enter sends the dock line to `startSend(mainId,
+  text)` and focus returns to the canvas.
+- In `agent` mode, Enter sends the dock line to `agent.inject`.
 - `/agent plan a feature` from shell mode switches to agent mode and
   injects "plan a feature" as a user message.
 - `/shell ls -la` from agent mode switches to shell mode and runs

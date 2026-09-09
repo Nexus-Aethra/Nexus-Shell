@@ -57,7 +57,7 @@ export function dshellClientBundle(
     // injected require instead of inlining. Extend when a face gains
     // another runtime import; type-only imports are erased by tsc before
     // this bundler runs.
-    external: ['react', '@deepseek-ai/cordis'],
+    external: ['react', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store'],
     outputOptions: {
       entryFileNames: 'client.js',
       sourcemapExcludeSources: false,

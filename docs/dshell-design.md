@@ -224,8 +224,8 @@ alternatives by contract.
 
 Consequences:
 
-- Session creation never asks for a workspace. The sidebar falls back
-  to dsh's built-in flat session list.
+- Session creation never asks for a workspace. The sidebar falls back to
+  dsh's built-in flat session list.
 - Session cwd is immutable after creation (`ApiSessionCwdConflict`):
   one session = one fixed agent working root. The PTY `cd`s freely;
   Phase 7's context injection reports the live PTY cwd to the agent so
@@ -233,6 +233,37 @@ Consequences:
   session (`/new`) — matching the terminal habit of cd-then-work.
 - The removed registry is not backed up or migrated; existing
   `$DSH_HOME/storages/workspace` data is simply no longer read.
+- Naming moves to creation time. dshell's new-session dialog asks for an
+  optional name and a starting directory before creating the session
+  (`sessions.create({ cwd })`, then an immediate durable rename through
+  the session face; auto-titling may later overwrite it on first
+  message). Both the sidebar list's button and the shell's stock
+  New-Session button — which routes through the `uiWorkspace` stand-in —
+  open the same dialog.
+
+### 4.8 Terminal layout
+
+The terminal target's canvas is the whole content area. dshell does not
+restyle the stock chat scaffold; it replaces the conversation surface
+wholesale by shadowing the stock `conversation` slot occupant at a
+lower priority (the slots registry supports same-hole shadowing) with
+dshell's own terminal scaffold:
+
+- A full-bleed xterm.js canvas (decision 4.4 merge rule) — no chat
+  cards, no bubbles, no hero banner. Session events are serialized into
+  the stream with the `┃` left margin from 4.4.
+- A slim bottom input dock (single line, borderless) as the only
+  chat-UI element. It is the per-message mode surface from 4.5: `shell`
+  mode forwards Enter to the `main` PTY; `agent` mode calls
+  `agent.inject`. Focus follows mode — in `shell` mode the canvas holds
+  focus so keystrokes reach the PTY directly; the dock takes focus in
+  `agent` mode.
+- Cold start with no session shows a minimal centered "create a
+  session" affordance, not the stock hero.
+
+The sidebar keeps dsh's shell chrome with the flat session list from
+4.7. The scaffold replacement lands with the Phase 4 canvas; the dock
+with Phase 5. Until then the stock scaffold remains the interim shell.
 
 ## 5. Wire protocol
 

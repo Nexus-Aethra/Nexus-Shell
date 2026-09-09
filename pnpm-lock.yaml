@@ -181,6 +181,9 @@ importers:
       '@deepseek-ai/dsh-api-workspace-controller':
         specifier: link:../../../dsh/packages/api/workspace-controller
         version: link:../../../dsh/packages/api/workspace-controller
+      '@deepseek-ai/dsh-client-store':
+        specifier: link:../../../dsh/packages/client/store
+        version: link:../../../dsh/packages/client/store
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer

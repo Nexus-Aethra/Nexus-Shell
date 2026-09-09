@@ -21,8 +21,9 @@
  * client bundle preset.
  */
 
-import { createElement, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react'
+import { createElement, useSyncExternalStore, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
 import { Service, type Context } from '@deepseek-ai/cordis'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
@@ -47,6 +48,15 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 export const name = '@deepseek-ai/dsh-dshell-workspace/client'
 
 export const inject = ['slots', 'sessions'] as const
+
+/**
+ * New-session dialog signal. The `uiWorkspace.startSession` stand-in is
+ * called by dsh's sidebar chrome button, which cannot render dshell UI —
+ * the store bridges that service call to the dialog living inside the
+ * flat list. Module-level on purpose: one browser window owns one shell
+ * (design § 2).
+ */
+const newSessionDialog = createSnapshotStore(false)
 
 /** The permanent projection of a shell without workspaces. */
 const EMPTY_WORKSPACES: WorkspaceSnapshot = {
@@ -132,10 +142,9 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
   }
 
   startSession(_workspaceId?: WorkspaceId): void {
-    void this.openBlankSession().then(
-      (sessionId) => { this.sessions.open(sessionId) },
-      (reason: unknown) => { console.warn('dshell new session failed:', reason) },
-    )
+    // The stock New-Session affordance opens dshell's naming dialog instead
+    // of creating silently (design 4.7 naming paragraph).
+    newSessionDialog.set(true)
   }
 
   async archiveSession(_sessionId: SessionId): Promise<void> {}
@@ -152,6 +161,13 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
     throw new Error('dshell: directory picking is removed (dshell design 4.7)')
   }
 
+  /** Create a session bound to `cwd`; absent cwd falls back to the most recent session's directory, then the server default. */
+  private async createCwdSession(cwd: string | undefined): Promise<SessionId> {
+    if (cwd !== undefined) return await this.sessions.create({ cwd })
+    const fallback = ordinaryRows(this.sessions.list.getSnapshot()).find(row => !row.blank)?.cwd
+    return await this.sessions.create({ ...(fallback === undefined ? {} : { cwd: fallback }) })
+  }
+
   /**
    * Create or reuse a blank cwd session (design 4.7). The default target
    * directory is the most recent ordinary session's cwd — terminal
@@ -165,7 +181,25 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
       ? undefined
       : rows.find(row => row.blank && row.cwd === targetCwd)
     if (reusable !== undefined) return reusable.id
-    return await this.sessions.create({ ...(targetCwd === undefined ? {} : { cwd: targetCwd }) })
+    return await this.createCwdSession(targetCwd)
+  }
+
+  /**
+   * Create a named session through the new-session dialog (design 4.7
+   * naming paragraph): `sessions.create({ cwd })` then one durable rename
+   * through the session face. Auto-titling may overwrite the name on the
+   * first message — same lifetime as a stock sidebar rename.
+   */
+  async createNamedSession(name: string | undefined, cwd: string | undefined): Promise<SessionId> {
+    const sessionId = await this.createCwdSession(cwd)
+    if (name !== undefined && name !== '') {
+      const binding = this.sessions.binding(sessionId)
+      if (binding !== undefined) {
+        const result = await binding.session.rename(name)
+        if (!result.ok) console.warn('dshell: session rename failed:', result.error.message)
+      }
+    }
+    return sessionId
   }
 
   /**
@@ -199,7 +233,7 @@ interface FlatSessionListProps {
     getSnapshot: () => SessionListState
     subscribe: (listener: () => void) => () => void
   }
-  startSession(): void
+  createSession(name: string | undefined, cwd: string | undefined): Promise<void>
   open(sessionId: SessionId): void
 }
 
@@ -239,11 +273,143 @@ const emptyStyle: CSSProperties = {
   fontSize: 12,
   opacity: 0.5,
 }
+const backdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0, 0, 0, 0.55)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+}
+const dialogStyle: CSSProperties = {
+  background: '#1b1b1f',
+  border: '1px solid #33333a',
+  borderRadius: 10,
+  padding: 18,
+  width: 400,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  color: '#e8e8ec',
+}
+const dialogTitleStyle: CSSProperties = { fontSize: 15, fontWeight: 600 }
+const fieldLabelStyle: CSSProperties = { fontSize: 12, opacity: 0.7, marginBottom: 4 }
+const fieldInputStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  background: '#101013',
+  border: '1px solid #3a3a42',
+  borderRadius: 6,
+  color: 'inherit',
+  padding: '7px 9px',
+  fontSize: 13,
+  outline: 'none',
+}
+const dialogErrorStyle: CSSProperties = { color: '#f87171', fontSize: 12 }
+const dialogActionsStyle: CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  justifyContent: 'flex-end',
+}
+const cancelButtonStyle: CSSProperties = {
+  border: '1px solid #3a3a42',
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  borderRadius: 6,
+  padding: '6px 14px',
+  fontSize: 13,
+}
+const createButtonStyle: CSSProperties = {
+  border: 'none',
+  background: '#4f6bed',
+  color: '#fff',
+  cursor: 'pointer',
+  borderRadius: 6,
+  padding: '6px 14px',
+  fontSize: 13,
+}
+
+/**
+ * The new-session dialog (design 4.7 naming paragraph): optional name and
+ * starting directory, defaulted to terminal continuity (the most recent
+ * session's cwd). Confirm creates the session, renames it durably, and
+ * opens it; failures surface inline and keep the dialog up.
+ */
+function NewSessionDialog(props: {
+  defaultCwd: string | undefined
+  createSession(name: string | undefined, cwd: string | undefined): Promise<void>
+}): ReactElement {
+  const [name, setName] = useState('')
+  const [dir, setDir] = useState(props.defaultCwd ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await props.createSession(
+        name.trim() === '' ? undefined : name.trim(),
+        dir.trim() === '' ? undefined : dir.trim(),
+      )
+      newSessionDialog.set(false)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return createElement('div', {
+    style: backdropStyle,
+    onClick: (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (event.target === event.currentTarget && !busy) newSessionDialog.set(false)
+    },
+  },
+    createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
+      createElement('div', { style: dialogTitleStyle }, '新会话'),
+      createElement('div', null,
+        createElement('div', { style: fieldLabelStyle }, '名称'),
+        createElement('input', {
+          style: fieldInputStyle,
+          value: name,
+          autoFocus: true,
+          placeholder: '可选，留空则用目录名',
+          onChange: (event) => { setName(event.target.value) },
+          onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
+        })),
+      createElement('div', null,
+        createElement('div', { style: fieldLabelStyle }, '起始目录'),
+        createElement('input', {
+          style: fieldInputStyle,
+          value: dir,
+          placeholder: props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录',
+          onChange: (event) => { setDir(event.target.value) },
+          onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
+        })),
+      error !== null ? createElement('div', { style: dialogErrorStyle }, error) : null,
+      createElement('div', { style: dialogActionsStyle },
+        createElement('button', {
+          style: cancelButtonStyle,
+          disabled: busy,
+          onClick: () => { newSessionDialog.set(false) },
+        }, '取消'),
+        createElement('button', {
+          style: createButtonStyle,
+          disabled: busy,
+          onClick: () => { void submit() },
+        }, busy ? '创建中…' : '创建'),
+      ),
+    ))
+}
 
 /** Flat session browser: dshell's replacement for the workspace-grouped list. */
 function FlatSessionList(props: FlatSessionListProps): ReactElement {
   const state = useSyncExternalStore(props.sessions.subscribe, props.sessions.getSnapshot)
+  const dialogOpen = useSyncExternalStore(newSessionDialog.subscribe, newSessionDialog.getSnapshot)
   const rows = ordinaryRows(state)
+  const defaultCwd = rows.find(row => !row.blank)?.cwd
   const children = [
     createElement(
       'div',
@@ -251,7 +417,7 @@ function FlatSessionList(props: FlatSessionListProps): ReactElement {
       createElement('span', null, `会话 (${rows.length})`),
       createElement(
         'button',
-        { style: newButtonStyle, onClick: () => { props.startSession() } },
+        { style: newButtonStyle, onClick: () => { newSessionDialog.set(true) } },
         '＋ 新会话',
       ),
     ),
@@ -271,7 +437,10 @@ function FlatSessionList(props: FlatSessionListProps): ReactElement {
       `${row.running ? '● ' : ''}${row.displayTitle}`,
     ))
   }
-  return createElement('div', { style: listStyle }, children)
+  return createElement('div', { style: listStyle }, children,
+    dialogOpen
+      ? createElement(NewSessionDialog, { key: 'dialog', defaultCwd, createSession: props.createSession })
+      : null)
 }
 
 /**
@@ -288,12 +457,26 @@ export function apply(ctx: Context): void {
   // the empty 'pending' snapshot routes it to the cwd-label branch.
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
 
+  // Interim (removed with the Phase 4 scaffold takeover, design 4.8): the
+  // stock hero row hardcodes a WorkspaceChip whose label falls back to the
+  // session cwd. The row is plain scaffold, not a slot, so a plugin cannot
+  // unmount it — hide it with a stylesheet instead. The CSS-module suffix
+  // is stable; the hash prefix is not, hence the contains-selector.
+  ctx.effect(() => {
+    const style = document.createElement('style')
+    style.dataset.dshell = 'hero-workspace-row-hide'
+    style.textContent = '[class*="heroWorkspaceRow"] { display: none !important; }'
+    document.head.appendChild(style)
+    return () => { style.remove() }
+  }, 'dshell-workspace: hero row interim hide')
+
   ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register(
     {
       name: 'sidebar.workspaces',
       inject: (): FlatSessionListProps => ({
         sessions: sessions.list,
-        startSession: () => { uiWorkspace.startSession() },
+        createSession: (name, cwd) =>
+          uiWorkspace.createNamedSession(name, cwd).then((sessionId) => { sessions.open(sessionId) }),
         open: (sessionId) => { sessions.open(sessionId) },
       }),
     },

@@ -36,6 +36,7 @@
     "@deepseek-ai/dsh-api-remotes": "link:../../../dsh/packages/api/remotes",
     "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
     "@deepseek-ai/dsh-api-workspace-controller": "link:../../../dsh/packages/api/workspace-controller",
+    "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
     "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
     "@deepseek-ai/dsh-client-ui-sidebar": "link:../../../dsh/packages/client/ui-sidebar",
     "@deepseek-ai/dsh-client-ui-workspace": "link:../../../dsh/packages/client/ui-workspace",

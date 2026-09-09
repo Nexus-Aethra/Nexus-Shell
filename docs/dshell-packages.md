@@ -107,11 +107,16 @@ when it contributes to model-visible state.
   - **Browser face** provides `workspaces`- and `uiWorkspace`-keyed
     stubs plus the root `workspaces` hook, so the stock row
     `ui-workspace` can be disabled without hanging ui-conversation /
-    ui-sidebar or crashing ConversationRoot.
+    ui-sidebar or crashing ConversationRoot. It also occupies
+    `sidebar.workspaces` with a flat session list, adds the
+    new-session dialog (optional name + starting directory, design
+    4.7 naming paragraph), and hides the stock hero workspace chip
+    with an interim stylesheet until the Phase 4 scaffold takeover
+    (design 4.8) removes the whole hero.
 - dsh services depended on: none beyond the replaced keys; it
   *provides* `workspaceRegistry` (host), `workspaces` + `uiWorkspace`
   (client).
-- Introduced in: Phase 1.5.
+- Introduced in: Phase 1.5; dialog in Phase 1.6.
 - Touches decisions: 4.7 (workspace removal) and indirectly 4.5 —
   `/new` creates sessions via `sessions.create({ cwd })` with no
   workspace attached.
