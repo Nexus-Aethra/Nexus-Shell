@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
       tsx:
         specifier: ^4.23.13
         version: 4.23.13
@@ -85,9 +88,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
-      '@deepseek-ai/dsh-client-store':
-        specifier: link:../../../dsh/packages/client/store
-        version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../dsh/packages/client/ui-conversation
         version: link:../../../dsh/packages/client/ui-conversation
@@ -116,9 +119,27 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-client-ui-conversation':
+        specifier: link:../../../dsh/packages/client/ui-conversation
+        version: link:../../../dsh/packages/client/ui-conversation
+      '@deepseek-ai/dsh-client-ui-model-selection':
+        specifier: link:../../../dsh/packages/client/ui-model-selection
+        version: link:../../../dsh/packages/client/ui-model-selection
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-dshell-terminal-bridge':
+        specifier: link:../terminal-bridge
+        version: link:../terminal-bridge
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
     devDependencies:
       '@types/react':
         specifier: ~18.3.1
@@ -144,9 +165,30 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: link:../../../dsh/packages/host/webserver
+        version: link:../../../dsh/packages/host/webserver
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-terminal':
+        specifier: link:../../../dsh/packages/terminal/terminal
+        version: link:../../../dsh/packages/terminal/terminal
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.3
     devDependencies:
       '@types/react':
         specifier: ~18.3.1
@@ -154,6 +196,9 @@ importers:
       '@types/react-dom':
         specifier: ~18.3.0
         version: 18.3.7(@types/react@18.3.31)
+      '@types/ws':
+        specifier: ^8.5.10
+        version: 8.18.1
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -473,6 +518,12 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
+  '@types/node@24.13.3':
+    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
+  '@types/node@26.5.0':
+    resolution: {integrity: sha512-dVSGpriSoCgz8WnDNTuSSuSv1PC/ALXihO4ulRZt7Md8k9mlbdin3lGOcDE8SnWOgf513ByWlXd7BK4azmyg/A==}
+
   '@types/prop-types@15.7.15':
     resolution: {integrity: sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==}
 
@@ -483,6 +534,9 @@ packages:
 
   '@types/react@18.3.31':
     resolution: {integrity: sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@yuku-codegen/binding-android-arm64@0.8.7':
     resolution: {integrity: sha512-C/0zV5IhgVdYhGJTwrY0v8dknxlhiKwtVJkMUaexu9/QvRmzlV4vfU3hZlUSgqc2BxQHntL1mCVbDq8j0FRFDw==}
@@ -792,9 +846,27 @@ packages:
   unconfig-core@7.5.0:
     resolution: {integrity: sha512-Su3FauozOGP44ZmKdHy2oE6LPjk51M/TRRjHv2HNCWiDvfvCoxC2lno6jevMA91MYAdCdwP05QnWdWpSbncX/w==}
 
+  undici-types@7.18.2:
+    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+  undici-types@8.9.0:
+    resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
+
   verkit@0.3.2:
     resolution: {integrity: sha512-zj/ob3UsvJGN0whEAKFp53REA5X66hvffVqoCtVQAakJKnKlH+/PcOfMoFwIG/o4rElqLv/ycAFlx8ZlXUorCg==}
     engines: {node: '>=18.12.0'}
+
+  ws@8.21.3:
+    resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
   yuku-ast@0.8.7:
     resolution: {integrity: sha512-h6+4bDfyootiMB9vckk5uKo5r5j0GHrkr17FQTDNfEsFT3DWlN9uu1HJwQwc64pgmLCI945fWM3lbTIqxjT3GQ==}
@@ -938,6 +1010,14 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@types/node@24.13.3':
+    dependencies:
+      undici-types: 7.18.2
+
+  '@types/node@26.5.0':
+    dependencies:
+      undici-types: 8.9.0
+
   '@types/prop-types@15.7.15': {}
 
   '@types/react-dom@18.3.7(@types/react@18.3.31)':
@@ -948,6 +1028,10 @@ snapshots:
     dependencies:
       '@types/prop-types': 15.7.15
       csstype: 3.2.3
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 26.5.0
 
   '@yuku-codegen/binding-android-arm64@0.8.7':
     optional: true
@@ -1190,7 +1274,13 @@ snapshots:
       '@quansync/fs': 1.0.0
       quansync: 1.0.0
 
+  undici-types@7.18.2: {}
+
+  undici-types@8.9.0: {}
+
   verkit@0.3.2: {}
+
+  ws@8.21.3: {}
 
   yuku-ast@0.8.7:
     dependencies:

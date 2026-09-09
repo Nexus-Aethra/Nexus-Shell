@@ -2,17 +2,17 @@
   "name": "@deepseek-ai/dsh-dshell-conversation",
   "version": "0.1.0",
   "private": true,
-  "description": "dshell Conversation target `terminal`: registers the ViewDefinition and NodeDefinitions that render the interleaved PTY-bytes-plus-session-event stream in one xterm.js canvas.",
+  "description": "dshell Conversation activity marker: registers an always-active `terminal` view target so the conversation stays in active phase and the docked terminal surface renders instead of the centered hero.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/index.d.ts",
+      "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/client/index.d.ts",
+      "types": "./lib/types/client/index.d.ts",
       "default": "./lib/client.js"
     }
   },
@@ -34,7 +34,7 @@
   ],
   "dependencies": {
     "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
-    "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
+    "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
     "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation"
   },
   "devDependencies": {

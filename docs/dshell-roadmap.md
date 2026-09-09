@@ -129,6 +129,12 @@ Acceptance check:
 - A second `terminal_open({ name: 'main' })` from the agent creates a
   separate session; `mainPtyByAgent` is untouched.
 - The bridge's per-session buffer accumulates bytes after `startSend`.
+- The buffer persists to `$DSH_HOME/dshell-pty/<session-id>.log`
+  (design 4.9); memory holds only the fixed window; a fresh main shell
+  for the same session seeds from the file tail.
+
+Status: implemented together with Phase 3 (the ws transport is the
+first consumer of the buffer and the tail loop).
 
 ## Phase 3 — WebSocket transport
 
@@ -152,63 +158,59 @@ Acceptance check:
 - The ws respects `{ kind: 'bind', sessionId }` authorization: a bind
   with a wrong id is rejected and closed.
 
-## Phase 4 — Terminal scaffold + xterm.js canvas
+## Phase 4 — Fused terminal surface
 
 Goal: dshell owns the whole conversation surface. The stock
-`conversation` slot occupant is shadowed at a lower priority by
-dshell's terminal scaffold (design 4.8): a full-bleed xterm.js canvas
-renders PTY bytes and session events interleaved by the merge rule from
-4.4 — no hero, no chat cards, no stock composer.
+`conversation.composer.bar` slot is shadowed at priority -1 by the
+dshell terminal dock (design 4.8): one full-bleed vertical column — the
+PTY scrollback streams above a monospace input line pinned to the
+bottom. Mode chip + model chip live inline with the input line; the
+stock chat composer and centered hero are gone.
 
-Covers decisions: 4.1 (ViewBuilder per session), 4.4 (interleaved
-rendering), 4.8 (terminal layout).
+The Phase 1 interim terminal-tab approach (`conversation.view` slot
+with `id: 'terminal'`) was tried and abandoned. It split PTY output
+and the input dock into separate slot occupants whose layouts fought
+each other, and forced the stock `selectView` path through a `chat`
+default. Replacing it with a single composer-bar shadow that owns the
+entire column avoids both issues — the dock IS the surface.
 
-Plugins touched:
-
-- `dshell-conversation` (browser face) — registers the shadowing
-  scaffold; materializes `Snapshot.rows` into one xterm.js buffer;
-  serializes session nodes to ANSI; drops the Phase 1.6 interim
-  stylesheet.
-- `dshell-conversation` (host face) — drives the ViewBuilder from
-  both the PTY byte source and the dsh engine's `replace` / `apply`
-  calls.
-
-Acceptance check:
-
-- With a session open, the content area is one xterm canvas edge to
-  edge: the stock hero, workspace chip and chat composer are gone.
-- An agent turn (`/agent hello`) and a shell command (`/shell echo
-  hi`) appear interleaved in one xterm scrollback, ordered by `time`.
-- Switching to a different session shows that session's terminal
-  surface independently; switching back shows the original buffer
-  preserved.
-
-## Phase 5 — Input dock + mode toggle + `/agent` / `/shell`
-
-Goal: the user controls where the next message goes from the slim
-input dock under the canvas (design 4.8); focus follows mode.
-
-Covers decisions: 4.5 (mode state), 4.8 (dock).
+Covers decisions: 4.1 (terminal-first surface), 4.5 (mode state),
+4.8 (terminal layout).
 
 Plugins touched:
 
-- `dshell-mode` (new, browser face) — owns the per-session mode store;
-  drives the dock's Enter to dispatch by mode; parses `/agent` and
-  `/shell` prefixes before dispatch; keeps canvas focus in `shell`
-  mode.
-- `dshell-mode` (new, host face) — exposes the main PTY session id to
-  the browser side through the same channel used by 4.4.
+- `dshell-mode` (browser face) — registers the shadowing dock as a
+  full-height flex column: scrollback above, input bar at the bottom.
+  Per-session mode store; Enter dispatch by mode (`shell` → bridge
+  `send`, `agent` → `scopedConversation.send`); `/agent` / `/shell`
+  prefix parsing; model chip over `ctx.modelDirectories` (shared with
+  `/code, no child-hole collision).
+- `dshell-conversation` (browser face) — registers a no-renderer
+  `ConversationViewDefinition` on target `terminal` whose `isActive`
+  returns `true`. The framework treats the target as visible activity
+  even in a blank session, so the conversation stays in `active` phase
+  instead of the centered `hero`. The same plugin auto-activates
+  `terminal` on every new session.
+- `dshell-workspace` (browser face) — keeps the interim CSS that
+  hides the hero chrome (`heroWorkspaceRow`, `headline`), pins the
+  dock to the bottom of the scroll column in `hero` phase, and in
+  `active` phase neutralizes the slot chain's `display:contents` /
+  `flex:0 1 auto` wrappers so the dock flex-grows to fill the seat.
 
-Acceptance check:
+Acceptance check (current state — see screenshot in conversation):
 
-- In `shell` mode, Enter sends the dock line to `startSend(mainId,
-  text)` and focus returns to the canvas.
-- In `agent` mode, Enter sends the dock line to `agent.inject`.
-- `/agent plan a feature` from shell mode switches to agent mode and
-  injects "plan a feature" as a user message.
-- `/shell ls -la` from agent mode switches to shell mode and runs
-  `ls -la` in `main`.
-- Mode survives a session switch; mode resets to `shell` on `/new`.
+- New session creation opens straight into a full-column fused
+  terminal: PTY scrollback fills the column above a fixed input line
+  pinned to the bottom. The hero banner ("探索未至之境") and centered
+  composer are gone.
+- Shell input roundtrips: typing `echo hi` in the dock and pressing
+  Enter sends to the main PTY; the next prompt appears in the
+  scrollback above.
+- Mode toggles: clicking the `⌨ shell` / `✳ agent` chip flips mode
+  and the input placeholder. `/agent` and / `/terminal` prefixes from
+  the dock dispatch immediately and flip mode in one keystroke.
+- Model chip lists the shared directory and updates selection in
+  sync with `/code.
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 

@@ -265,6 +265,30 @@ The sidebar keeps dsh's shell chrome with the flat session list from
 4.7. The scaffold replacement lands with the Phase 4 canvas; the dock
 with Phase 5. Until then the stock scaffold remains the interim shell.
 
+### 4.9 PTY scrollback persistence
+
+The main shell's output history is persisted to disk, not held
+unbounded in memory. `dshell-terminal-bridge` appends every output
+delta to an append-only log per dsh session —
+`$DSH_HOME/dshell-pty/<dsh-session-id>.log` — and keeps only a fixed
+in-memory window (default 256 KiB / 2000 lines, whichever binds first)
+for live rendering and context injection:
+
+- The file is the source of truth; the window is a cache. Writes are
+  batched (default 150 ms) and flushed on close; trimming the window's
+  oldest lines never touches the file.
+- A fresh main shell bound to the same dsh session — including the
+  fresh PTY a harness restart must spawn — seeds its window from the
+  file tail (default 64 KiB), so the canvas restores recent scrollback
+  without unbounded memory.
+- The 4.6 context-injection snapshot (100 lines / 4 KiB) reads from
+  the window.
+- `/clear` truncates both the window and the file.
+- The PTY *process* itself stays process-local (§ 2): a restart
+  spawns a fresh shell; only the scrollback history survives. This
+  decision narrows the § 2 non-goal — process durability stays out of
+  scope; scrollback history persistence is in scope.
+
 ## 5. Wire protocol
 
 `dshell-terminal-bridge` exposes a single ws upgrade route at
@@ -272,11 +296,16 @@ with Phase 5. Until then the stock scaffold remains the interim shell.
 
 - Client → server:
   - `{ kind: 'bind', sessionId: string }` — associate this ws with the
-    dsh session id. Required as the first message after upgrade.
-  - `{ kind: 'input', sessionId: string, text: string }` — `startSend`
-    against the `main` PTY session.
+    dsh session id. Required as the first message after upgrade; the
+    server answers with a replay `{ kind: 'output', ..., replay: true }`
+    carrying the persisted scrollback tail (4.9) before any live frame.
+  - `{ kind: 'input', sessionId: string, text: string }` — forwarded to
+    the `main` PTY through `startSend`. Raw control keys ride the text
+    (`\u03` = Ctrl+C cancels the active send with SIGINT).
   - `{ kind: 'resize', sessionId: string, cols: number, rows: number }`
-    — resize the PTY.
+    — accepted but currently a no-op: dsh's PTY backends fix rows/cols
+    at spawn (terminal-bash config; no resize API). Reserved for a
+    future backend capability.
   - `{ kind: 'signal', sessionId: string, signal: 'SIGINT' | 'SIGTERM'
     | 'SIGTSTP' }` — signal the foreground process group.
 - Server → client:
