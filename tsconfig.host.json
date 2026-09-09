@@ -1,0 +1,14 @@
+{
+  "extends":"./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2024"]
+  },
+  "include": [],
+  "references": [
+    { "path": "./packages/dshell-bundle" },
+    { "path": "./packages/dshell-conversation" },
+    { "path": "./packages/dshell-terminal-bridge" },
+    { "path": "./packages/dshell-mode" },
+    { "path": "./packages/dshell-commands" }
+  ]
+}

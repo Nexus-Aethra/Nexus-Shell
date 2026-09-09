@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2024", "dom"],
+    "jsx": "preserve"
+  },
+  "include": [],
+  "references": [
+    { "path": "./packages/dshell-conversation" },
+    { "path": "./packages/dshell-terminal-bridge" },
+    { "path": "./packages/dshell-mode" }
+  ]
+}

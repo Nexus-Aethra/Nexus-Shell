@@ -1,0 +1,21 @@
+{
+  "name": "nexus-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dshell: terminal-first dsh plugin suite. Single xterm.js canvas per session, interleaving PTY bytes with agent turns. See docs/.",
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "workspaces": [
+    "packages/*/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r --filter @deepseek-ai/dsh-dshell-* run build",
+    "build:host": "pnpm -r --filter @deepseek-ai/dsh-dshell-* run build:host",
+    "build:client": "pnpm -r --filter @deepseek-ai/dsh-dshell-* run build:client",
+    "typecheck": "tsc -b tsconfig.host.json && tsc -b tsconfig.client.json",
+    "lint": "echo 'lint deferred: dshell packages do not yet carry oxlint config; copy dsh/.oxlintrc.json when ready'"
+  }
+}

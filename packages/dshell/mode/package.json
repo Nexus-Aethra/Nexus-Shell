@@ -1,0 +1,49 @@
+{
+  "name": "@deepseek-ai/dsh-dshell-mode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dshell mode toggle: per-session shell/agent mode state, composer Enter dispatch, /agent and /shell prefix parsing, and agent-mode terminal-context injection.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client/index.js"
+    }
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly false",
+    "build:host": "tsc -p tsconfig.json --emitDeclarationOnly false",
+    "build:client": "tsc -p tsconfig.json --emitDeclarationOnly false"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "dependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^6.0.3",
+    "tsdown": "^0.22.14"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"
+  }
+}

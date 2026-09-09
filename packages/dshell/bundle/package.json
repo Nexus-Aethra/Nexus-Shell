@@ -1,0 +1,52 @@
+{
+  "name": "@deepseek-ai/dsh-dshell-bundle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dshell bundle: composition patch layer that wires dshell-* packages into the dsh web profile.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly false",
+    "build:host": "tsc -p tsconfig.json --emitDeclarationOnly false"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-dshell-conversation": "link:../conversation",
+    "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
+    "@deepseek-ai/dsh-dshell-mode": "link:../mode",
+    "@deepseek-ai/dsh-dshell-commands": "link:../commands",
+    "@deepseek-ai/dsh-terminal": "link:../../../dsh/packages/terminal/terminal",
+    "@deepseek-ai/dsh-terminal-bash": "link:../../../dsh/packages/terminal/terminal-bash",
+    "@deepseek-ai/dsh-tool-terminal": "link:../../../dsh/packages/terminal/tool-terminal",
+    "@deepseek-ai/dsh-subprocess-local": "link:../../../dsh/packages/subprocess/subprocess-local",
+    "@deepseek-ai/dsh-sandbox-local": "link:../../../dsh/packages/sandbox/sandbox-local",
+    "@deepseek-ai/dsh-sandbox-policy": "link:../../../dsh/packages/sandbox/sandbox-policy",
+    "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation",
+    "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "tsdown": "^0.22.14"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"
+  }
+}

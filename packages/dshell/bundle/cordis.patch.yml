@@ -1,0 +1,55 @@
+# dshell bundle patch — applied on top of the dsh `web` profile.
+# Run with: dsh web --patch ./packages/dshell/bundle/cordis.patch.yml
+#
+# Each dshell-* package below is a Cordis row the bundle brings into the
+# active composition. The web profile is the dsh-web-app bundle; this
+# patch layer sits above it, so rows here override base/web by id.
+#
+# This file is the single install point for dshell: enabling dshell in a
+# dsh deployment means adding one --patch flag with this file's path.
+
+# ── host half: terminal capability ─────────────────────────────────────
+# dsh ships the `web` profile with bash + sandbox already configured,
+# so dshell reuses the existing terminal/sandbox rows and only inserts
+# its own plugin packages. Each dshell-* row uses a fresh id so it does
+# not collide with a shipped tooling id.
+
+- insert:
+    # PTY service + bash backend; these ids are distinct from any
+    # shipped web-profile row, so they coexist with the existing tools.
+    - id: dshell-terminal
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: dshell-terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+
+    - id: dshell-tool-terminal
+      name: '@deepseek-ai/dsh-tool-terminal'
+
+    # Browser half of the `terminal` Conversation target.
+    - id: dshell-conversation
+      name: '@deepseek-ai/dsh-dshell-conversation'
+
+    # Browser↔host PTY wire bridge.
+    - id: dshell-terminal-bridge
+      name: '@deepseek-ai/dsh-dshell-terminal-bridge'
+
+    # Composer mode toggle and prefix handling.
+    - id: dshell-mode
+      name: '@deepseek-ai/dsh-dshell-mode'
+
+    # /clear, /new, /compact, plus dshell_get_main_terminal model tool.
+    - id: dshell-commands
+      name: '@deepseek-ai/dsh-dshell-commands'
+
+# ── dev-only hot reload (skip in non-dev sessions) ─────────────────────
+# dsh's web profile mounts @deepseek-ai/dsh-client-hmr as a client
+# roster row that stays idle until a `pnpm run dev:web` rebuild watcher
+# rewrites client bundles. The row stays in the roster even when no
+# watcher runs, which makes the client bundle loader look up `/plugins/
+# ...dsh-client-hmr/client.js` at boot; without a rebuild watcher the
+# file may not exist, blocking the entire client bundle. Disabling the
+# row by re-asserting it with `disabled: true` removes it from the
+# client roster without touching dsh source.
+- id: client-hmr
+  disabled: true
