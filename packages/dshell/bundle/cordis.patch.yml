@@ -42,6 +42,27 @@
     - id: dshell-commands
       name: '@deepseek-ai/dsh-dshell-commands'
 
+    # Workspace removal (design 4.7): stub providers for the disabled
+    # stock rows below, plus the flat session list for the sidebar.
+    - id: dshell-workspace
+      name: '@deepseek-ai/dsh-dshell-workspace'
+
+# ── workspace removal (design 4.7) ────────────────────────────────────
+# dshell has no use for dsh's directory-workspace grouping: a terminal's
+# workspace is its current directory. The four stock web-app rows are
+# disabled here and dshell-workspace provides same-key stand-ins
+# (host `workspaceRegistry`, client `workspaces` + `uiWorkspace` + root
+# hook) so session-controller and ui-conversation/ui-sidebar still resolve.
+# Sessions are created by cwd instead; see docs/dshell-design.md § 4.7.
+- id: workspace
+  disabled: true
+- id: workspace-controller
+  disabled: true
+- id: directory-picker
+  disabled: true
+- id: ui-workspace
+  disabled: true
+
 # ── dev-only hot reload (skip in non-dev sessions) ─────────────────────
 # dsh's web profile mounts @deepseek-ai/dsh-client-hmr as a client
 # roster row that stays idle until a `pnpm run dev:web` rebuild watcher

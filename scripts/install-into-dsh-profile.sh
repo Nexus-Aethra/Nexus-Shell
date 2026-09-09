@@ -24,6 +24,7 @@ PLUGINS=(
   terminal-bridge
   mode
   commands
+  workspace
 )
 
 echo "Installing dshell plugins into profile '$PROFILE'..."

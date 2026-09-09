@@ -19,6 +19,7 @@
     "lint": "echo 'lint deferred: dshell packages do not yet carry oxlint config; copy dsh/.oxlintrc.json when ready'"
   },
   "devDependencies": {
-    "tsx": "^4.23.13"
+    "tsx": "^4.23.13",
+    "typescript": "^6.0.3"
   }
 }

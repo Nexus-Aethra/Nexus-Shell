@@ -1,0 +1,53 @@
+{
+  "name": "@deepseek-ai/dsh-dshell-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dshell workspace removal (design 4.7): same-key stub providers for workspaceRegistry / workspaces / uiWorkspace so the stock web-app workspace rows can be disabled, plus a flat session list for the sidebar.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client.js"
+    }
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly false && tsdown --config-loader tsx",
+    "build:host": "tsc -p tsconfig.json --emitDeclarationOnly false",
+    "build:client": "tsdown --config-loader tsx"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "dependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-api-remotes": "link:../../../dsh/packages/api/remotes",
+    "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
+    "@deepseek-ai/dsh-api-workspace-controller": "link:../../../dsh/packages/api/workspace-controller",
+    "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
+    "@deepseek-ai/dsh-client-ui-sidebar": "link:../../../dsh/packages/client/ui-sidebar",
+    "@deepseek-ai/dsh-client-ui-workspace": "link:../../../dsh/packages/client/ui-workspace",
+    "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "typescript": "^6.0.3",
+    "tsdown": "^0.22.14"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"
+  }
+}

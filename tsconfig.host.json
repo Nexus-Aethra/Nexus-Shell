@@ -5,10 +5,11 @@
   },
   "include": [],
   "references": [
-    { "path": "./packages/dshell-bundle" },
-    { "path": "./packages/dshell-conversation" },
-    { "path": "./packages/dshell-terminal-bridge" },
-    { "path": "./packages/dshell-mode" },
-    { "path": "./packages/dshell-commands" }
+    { "path": "./packages/dshell/bundle" },
+    { "path": "./packages/dshell/conversation" },
+    { "path": "./packages/dshell/terminal-bridge" },
+    { "path": "./packages/dshell/mode" },
+    { "path": "./packages/dshell/commands" },
+    { "path": "./packages/dshell/workspace" }
   ]
 }

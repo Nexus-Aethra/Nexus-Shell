@@ -33,6 +33,7 @@
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
     "@deepseek-ai/dsh-dshell-mode": "link:../mode",
     "@deepseek-ai/dsh-dshell-commands": "link:../commands",
+    "@deepseek-ai/dsh-dshell-workspace": "link:../workspace",
     "@deepseek-ai/dsh-terminal": "link:../../../dsh/packages/terminal/terminal",
     "@deepseek-ai/dsh-terminal-bash": "link:../../../dsh/packages/terminal/terminal-bash",
     "@deepseek-ai/dsh-tool-terminal": "link:../../../dsh/packages/terminal/tool-terminal",

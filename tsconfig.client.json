@@ -6,8 +6,9 @@
   },
   "include": [],
   "references": [
-    { "path": "./packages/dshell-conversation" },
-    { "path": "./packages/dshell-terminal-bridge" },
-    { "path": "./packages/dshell-mode" }
+    { "path": "./packages/dshell/conversation" },
+    { "path": "./packages/dshell/terminal-bridge" },
+    { "path": "./packages/dshell/mode" },
+    { "path": "./packages/dshell/workspace" }
   ]
 }

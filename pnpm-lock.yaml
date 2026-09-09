@@ -11,6 +11,9 @@ importers:
       tsx:
         specifier: ^4.23.13
         version: 4.23.13
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   packages/dshell/bundle:
     dependencies:
@@ -35,6 +38,9 @@ importers:
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
+      '@deepseek-ai/dsh-dshell-workspace':
+        specifier: link:../workspace
+        version: link:../workspace
       '@deepseek-ai/dsh-sandbox-local':
         specifier: link:../../../dsh/packages/sandbox/sandbox-local
         version: link:../../../dsh/packages/sandbox/sandbox-local
@@ -154,6 +160,46 @@ importers:
       react-dom:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
+      tsdown:
+        specifier: ^0.22.14
+        version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/dshell/workspace:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../dsh/vendor/cordis
+        version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-api-remotes':
+        specifier: link:../../../dsh/packages/api/remotes
+        version: link:../../../dsh/packages/api/remotes
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-api-workspace-controller':
+        specifier: link:../../../dsh/packages/api/workspace-controller
+        version: link:../../../dsh/packages/api/workspace-controller
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-sidebar':
+        specifier: link:../../../dsh/packages/client/ui-sidebar
+        version: link:../../../dsh/packages/client/ui-sidebar
+      '@deepseek-ai/dsh-client-ui-workspace':
+        specifier: link:../../../dsh/packages/client/ui-workspace
+        version: link:../../../dsh/packages/client/ui-workspace
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+    devDependencies:
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
       tsdown:
         specifier: ^0.22.14
         version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)

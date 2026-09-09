@@ -23,6 +23,7 @@ interface DshellClientBundleConfig {
   dts: false
   sourcemap: boolean
   clean: false
+  external: string[]
   outputOptions: {
     entryFileNames: string
     sourcemapExcludeSources: false
@@ -51,11 +52,12 @@ export function dshellClientBundle(
     dts: false,
     sourcemap: true,
     clean: false,
-    // dshell client faces currently import nothing at runtime; type-only
-    // imports are erased by tsc before this bundler runs. When a runtime
-    // import of a shared shell module appears (react, cordis, client-store,
-    // ui-slots...), add it here as an external so it resolves through the
-    // module table instead of being inlined.
+    // Module-table specifiers (dsh packages/client/web/src/platform.ts
+    // PLATFORM_MODULES) that dshell client faces resolve through the
+    // injected require instead of inlining. Extend when a face gains
+    // another runtime import; type-only imports are erased by tsc before
+    // this bundler runs.
+    external: ['react', '@deepseek-ai/cordis'],
     outputOptions: {
       entryFileNames: 'client.js',
       sourcemapExcludeSources: false,
