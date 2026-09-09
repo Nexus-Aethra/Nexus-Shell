@@ -214,35 +214,43 @@ Acceptance check (current state — see screenshot in conversation):
 
 ### 4.x Shell-interaction mechanics (hard-won constraints)
 
-- **Tail sync is content-based, not line-indexed.** dsh's scrollback is
-  a mutating stream: the trailing prompt is a partial line that grows
-  in place, echo completion rewrites the last line, and `split('\n')`
-  counts all of it. A seen-lines cursor double-consumes the prompt line
-  (prompts and commands duplicated) and consumes phantom empty lines
-  (echoes lost). The bridge now keeps the full retained scrollback text
-  of the previous tick (`backendText`) and broadcasts the prefix
-  extension as the delta; any non-prefix change (retention slid under
-  the 256KB read cap) resyncs the window and clients with a replay.
-- **`clear` and init never rely on bash's ANSI clear** — the
-  TerminalSanitizer strips it from scrollback. The bridge marks the
-  current backend text consumed, truncates its buffer, broadcasts a
-  replay reset, and re-issues a prompt with an empty line, so `clear`
-  and every fresh session open on a clean slate with a live
-  `user@host:path$ ` cue. The init echo is additionally suppressed
-  from streaming until the first send settles.
+- **The main shell is a push-based raw PTY, not a polled tail**
+  (superseded in Phase 5). The bridge registers its own
+  `TerminalBackend` (`dshell-pty`: plain node-pty bash,
+  `TERM=xterm-256color`) and pushes raw ANSI chunks to the browser
+  canvas. The original pull model — poll `ctx.terminals.read`, diff
+  the retained text against the previous tick, broadcast the prefix
+  extension — existed because dsh's scrollback is a mutating stream:
+  the trailing prompt is a partial line that grows in place, echo
+  completion rewrites the last line, and `split('\n')` counts all of
+  it. A seen-lines cursor double-consumed the prompt line (duplicate
+  prompts/commands) and consumed phantom empty lines (lost echoes);
+  even the content-diff variant lagged a tick behind. Raw push
+  deleted the whole class: ANSI colors reach xterm.js untouched, and
+  agent-facing reads strip ANSI on demand.
+- **`clear` is a bridge operation, not bash's ANSI clear.** The
+  sanitizer historically stripped ANSI clear from scrollback, so the
+  bridge owns the wipe: truncate the retained buffer, broadcast a
+  replay (the canvas redraws the merged timeline), queue a newline so
+  bash prints a fresh prompt. Init writes the custom PS1 +
+  `PROMPT_COMMAND` (OSC 133;D marker) once, then `clear`; every
+  session open starts from a replayed clean prompt.
 - **Readline keys the browser would swallow are mapped in the dock:**
   Tab → `\t` (completion), ArrowUp/Down → `\x10`/`\x0e` (history, no
   ESC bytes — those never survive the PTY input path), Ctrl+C →
   `signalForeground(SIGINT)`. readline redraws erase with backspace
-  bytes; `PtyScrollback` collapses them for plain rendering.
-- **Send settle with a custom PS1:** dsh's fast settle needs the stock
-  `dsh> ` cue after the OSC 133;D marker (`promptTextSeen`); a custom
-  PS1 disables it permanently, so sends would hold the exclusive
-  startSend slot until the 3s `inferred_idle` timeout and back-to-back
-  commands crawl. The bundle patch pins the dshell-terminal-bash row to
-  `idleSilenceMs: 300` / `handoffGraceMs: 50` (~350ms settle, ~700ms
-  back-to-back). A dsh-side relaxation (or prompt-marker awareness of a
-  custom PS1) could restore the ~100ms path.
+  bytes; the canvas renders them natively (xterm.js), plain-text
+  reads collapse them.
+- **Send settle with a custom PS1 (now agent-side only):** dsh's fast
+  settle needs the stock `dsh> ` cue after the OSC 133;D marker
+  (`promptTextSeen`); a custom PS1 disables it permanently, so sends
+  held the exclusive startSend slot until the 3s `inferred_idle`
+  timeout and back-to-back commands crawled. The bundle patch pins
+  the dshell-terminal-bash row — since Phase 5 only the agent's
+  `terminal_send` path; main shells moved to the raw backend — to
+  `idleSilenceMs: 300` / `handoffGraceMs: 50`. The raw backend
+  settles its own sends instead: marker + 60ms quiet fast path,
+  350ms inferred-idle fallback, 15s timeout.
 - **The ws client must guard socket handover:** `sessions.list` churns
   several times around a session switch, and a redundant `openSocket`
   used to leave two live sockets feeding one history (every frame
@@ -254,6 +262,80 @@ Acceptance check (current state — see screenshot in conversation):
   `rm -rf packages/dshell/*/lib packages/dshell/*/tsbuildinfo lib types`
   and `pnpm build` fresh; verify the change actually landed in
   `lib/client.js` before restarting dsh.
+
+## Phase 5 — ANSI canvas (raw PTY backend + xterm.js + 4.4 merge)
+
+Goal: the conversation column becomes a real terminal canvas — raw
+ANSI PTY bytes stream into a full-bleed xterm.js instance, and durable
+session events interleave as `┃` rows (design 4.4).
+
+Covers decisions: 4.4 (interleaved rendering), 4.8 (terminal layout).
+Retires the Phase 4 pull-model tail (see 4.x).
+
+Plugins touched:
+
+- `dshell-terminal-bridge` (host face) — registers its own
+  `TerminalBackend` (`type: 'dshell-pty'`) on `ctx.terminals` next to
+  dsh's bash backend: plain node-pty `/bin/bash -i` with
+  `TERM=xterm-256color`. Output pushes to subscribers raw
+  (`onOutput`), exit pushes (`onExit`), resize is real (the canvas
+  drives cols/rows), agent-facing reads strip ANSI on demand, and
+  sends settle on the bridge's own logic (marker + 60ms quiet fast
+  path, 350ms inferred-idle fallback, 15s timeout; Ctrl+C cancels the
+  active send). The bridge spawns one `main` shell per dsh session;
+  init sets the PS1 + `PROMPT_COMMAND` marker once and replays a
+  clean prompt, and the same truncate + replay is how `/clear` wipes
+  both sides.
+- `dshell-mode` (browser face) — the dock's scrollback div becomes a
+  full-bleed xterm.js canvas. xterm.js and its CSS are inlined into
+  the client bundle (rolldown `noExternal` + CSS-as-string module —
+  the combo loader only resolves dsh platform modules, so anything
+  else must ship inside the bundle). A hidden probe span measures
+  char metrics; a ResizeObserver fits cols/rows and resizes the PTY.
+  The theme maps the dock palette (bg/text/cursor/selection).
+- `dshell-mode` (browser face, 4.4 merge) — `PtyCanvas` subscribes to
+  the session's event window (`sessions.binding(id).eventSource`,
+  retried until the binding materializes — it is `undefined` for a
+  session neither listed nor scoped) and draws durable events as `┃`
+  rows: `┃ 你` (user), `┃ AI` (assistant), `┃✦ 工具` (tool results),
+  `┃⚡ 命令` (command run/done). Window `replace`/`prepend` replays
+  the merged timeline (pty chunks + rows, stable sort by time, pty
+  first on ties); appends draw at arrival, on their own line. A pty
+  replay chunk schedules one coalesced redraw (~150ms) and suppresses
+  row appends meanwhile, so a command's rows never interleave with
+  the prompts its wipe just printed. Reload replays the persisted
+  window the same way.
+
+Notes:
+
+- Phase 7 deviation: the design's plugin-source injection
+  (`agent.inject(createUserMessage({source: {kind: 'plugin'}}))`) is
+  host-only — the client wire always stamps `user`. Implemented
+  client-side as a fenced `[dshell 终端上下文]` block prepended to the
+  user message (verified in the captured request body).
+- The `terminal` view builder from Phase 1/4 stays: it renders
+  nothing and only marks the session as active activity.
+- Composer-targeting note for browser automation: the dock input is
+  the `input[placeholder^="输入命令"]` element; xterm.js also renders
+  a hidden `xterm-helper-textarea` labeled `Terminal input` — typing
+  into that goes to xterm, not the composer.
+
+Acceptance check (verified in the browser):
+
+- Raw ANSI colors: `ls --color=auto /etc` renders blue dirs / cyan
+  symlinks in the canvas (xterm.js, not sanitized plain text).
+- `/clear` from the dock: canvas shows `┃⚡ 命令 clear` +
+  `┃⚡ 命令 终端已清空。` above the fresh prompt; the notice confirms
+  admission; `command/run` + `command/done` land in the event window.
+- Page reload: the persisted session window replays merged — rows
+  above, retained prompt below.
+- Tab completion, ↑/↓ history, Ctrl+C still work end-to-end (raw
+  control chars through the bridge ws → PTY).
+
+Follow-ups: assistant live-chunk streaming rows (transient events
+currently settle into `assistant/message` only on completion);
+canvas-focus mode (design 4.8 — the canvas holds focus in shell
+mode); PTY scrollback persistence across bridge restarts (4.9).
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 

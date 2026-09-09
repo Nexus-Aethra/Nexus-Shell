@@ -158,6 +158,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
+      '@xterm/xterm':
+        specifier: 6.0.0
+        version: 6.0.0
     devDependencies:
       '@types/react':
         specifier: ~18.3.1
@@ -204,6 +207,9 @@ importers:
       '@deepseek-ai/dsh-terminal':
         specifier: link:../../../dsh/packages/terminal/terminal
         version: link:../../../dsh/packages/terminal/terminal
+      node-pty:
+        specifier: link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty
+        version: link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty
       ws:
         specifier: ^8.21.0
         version: 8.21.3
@@ -555,6 +561,9 @@ packages:
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   '@yuku-codegen/binding-android-arm64@0.8.7':
     resolution: {integrity: sha512-C/0zV5IhgVdYhGJTwrY0v8dknxlhiKwtVJkMUaexu9/QvRmzlV4vfU3hZlUSgqc2BxQHntL1mCVbDq8j0FRFDw==}
@@ -1050,6 +1059,8 @@ snapshots:
   '@types/ws@8.18.1':
     dependencies:
       '@types/node': 26.5.0
+
+  '@xterm/xterm@6.0.0': {}
 
   '@yuku-codegen/binding-android-arm64@0.8.7':
     optional: true

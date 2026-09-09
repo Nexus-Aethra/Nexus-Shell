@@ -76,6 +76,7 @@ export class PtyStreamService extends Service {
   })
 
   private readonly histories = new Map<string, SessionHistory>()
+  private readonly chunkListeners = new Set<(sessionId: string, chunk: PtyChunk) => void>()
   private socket: WebSocket | undefined
   /** The session the current socket was opened (or is connecting) for. */
   private socketSession: string | undefined
@@ -94,6 +95,11 @@ export class PtyStreamService extends Service {
     let text = ''
     for (const chunk of history.chunks) text += chunk.text
     return text
+  }
+
+  /** The session's timed chunk list — the canvas merge's PTY side (4.4). */
+  chunks(dshSessionId: string): readonly PtyChunk[] {
+    return this.histories.get(dshSessionId)?.chunks ?? []
   }
 
   /** Switch the connection to one session (undefined disconnects). */
@@ -116,6 +122,21 @@ export class PtyStreamService extends Service {
   send(text: string): void {
     if (this.boundId === undefined || this.socket?.readyState !== WebSocket.OPEN) return
     this.socket.send(JSON.stringify({ kind: 'input', sessionId: this.boundId, text }))
+  }
+
+  /** Resize the bound main PTY (the raw backend honors cols/rows). */
+  resize(cols: number, rows: number): void {
+    if (this.boundId === undefined || this.socket?.readyState !== WebSocket.OPEN) return
+    this.socket.send(JSON.stringify({ kind: 'resize', sessionId: this.boundId, cols, rows }))
+  }
+
+  /**
+   * Subscribe to every ingested chunk, tagged with its session — the
+   * canvas renderer streams frames into the xterm buffer incrementally.
+   */
+  onChunk(listener: (sessionId: string, chunk: PtyChunk) => void): () => void {
+    this.chunkListeners.add(listener)
+    return () => { this.chunkListeners.delete(listener) }
   }
 
   /** Deliver a foreground signal to the bound main PTY. */
@@ -228,6 +249,7 @@ export class PtyStreamService extends Service {
       }
     }
     this.patch({ version: this.state.getSnapshot().version + 1 })
+    for (const listener of [...this.chunkListeners]) listener(dshSessionId, chunk)
   }
 
   private patch(patch: Partial<PtyStreamState>): void {

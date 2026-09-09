@@ -44,13 +44,21 @@ import type {
   ModelProviderGroup,
   ModelSelection,
 } from '@deepseek-ai/dsh-api-session-controller/types'
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type {
+  ISessions,
+  SessionEventLike,
+  SessionEventLikeEntry,
+  SessionEventSource,
+  SessionEventWindow,
+} from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the sessions service merge (ctx.sessions).
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type { PtyStreamService, PtyStreamState } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import { Terminal as XtermTerminal, type ITheme } from '@xterm/xterm'
+import { XTERM_CSS } from './xterm-css.js'
+import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export const name = '@deepseek-ai/dsh-dshell-mode/client'
@@ -90,6 +98,8 @@ interface TerminalDockProps {
   mode: SnapshotStore<SessionMode> | undefined
   /** Per-session PTY history source. */
   pty: PtyStreamService | undefined
+  /** Sessions face: slash-command dispatch, /new, and the 4.4 event merge. */
+  sessions: ISessions
   /** Model chip face; absent with no session. */
   model: ModelChipFace | undefined
   submitShell(text: string): void
@@ -517,7 +527,8 @@ function capUtf8Tail(text: string, maxBytes: number): string {
  * inside the user message with an explicit header instead.)
  */
 function terminalContextBlock(history: string): string {
-  const lines = history.replace(/\n+$/, '').split('\n')
+  const plain = toPlainText(history)
+  const lines = plain.replace(/\n+$/, '').split('\n')
   let end = lines.length
   if (end > 0 && /^[^ ]*[@:][^ ]*[$#] $/.test(lines[end - 1] ?? '')) end -= 1
   let start = 0
@@ -534,36 +545,279 @@ function terminalContextBlock(history: string): string {
   return `[dshell 终端上下文] 用户 main 终端最近一次命令的输入与输出:\n\`\`\`\n${capped}\n\`\`\``
 }
 
-function PtyScrollback(props: { pty: PtyStreamService; sessionId: SessionId | undefined }): ReactElement {
+/** Collapse readline's backspace redraws; also strip raw ANSI for plain text. */
+function toPlainText(text: string): string {
+  const withoutAnsi = text.replace(OSC_DS_PROBE, '').replace(/\u0007/g, '')
+    .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g, '')
+  return collapseBackspaces(withoutAnsi)
+}
+
+let xtermCssInjected = false
+
+/** The combo loader serves one client.js per plugin — inject the stylesheet at runtime. */
+function injectXtermCss(): void {
+  if (xtermCssInjected) return
+  xtermCssInjected = true
+  const style = document.createElement('style')
+  style.textContent = XTERM_CSS
+  document.head.append(style)
+}
+
+/** Map a dock theme palette onto the xterm renderer. */
+function xtermTheme(theme: Theme): ITheme {
+  return {
+    background: theme.bg,
+    foreground: theme.text,
+    cursor: theme.accent,
+    cursorAccent: theme.bg,
+    selectionBackground: theme.accentFaint,
+    selectionForeground: theme.text,
+  }
+}
+
+/** A durable session event worth drawing into the canvas (4.4 merge). */
+interface SessionRow {
+  readonly role: 'user' | 'assistant' | 'tool' | 'command'
+  readonly text: string
+}
+
+function messageText(content: readonly unknown[] | undefined): string {
+  return (content ?? [])
+    .map((block) => typeof block === 'object' && block !== null && 'text' in block
+      ? String((block as { text: unknown }).text)
+      : '')
+    .join('')
+}
+
+/** Extract one displayable row from a durable Session event. */
+function sessionRowOf(event: SessionEventLike): SessionRow | null {
+  if (event.type === 'user/message') {
+    const text = messageText(event.data.content)
+    // The Phase 7 context block rides inside the user message; show only
+    // the user's own words beneath it.
+    const stripped = /^\[dshell 终端上下文\][\s\S]*?```\n([\s\S]*)$/.exec(text)
+    const own = stripped === null ? text : (stripped[1] ?? '')
+    return own.trim().length === 0 ? null : { role: 'user', text: own }
+  }
+  if (event.type === 'assistant/message') return { role: 'assistant', text: messageText(event.data.message.content) }
+  if (event.type === 'tool/result') return { role: 'tool', text: messageText(event.data.message.content) }
+  if (event.type === 'command/done') {
+    const outcome = event.data.kind === 'error' ? `失败:${event.data.text ?? ''}` : (event.data.text ?? '')
+    return { role: 'command', text: `${outcome}`.trim().length === 0 ? '完成' : `${outcome}` }
+  }
+  if (event.type === 'command/run') return { role: 'command', text: `${event.data.args === undefined || event.data.args === '' ? event.data.name : `${event.data.name} ${event.data.args}`}` }
+  return null
+}
+
+const SESSION_ROW_COLOR: Record<SessionRow['role'], string> = {
+  user: '\u001b[36m',
+  assistant: '\u001b[90m',
+  tool: '\u001b[90m',
+  command: '\u001b[33m',
+}
+
+/** Draw one session row as dimmed `┃`-margined lines (design 4.4). */
+function writeSessionRow(term: XtermTerminal, row: SessionRow): void {
+  const color = SESSION_ROW_COLOR[row.role]
+  const label = row.role === 'user' ? '┃ 你' : row.role === 'assistant' ? '┃ AI' : row.role === 'tool' ? '┃✦ 工具' : '┃⚡ 命令'
+  const lines = row.text.replace(/\n+$/, '').split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const head = i === 0 ? `${color}${label}${'\u001b[0m'}` : `${color}┃${'\u001b[0m'}`
+    term.write(`${head} ${lines[i] ?? ''}\r\n`)
+  }
+}
+
+/** The xterm.js canvas: raw ANSI stream + session events merged (4.4). */
+function PtyCanvas(props: {
+  pty: PtyStreamService
+  sessions: ISessions
+  sessionId: SessionId | undefined
+  theme: Theme
+}): ReactElement {
   const ref = useRef<HTMLDivElement | null>(null)
-  // Re-render on every bridge store change so the latest PTY chunk shows.
-  useSyncExternalStore<PtyStreamState>(
-    props.pty.state.subscribe,
-    () => props.pty.state.getSnapshot(),
-  )
-  const sessionId = props.sessionId
-  const text = sessionId === undefined ? '' : props.pty.read(String(sessionId))
-  const cleaned = text.length === 0
-    ? ''
-    : collapseBackspaces(text.replace(OSC_DS_PROBE, '').replace(/\u0007/g, ''))
+  const termRef = useRef<XtermTerminal | null>(null)
+  const probeRef = useRef<HTMLSpanElement | null>(null)
+  const sizeRef = useRef<{ cols: number; rows: number } | undefined>(undefined)
+  const sessionIdRef = useRef<string | undefined>(undefined)
+  const theme = props.theme
+  const [eventSource, setEventSource] = useState<SessionEventSource | undefined>(undefined)
+
+  // The binding (and its event window) materializes shortly after a session
+  // opens; retry until it lands, and drop it when the session closes.
+  useEffect(() => {
+    if (props.sessionId === undefined) {
+      setEventSource(undefined)
+      return
+    }
+    const id = props.sessionId
+    const tryBind = (): boolean => {
+      try {
+        const binding = props.sessions.binding(id)
+        if (binding === undefined) return false
+        setEventSource(binding.eventSource)
+        return true
+      } catch {
+        return false
+      }
+    }
+    if (tryBind()) return
+    const timer = setInterval(() => {
+      if (tryBind()) clearInterval(timer)
+    }, 500)
+    return () => clearInterval(timer)
+  }, [props.sessions, props.sessionId])
+
+  // Create the terminal once; the container owns it for the dock's lifetime.
   useEffect(() => {
     const el = ref.current
     if (el === null) return
-    // Anchor at the top while content fits the viewport — the prompt and
-    // first lines stay flush under the session header instead of floating
-    // mid-screen. Once content overflows, scrollHeight > clientHeight and
-    // pinning to the bottom kicks in (standard terminal tail-follow).
-    if (el.scrollHeight > el.clientHeight) {
-      el.scrollTop = el.scrollHeight
-    } else {
-      el.scrollTop = 0
+    injectXtermCss()
+    const term = new XtermTerminal({
+      fontFamily: "'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas, 'Courier New', monospace",
+      fontSize: 13,
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: xtermTheme(theme),
+    })
+    termRef.current = term
+    term.open(el)
+    const fit = (): void => {
+      const probe = probeRef.current
+      if (probe === null) return
+      const probeBox = probe.getBoundingClientRect()
+      const charWidth = probeBox.width / 40
+      const lineHeight = probeBox.height
+      const cols = Math.max(20, Math.floor(el.clientWidth / charWidth) - 1)
+      const rows = Math.max(6, Math.floor(el.clientHeight / lineHeight))
+      const size = sizeRef.current
+      if (size !== undefined && size.cols === cols && size.rows === rows) return
+      sizeRef.current = { cols, rows }
+      term.resize(cols, rows)
+      props.pty.resize(cols, rows)
     }
-  }, [cleaned])
-  const empty = cleaned.length === 0
-    ? (sessionId === undefined ? '新建会话后开始' : '正在连接终端…')
-    : null
-  return createElement('div', { ref, style: scrollStyle },
-    empty ?? cleaned)
+    const observer = new ResizeObserver(fit)
+    observer.observe(el)
+    fit()
+    const offChunk = props.pty.onChunk((sessionId, chunk) => {
+      if (sessionId !== sessionIdRef.current) return
+      if (chunk.replay) {
+        // A replay means retention slid (clear, resync). The same command
+        // also emits session events that may land just after this chunk;
+        // hold row appends briefly, then redraw the merged timeline once
+        // so rows don't interleave with the freshly printed prompts.
+        replayPendingRef.current = true
+        if (replayTimerRef.current !== undefined) clearTimeout(replayTimerRef.current)
+        const replay = mergedReplayRef.current
+        replayTimerRef.current = window.setTimeout(() => {
+          replayTimerRef.current = undefined
+          replayPendingRef.current = false
+          if (replay !== undefined) replay()
+          else {
+            term.reset()
+            term.write(chunk.text)
+          }
+        }, 150)
+      } else {
+        term.write(chunk.text)
+      }
+    })
+    return () => {
+      offChunk()
+      observer.disconnect()
+      if (replayTimerRef.current !== undefined) clearTimeout(replayTimerRef.current)
+      term.dispose()
+      termRef.current = null
+      sessionIdRef.current = undefined
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the pty service and theme are stable for the dock
+  }, [])
+
+  // Session switch: reset the buffer and replay the new session's history.
+  useEffect(() => {
+    const term = termRef.current
+    if (term === null) return
+    const key = props.sessionId === undefined ? undefined : String(props.sessionId)
+    sessionIdRef.current = key
+    term.reset()
+    if (key !== undefined) term.write(props.pty.read(key))
+  }, [props.sessionId, props.pty])
+
+  // Theme follows the dock's palette.
+  useEffect(() => {
+    const term = termRef.current
+    if (term !== null) term.options.theme = xtermTheme(theme)
+  }, [theme])
+
+  // Design 4.4 merge: durable session events draw as dimmed ┃ rows. Window
+  // replace/prepend (page load, history load) replays the full merged
+  // timeline — pty chunks and session rows stable-sorted by time, pty first
+  // on ties; an appended event draws at its arrival position (live order).
+  // A pty replay (clear, resync) redraws the same merged timeline instead of
+  // a pty-only reset, or it would erase rows appended before the wipe.
+  const mergedReplayRef = useRef<(() => void) | undefined>(undefined)
+  const replayPendingRef = useRef(false)
+  const replayTimerRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    const term = termRef.current
+    if (term === null || eventSource === undefined) return
+    let watermark = 0
+    const mergedReplay = (entries: readonly SessionEventLikeEntry[]): void => {
+      const id = sessionIdRef.current
+      if (id === undefined) return
+      term.reset()
+      const rows: { time: number; kind: 'pty' | 'session'; payload: string | SessionRow }[] = []
+      for (const chunk of props.pty.chunks(id)) {
+        if (chunk.text.length === 0) continue
+        rows.push({ time: chunk.time, kind: 'pty', payload: chunk.text })
+      }
+      for (const entry of entries) {
+        if (entry.type !== 'event') continue
+        const row = sessionRowOf(entry.event)
+        if (row === null) continue
+        rows.push({ time: entry.event.time, kind: 'session', payload: row })
+      }
+      rows.sort((a, b) => a.time - b.time || (a.kind === 'pty' ? -1 : 1))
+      for (const item of rows) {
+        if (item.kind === 'pty') term.write(item.payload as string)
+        else writeSessionRow(term, item.payload as SessionRow)
+      }
+    }
+    mergedReplayRef.current = () => { mergedReplay(eventSource.getSnapshot().entries) }
+    const render = (win: SessionEventWindow): void => {
+      if (win.change.kind === 'replace' || win.change.kind === 'prepend') {
+        watermark = 0
+        mergedReplay(win.entries)
+      } else {
+        for (const entry of win.entries) {
+          const seq = entry.event.seq
+          if (seq <= watermark) continue
+          watermark = seq
+          if (entry.type !== 'event') continue
+          const row = sessionRowOf(entry.event)
+          if (row !== null) {
+            // While a replay redraw is pending the row belongs to the same
+            // transaction as the wipe — the redraw draws it in time order.
+            if (replayPendingRef.current) continue
+            // The cursor usually sits mid-line (after a live prompt); rows
+            // are log entries and always start on their own line.
+            if (term.buffer.active.cursorX > 0) term.write('\r\n')
+            writeSessionRow(term, row)
+          }
+        }
+      }
+    }
+    render(eventSource.getSnapshot())
+    return eventSource.subscribe(() => { render(eventSource.getSnapshot()) })
+  }, [eventSource, props.pty])
+
+  return createElement('div', { ref, style: { ...scrollStyle, position: 'relative' } },
+    createElement('span', {
+      ref: probeRef,
+      style: {
+        position: 'absolute', visibility: 'hidden', whiteSpace: 'pre',
+        font: "13px 'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas, 'Courier New', monospace",
+      },
+    }, 'W'.repeat(40)))
 }
 
 /** The fused terminal surface: PTY scrollback above, input line at the bottom. */
@@ -670,7 +924,7 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
 
   return createElement('div', { ref: rootRef, style: rootStyle, 'data-dshell-dock': '' },
     props.pty !== undefined
-      ? createElement(PtyScrollback, { pty: props.pty, sessionId: props.sessionId })
+      ? createElement(PtyCanvas, { pty: props.pty, sessions: props.sessions, sessionId: props.sessionId, theme })
       : createElement('div', { style: { ...scrollStyle, color: 'var(--dshell-muted)' } }, '正在加载终端…'),
     createElement('div', { style: inputBarStyle },
       createElement('button', {
@@ -791,6 +1045,7 @@ export function apply(ctx: Context): void {
         sessionId,
         mode: sessionId === undefined ? undefined : modeFor(sessionId),
         pty,
+        sessions,
         model: sessionId === undefined ? undefined : modelSeat(sessionId),
         submitShell: (text: string) => { pty.send(text.length === 0 ? '\r' : `${text}\r`) },
         submitAgent: async (text: string) => {

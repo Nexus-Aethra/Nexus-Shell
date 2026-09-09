@@ -22,12 +22,10 @@
 
     - id: dshell-terminal-bash
       name: '@deepseek-ai/dsh-terminal-bash'
-      # dshell main shells run a custom bash PS1, which permanently disables
-      # dsh's prompt-text fast settle (promptTextSeen needs the stock
-      # `dsh> ` cue after the marker). Sends would otherwise hold the
-      # exclusive startSend slot until the 3s inferred_idle timeout,
-      # spacing back-to-back commands seconds apart. A 300ms silence with
-      # the minimal handoff grace settles each send in ~350ms.
+      # Since the raw-pty canvas (roadmap Phase 5) the main shells no
+      # longer run through this row — it backs the agent's terminal_send
+      # sessions. The tuned settle (~350ms instead of dsh's 3s
+      # inferred_idle) keeps back-to-back agent tool calls from crawling.
       config:
         idleSilenceMs: 300
         handoffGraceMs: 50

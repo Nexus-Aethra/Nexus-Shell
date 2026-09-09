@@ -2,7 +2,7 @@
   "name": "@deepseek-ai/dsh-dshell-terminal-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "dshell terminal bridge: owns the bridge-named `main` PTY per session, exposes /dshell/pty ws upgrade route, and hosts the PtyBuffer service consumed by dshell-mode and dshell-commands.",
+  "description": "dshell terminal bridge: owns the bridge-named `main` PTY per session through its raw node-pty backend (type dshell-pty), exposes /dshell/pty ws upgrade route, and hosts the PtyBuffer service consumed by dshell-mode and dshell-commands.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -40,6 +40,7 @@
     "@deepseek-ai/dsh-host-webserver": "link:../../../dsh/packages/host/webserver",
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
     "@deepseek-ai/dsh-terminal": "link:../../../dsh/packages/terminal/terminal",
+    "node-pty": "link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty",
     "ws": "^8.21.0"
   },
   "devDependencies": {

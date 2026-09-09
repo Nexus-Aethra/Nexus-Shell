@@ -32,6 +32,7 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 // upgrade auth) and the agents service merge (ctx.agents) into the program.
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { PtyBuffer } from './buffer.js'
+import { DshellPtyBackend, type DshellPtySession } from './pty.js'
 
 export { DEFAULT_PTY_BUFFER_OPTIONS, PtyBuffer } from './buffer.js'
 
@@ -44,15 +45,14 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Poll interval for the backend scrollback tail loop. */
-const TAIL_INTERVAL_MS = 200
-/** Read bound per tick: the full retained scrollback (dsh caps at maxReadBytes). */
-const TAIL_READ_LINES = 100_000
-
 /** dshell PTY log directory: $DSH_HOME/dshell-pty. */
 export function ptyLogDir(): string {
   return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dshell-pty')
 }
+
+/** Default canvas size for a spawned main shell; the browser resizes it. */
+const DEFAULT_PTY_COLS = 160
+const DEFAULT_PTY_ROWS = 40
 
 interface MainRecord {
   agent: Agent
@@ -60,21 +60,16 @@ interface MainRecord {
   dshSessionId: string
   /** PTY id inside ctx.terminals (per boot). */
   ptyId: TerminalSessionId
+  /** The backend's rich handle: raw output push, exit push, resize. */
+  session: DshellPtySession
   buffer: PtyBuffer
-  /**
-   * Full retained backend scrollback as of the last sync — the content
-   * cursor. dsh's scrollback is a mutating stream (the trailing prompt
-   * is a partial line that grows in place, echo completion rewrites the
-   * last line), so line-index cursors double-count it; prefix diffs of
-   * the text do not.
-   */
-  backendText: string
-  tailTimer: NodeJS.Timeout | undefined
-  tailBusy: boolean
   activeSend: TerminalSendOperation | undefined
   inputQueue: string[]
-  /** Init echo is scrubbed and broadcasts suppressed until the first settle. */
+  /** Init echo is scrubbed and output suppressed until the first settle. */
   initializing: boolean
+  /** Push-subscription disposers, released in dropMain. */
+  stopOutput: () => void
+  stopExit: () => void
 }
 
 export class DshellTerminalBridge extends Service {
@@ -88,9 +83,16 @@ export class DshellTerminalBridge extends Service {
   readonly promptUser = safeShellWord(userInfo().username)
   readonly promptHost = safeShellWord(hostname())
 
+  /** The backend's rich handle (raw push, exit push, resize) for its sessions. */
+  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS)
+
   constructor(ctx: Context) {
     super(ctx, 'dshellTerminalBridge')
-    ctx.effect(() => () => { void this.disposeAll() }, 'dshell-bridge: teardown')
+    ctx.effect(() => this.ctx.terminals.registerBackend(this.backend), 'dshell-bridge: raw pty backend')
+    ctx.effect(() => () => {
+      this.backend.dispose()
+      void this.disposeAll()
+    }, 'dshell-bridge: teardown')
     ctx.inject(['webServer', 'connection'], (webCtx) => {
       const wss = new WebSocketServer({ noServer: true })
       const route: WebUpgradeRoute = {
@@ -134,43 +136,54 @@ export class DshellTerminalBridge extends Service {
   private async spawnMain(agent: Agent, dshSessionId: string): Promise<MainRecord> {
     const cwd = agent.session?.header?.cwd
     const spawned = await this.ctx.terminals.spawn(agent, {
-      type: 'shell',
+      type: 'dshell-pty',
       name: 'main',
       ...(cwd === undefined || cwd === '' ? {} : { cwd }),
     })
+    const session = this.backend.session(spawned.sessionId)
+    if (session === undefined) {
+      throw new Error(`dshell-bridge: backend session missing after spawn (${String(spawned.sessionId)})`)
+    }
     const buffer = await PtyBuffer.open(join(ptyLogDir(), `${dshSessionId}.log`))
     const record: MainRecord = {
       agent,
       dshSessionId,
       ptyId: spawned.sessionId,
+      session,
       buffer,
-      backendText: '',
-      tailTimer: undefined,
-      tailBusy: false,
       activeSend: undefined,
       inputQueue: [],
       initializing: true,
+      stopOutput: () => {},
+      stopExit: () => {},
     }
     this.mains.set(agent, record)
-    this.startTail(record)
-    // Replace dsh's stock `dsh> ` prompt with a bash-style `user@host:path$`
-    // cue once the shell is ready. dsh's terminal-bash backend hardcodes
-    // PS1 and its PROMPT_COMMAND re-asserts it after every prompt render,
-    // so both are rewritten together. The command text carries only
-    // backslash-literal escapes (\u \h \w \033): dsh's input sanitizer
-    // strips raw ESC bytes, while bash expands the literals at render/run
-    // time. Runs before any user input; queued input serializes behind it.
+    // Raw ANSI push: every output byte lands in the persisted buffer and on
+    // the wire untouched — the canvas renders it natively. Suppressed while
+    // the init echo is pending so a fresh session opens on a clean slate.
+    record.stopOutput = session.onOutput((chunk) => {
+      if (record.initializing) return
+      record.buffer.append(chunk)
+      this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
+    })
+    record.stopExit = session.onExit((status) => {
+      const reason = status.kind === 'exited' ? `exit code ${String(status.exitCode)}` : 'closed'
+      this.broadcast(record.dshSessionId, { kind: 'closed', reason })
+      void this.dropMain(record)
+    })
+    // Replace the stock `dsh> ` prompt with a bash-style `user@host:path$`
+    // cue once the shell is ready; PS1 and PROMPT_COMMAND are rewritten in
+    // one line so no render window can clobber it, and the backend's fast
+    // settle keys off the marker this PROMPT_COMMAND prints.
     this.runInit(record)
     return record
   }
 
   /** Queue the prompt-rewrite init and wipe its setup echo from the scrollback. */
   private runInit(record: MainRecord): void {
-    // ONE line: dsh's stock PROMPT_COMMAND re-asserts PS1='dsh> ' on every
-    // prompt render, so a multi-line batch races — the prompt between line 1
-    // (PS1) and line 2 (PROMPT_COMMAND) resets PS1 back. Joining with `; `
-    // leaves no render window, and the new PROMPT_COMMAND re-asserts from a
-    // dedicated variable so the prompt survives any later clobber.
+    // ONE line: the PROMPT_COMMAND re-asserts PS1 from a dedicated variable
+    // on every prompt render, so the prompt survives any clobber and the
+    // settle marker stays live. Real ESC bytes are safe on this backend.
     const init = [
       `export DSHELL_PS1='\\u@\\h:\\w\\$ '; export PS1="$DSHELL_PS1"; export PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?"; PS1="$DSHELL_PS1"'`,
       'clear',
@@ -181,12 +194,9 @@ export class DshellTerminalBridge extends Service {
     void operation.done.then(() => {
       record.activeSend = undefined
       record.initializing = false
-      // The init echo (export line + clear) never deserves screen space,
-      // and the prompt the shell already printed is part of the pre-slate
-      // backend text: mark it consumed, reset the buffer and every client
-      // history, then re-issue a prompt with an empty line so the user
-      // opens on a fresh `user@host:path$ ` cue.
-      record.backendText = this.readAll(record)
+      // The init echo (export line + clear) never deserves screen space:
+      // reset the buffer and every client history, then re-issue a prompt
+      // with an empty line so the user opens on a fresh cue.
       void record.buffer.truncate()
       this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
       record.inputQueue.push('\n')
@@ -198,21 +208,11 @@ export class DshellTerminalBridge extends Service {
     })
   }
 
-  /**
-   * Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the
-   * active send). `clear`/`cls` also truncate the bridge buffer: dsh's
-   * sanitizer strips the ANSI clear-screen sequence from scrollback, so
-   * the visual clear only happens if the bridge performs it.
-   */
+  /** Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the active send). */
   feed(dshSessionId: string, text: string): void {
     void this.ensureMainShell(dshSessionId).then((record) => {
       if (text === '\u0003' && record.activeSend !== undefined) {
         record.activeSend.cancel()
-        return
-      }
-      const command = text.trim()
-      if (command === 'clear' || command === 'cls') {
-        this.performClear(record)
         return
       }
       record.inputQueue.push(text)
@@ -223,9 +223,9 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
-   * `/clear` command entry: wipe one session's main-shell history. dsh's
-   * sanitizer strips the ANSI clear-screen sequence, so the visual clear
-   * only happens here.
+   * `/clear` command entry: wipe one session's main-shell history (the
+   * in-terminal `clear` command now clears the canvas natively; /clear
+   * additionally drops the persisted scrollback).
    */
   async clearSession(dshSessionId: string): Promise<void> {
     const record = await this.ensureMainShell(dshSessionId)
@@ -243,13 +243,10 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
-   * Wipe the visible history and re-issue a prompt: mark everything the
-   * backend currently holds as consumed, reset the buffer and client
-   * histories, then queue an empty line so bash renders a fresh
-   * `user@host:path$ ` cue.
+   * Reset the buffer and client histories, then queue an empty line so
+   * bash renders a fresh `user@host:path$ ` cue (the `/clear` path).
    */
   private performClear(record: MainRecord): void {
-    record.backendText = this.readAll(record)
     void record.buffer.truncate()
     this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
     record.inputQueue.push('\n')
@@ -285,74 +282,17 @@ export class DshellTerminalBridge extends Service {
     }
   }
 
-  /**
-   * Poll backend scrollback for new content and fan it out. The cursor is
-   * the full retained text of the previous tick: dsh's scrollback mutates
-   * in place (the trailing prompt is a partial line that grows, echo
-   * completion extends the last line), so a prefix extension is the delta;
-   * anything else means retention slid under the cursor and both the
-   * window and every client resync from the retained tail.
-   */
-  private startTail(record: MainRecord): void {
-    const tick = async (): Promise<void> => {
-      if (record.tailBusy) return
-      record.tailBusy = true
-      try {
-        const snapshot = this.ctx.terminals.list(record.agent)
-          .find(item => item.sessionId === record.ptyId)
-        if (snapshot === undefined) throw new Error('main PTY vanished')
-        const fresh = this.readAll(record)
-        // The init echo is scrubbed wholesale at first settle: until then
-        // the tail only advances the cursor, streaming nothing.
-        if (record.initializing) {
-          record.backendText = fresh
-        } else if (fresh !== record.backendText) {
-          if (fresh.startsWith(record.backendText)) {
-            const delta = fresh.slice(record.backendText.length)
-            if (delta.length > 0) {
-              record.buffer.append(delta)
-              this.broadcast(record.dshSessionId, { kind: 'output', chunk: delta, time: Date.now() })
-            }
-          } else {
-            record.buffer.resync(fresh)
-            this.broadcast(record.dshSessionId, {
-              kind: 'output', chunk: fresh, time: Date.now(), replay: true,
-            })
-          }
-          record.backendText = fresh
-        }
-        if (snapshot.status.kind === 'exited') {
-          this.broadcast(record.dshSessionId, {
-            kind: 'closed',
-            reason: `exit code ${String(snapshot.status.exitCode)}`,
-          })
-          await this.dropMain(record)
-        }
-      } catch {
-        // The PTY or its owner is gone: stop tailing.
-        await this.dropMain(record)
-      } finally {
-        record.tailBusy = false
-      }
-    }
-    record.tailTimer = setInterval(() => { void tick() }, TAIL_INTERVAL_MS)
-  }
-
-  /** The retained backend scrollback, oldest first (tail-capped by dsh). */
-  private readAll(record: MainRecord): string {
-    return this.ctx.terminals.read(record.agent, record.ptyId, { offset: 0, count: TAIL_READ_LINES }).text
-  }
-
   private async dropMain(record: MainRecord): Promise<void> {
-    if (record.tailTimer !== undefined) clearInterval(record.tailTimer)
-    record.tailTimer = undefined
+    record.stopOutput()
+    record.stopExit()
     await record.buffer.close().catch(() => {})
     this.mains.delete(record.agent)
   }
 
   private async disposeAll(): Promise<void> {
     for (const record of [...this.mains.values()]) {
-      if (record.tailTimer !== undefined) clearInterval(record.tailTimer)
+      record.stopOutput()
+      record.stopExit()
       await record.buffer.close().catch(() => {})
     }
     this.mains.clear()
@@ -362,7 +302,7 @@ export class DshellTerminalBridge extends Service {
 
   private attachClient(client: WebSocket): void {
     client.on('message', (data: unknown) => {
-      let frame: { kind?: string; sessionId?: string; text?: string; signal?: string }
+      let frame: { kind?: string; sessionId?: string; text?: string; signal?: string; cols?: number; rows?: number }
       try {
         frame = JSON.parse(String(data)) as typeof frame
       } catch {
@@ -384,8 +324,14 @@ export class DshellTerminalBridge extends Service {
             console.warn('dshell-bridge: signal failed:', error)
           })
         }
+        return
       }
-      // `resize` is accepted and ignored: rows/cols are fixed at spawn (§ 5).
+      // Resize is real on the raw backend: the browser canvas drives cols/rows.
+      if (frame.kind === 'resize' && typeof frame.cols === 'number' && typeof frame.rows === 'number') {
+        void this.ensureMainShell(bound).then((record) => {
+          record.session.resize(Math.floor(frame.cols as number), Math.floor(frame.rows as number))
+        }, () => {})
+      }
     })
     client.on('close', () => {
       const bound = this.boundSession.get(client)

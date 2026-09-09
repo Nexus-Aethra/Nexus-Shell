@@ -24,6 +24,8 @@ interface DshellClientBundleConfig {
   sourcemap: boolean
   clean: false
   external: string[]
+  /** Dependency specifiers to force-inline (rolldown auto-externals deps). */
+  noExternal: string[]
   outputOptions: {
     entryFileNames: string
     sourcemapExcludeSources: false
@@ -37,11 +39,15 @@ interface DshellClientBundleConfig {
  * Build the client bundle config for one dshell package.
  * @param id - package name; stamped into the __ModuleLoader__.load handoff.
  * @param entry - tsc-emitted JS entry for the browser face (lib/client/index.js).
+ * @param inline - dependency specifiers to bundle instead of `require`-ing:
+ *   the combo loader's require only knows the dsh platform modules, so any
+ *   runtime dependency outside that table must be inlined here.
  * @returns tsdown config emitting lib/client.js in the closure format.
  */
 export function dshellClientBundle(
   id: string,
   entry = 'lib/client/index.js',
+  inline: string[] = [],
 ): DshellClientBundleConfig {
   return {
     entry: { client: entry },
@@ -58,6 +64,7 @@ export function dshellClientBundle(
     // another runtime import; type-only imports are erased by tsc before
     // this bundler runs.
     external: ['react', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store'],
+    noExternal: inline,
     outputOptions: {
       entryFileNames: 'client.js',
       sourcemapExcludeSources: false,
