@@ -77,10 +77,11 @@ export class PtyStreamService extends Service {
 
   private readonly histories = new Map<string, SessionHistory>()
   private socket: WebSocket | undefined
+  /** The session the current socket was opened (or is connecting) for. */
+  private socketSession: string | undefined
   private desiredId: string | undefined
   private boundId: string | undefined
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
-  private intentionalClose = false
 
   constructor(ctx: Context) {
     super(ctx, 'dshellPtyStream')
@@ -102,7 +103,12 @@ export class PtyStreamService extends Service {
       this.closeSocket()
       return
     }
-    if (this.boundId === dshSessionId && this.socket?.readyState === WebSocket.OPEN) return
+    // Idempotent while the socket for this session is still connecting or
+    // open: sessions.list churns several times around a session switch and
+    // a redundant open would leave two live sockets feeding one history.
+    const socket = this.socket
+    if (socket !== undefined && this.socketSession === dshSessionId
+      && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return
     this.openSocket(dshSessionId)
   }
 
@@ -124,10 +130,15 @@ export class PtyStreamService extends Service {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${location.host}/dshell/pty`)
     this.socket = socket
+    this.socketSession = dshSessionId
     socket.onopen = () => {
       socket.send(JSON.stringify({ kind: 'bind', sessionId: dshSessionId }))
     }
     socket.onmessage = (event) => {
+      // A superseded socket (handover already moved on) must never feed
+      // history: the server may still deliver to it while its close
+      // handshake finishes.
+      if (this.socket !== socket) return
       let frame: WireFrame
       try {
         frame = JSON.parse(String(event.data)) as WireFrame
@@ -164,9 +175,14 @@ export class PtyStreamService extends Service {
       }
     }
     socket.onclose = () => {
+      // Only the current socket owns teardown and reconnection; a
+      // superseded socket's close (handover or deliberate disconnect)
+      // must not clear live state or schedule a reconnect.
+      if (this.socket !== socket) return
       this.socket = undefined
+      this.socketSession = undefined
       this.boundId = undefined
-      if (this.desiredId === undefined || this.intentionalClose) return
+      if (this.desiredId === undefined) return
       this.patch({ status: 'closed' })
       if (this.reconnectTimer !== undefined) return
       this.reconnectTimer = setTimeout(() => {
@@ -175,20 +191,20 @@ export class PtyStreamService extends Service {
       }, RECONNECT_DELAY_MS)
     }
     socket.onerror = () => {
+      if (this.socket !== socket) return
       this.patch({ status: 'error' })
     }
   }
 
   private closeSocket(): void {
-    this.intentionalClose = true
     this.socket?.close()
     this.socket = undefined
+    this.socketSession = undefined
     this.boundId = undefined
     if (this.reconnectTimer !== undefined) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined
     }
-    this.intentionalClose = false
   }
 
   /** Ingest one wire chunk into the session's history (replay resets it). */

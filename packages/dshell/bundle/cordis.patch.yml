@@ -22,6 +22,15 @@
 
     - id: dshell-terminal-bash
       name: '@deepseek-ai/dsh-terminal-bash'
+      # dshell main shells run a custom bash PS1, which permanently disables
+      # dsh's prompt-text fast settle (promptTextSeen needs the stock
+      # `dsh> ` cue after the marker). Sends would otherwise hold the
+      # exclusive startSend slot until the 3s inferred_idle timeout,
+      # spacing back-to-back commands seconds apart. A 300ms silence with
+      # the minimal handoff grace settles each send in ~350ms.
+      config:
+        idleSilenceMs: 300
+        handoffGraceMs: 50
 
     - id: dshell-tool-terminal
       name: '@deepseek-ai/dsh-tool-terminal'

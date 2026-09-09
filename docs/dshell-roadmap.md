@@ -212,6 +212,49 @@ Acceptance check (current state — see screenshot in conversation):
 - Model chip lists the shared directory and updates selection in
   sync with `/model`.
 
+### 4.x Shell-interaction mechanics (hard-won constraints)
+
+- **Tail sync is content-based, not line-indexed.** dsh's scrollback is
+  a mutating stream: the trailing prompt is a partial line that grows
+  in place, echo completion rewrites the last line, and `split('\n')`
+  counts all of it. A seen-lines cursor double-consumes the prompt line
+  (prompts and commands duplicated) and consumes phantom empty lines
+  (echoes lost). The bridge now keeps the full retained scrollback text
+  of the previous tick (`backendText`) and broadcasts the prefix
+  extension as the delta; any non-prefix change (retention slid under
+  the 256KB read cap) resyncs the window and clients with a replay.
+- **`clear` and init never rely on bash's ANSI clear** — the
+  TerminalSanitizer strips it from scrollback. The bridge marks the
+  current backend text consumed, truncates its buffer, broadcasts a
+  replay reset, and re-issues a prompt with an empty line, so `clear`
+  and every fresh session open on a clean slate with a live
+  `user@host:path$ ` cue. The init echo is additionally suppressed
+  from streaming until the first send settles.
+- **Readline keys the browser would swallow are mapped in the dock:**
+  Tab → `\t` (completion), ArrowUp/Down → `\x10`/`\x0e` (history, no
+  ESC bytes — those never survive the PTY input path), Ctrl+C →
+  `signalForeground(SIGINT)`. readline redraws erase with backspace
+  bytes; `PtyScrollback` collapses them for plain rendering.
+- **Send settle with a custom PS1:** dsh's fast settle needs the stock
+  `dsh> ` cue after the OSC 133;D marker (`promptTextSeen`); a custom
+  PS1 disables it permanently, so sends would hold the exclusive
+  startSend slot until the 3s `inferred_idle` timeout and back-to-back
+  commands crawl. The bundle patch pins the dshell-terminal-bash row to
+  `idleSilenceMs: 300` / `handoffGraceMs: 50` (~350ms settle, ~700ms
+  back-to-back). A dsh-side relaxation (or prompt-marker awareness of a
+  custom PS1) could restore the ~100ms path.
+- **The ws client must guard socket handover:** `sessions.list` churns
+  several times around a session switch, and a redundant `openSocket`
+  used to leave two live sockets feeding one history (every frame
+  ingested twice). `bind` is idempotent while the session's socket is
+  connecting/open, and a superseded socket's frames/closes are ignored.
+- **Dev-workflow trap:** composite `tsbuildinfo` caching silently skips
+  tsc/tsdown emit — a rebuilt lib can stay stale (the browser then runs
+  old client code and everything looks "already broken"). When in doubt
+  `rm -rf packages/dshell/*/lib packages/dshell/*/tsbuildinfo lib types`
+  and `pnpm build` fresh; verify the change actually landed in
+  `lib/client.js` before restarting dsh.
+
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 
 Goal: the three dsh commands that dshell exposes are real

@@ -479,6 +479,16 @@ function ModelChip(props: { face: ModelChipFace }): ReactElement {
 }
 
 /** Auto-scrolling PTY pane: only pins to the bottom when content overflows. */
+/** readline redraws erase the line with backspaces; collapse them for plain rendering. */
+function collapseBackspaces(text: string): string {
+  let out = ''
+  for (const ch of text) {
+    if (ch === '\b') out = out.slice(0, -1)
+    else out += ch
+  }
+  return out
+}
+
 function PtyScrollback(props: { pty: PtyStreamService; sessionId: SessionId | undefined }): ReactElement {
   const ref = useRef<HTMLDivElement | null>(null)
   // Re-render on every bridge store change so the latest PTY chunk shows.
@@ -488,7 +498,9 @@ function PtyScrollback(props: { pty: PtyStreamService; sessionId: SessionId | un
   )
   const sessionId = props.sessionId
   const text = sessionId === undefined ? '' : props.pty.read(String(sessionId))
-  const cleaned = text.length === 0 ? '' : text.replace(OSC_DS_PROBE, '').replace(/\u0007/g, '')
+  const cleaned = text.length === 0
+    ? ''
+    : collapseBackspaces(text.replace(OSC_DS_PROBE, '').replace(/\u0007/g, ''))
   useEffect(() => {
     const el = ref.current
     if (el === null) return
@@ -603,6 +615,30 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
           if (event.key === 'Enter') {
             event.preventDefault()
             submit()
+            return
+          }
+          if (mode !== 'shell' || props.sessionId === undefined || props.pty === undefined) return
+          // Readline bindings the browser input would otherwise swallow:
+          // Tab completes on the shell, Up/Down walk history via C-p/C-n
+          // (no ESC bytes — those never survive the PTY input path),
+          // Ctrl+C interrupts the foreground job (terminal convention
+          // beats copy). Recalled lines replace the box's text, matching
+          // readline's line replacement.
+          if (event.key === 'Tab') {
+            event.preventDefault()
+            props.pty.send('\t')
+          } else if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            setText('')
+            props.pty.send('\u0010')
+          } else if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            setText('')
+            props.pty.send('\u000e')
+          } else if (event.key === 'c' && event.ctrlKey) {
+            event.preventDefault()
+            setText('')
+            props.pty.sendSignal('SIGINT')
           }
         },
       }),

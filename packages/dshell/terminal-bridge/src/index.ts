@@ -5,11 +5,13 @@
  * The bridge owns one `name: 'main'` PTY per dsh session, keyed by the
  * exact Agent (dsh terminals are owner-scoped; the agent calling
  * `terminal_open` with `name: 'main'` mints a second PTY, never this
- * one). A tail loop polls the backend scrollback for new lines, appends
- * them to the per-session PtyBuffer (disk-backed, fixed memory window,
- * 4.9), and fans them out to the bound ws clients. Input frames are
- * serialized through `startSend` — one active send at a time, further
- * input queued; Ctrl+C (`\x03`) cancels the active send with SIGINT.
+ * one). A tail loop polls the backend scrollback for new content
+ * (content prefix-diff — the stream mutates in place, line-index
+ * cursors double-count it), appends deltas to the per-session PtyBuffer
+ * (disk-backed, fixed memory window, 4.9), and fans them out to the
+ * bound ws clients. Input frames are serialized through `startSend` —
+ * one active send at a time, further input queued; Ctrl+C (`\x03`)
+ * cancels the active send with SIGINT.
  *
  * The ws upgrade route reuses dsh's own auth
  * (`connection.requestRejection`), so the cookie/token gate matches the
@@ -37,8 +39,8 @@ export const name = '@deepseek-ai/dsh-dshell-terminal-bridge'
 
 /** Poll interval for the backend scrollback tail loop. */
 const TAIL_INTERVAL_MS = 200
-/** Newest-line window probed per tick before deciding the incremental read. */
-const TAIL_PROBE_LINES = 2000
+/** Read bound per tick: the full retained scrollback (dsh caps at maxReadBytes). */
+const TAIL_READ_LINES = 100_000
 
 /** dshell PTY log directory: $DSH_HOME/dshell-pty. */
 export function ptyLogDir(): string {
@@ -52,14 +54,20 @@ interface MainRecord {
   /** PTY id inside ctx.terminals (per boot). */
   ptyId: TerminalSessionId
   buffer: PtyBuffer
-  /** Backend retained scrollback lines already consumed. */
-  seenLines: number
-  /** Newest retained line as of the last tick (at-cap change detector). */
-  lastNewest: string
+  /**
+   * Full retained backend scrollback as of the last sync — the content
+   * cursor. dsh's scrollback is a mutating stream (the trailing prompt
+   * is a partial line that grows in place, echo completion rewrites the
+   * last line), so line-index cursors double-count it; prefix diffs of
+   * the text do not.
+   */
+  backendText: string
   tailTimer: NodeJS.Timeout | undefined
   tailBusy: boolean
   activeSend: TerminalSendOperation | undefined
   inputQueue: string[]
+  /** Init echo is scrubbed and broadcasts suppressed until the first settle. */
+  initializing: boolean
 }
 
 export class DshellTerminalBridge extends Service {
@@ -129,12 +137,12 @@ export class DshellTerminalBridge extends Service {
       dshSessionId,
       ptyId: spawned.sessionId,
       buffer,
-      seenLines: 0,
-      lastNewest: '',
+      backendText: '',
       tailTimer: undefined,
       tailBusy: false,
       activeSend: undefined,
       inputQueue: [],
+      initializing: true,
     }
     this.mains.set(agent, record)
     this.startTail(record)
@@ -165,13 +173,20 @@ export class DshellTerminalBridge extends Service {
     record.activeSend = operation
     void operation.done.then(() => {
       record.activeSend = undefined
-      // The init echo (export line + clear) never deserves screen space:
-      // reset the buffer and every client history to a clean slate.
-      record.buffer.truncate()
+      record.initializing = false
+      // The init echo (export line + clear) never deserves screen space,
+      // and the prompt the shell already printed is part of the pre-slate
+      // backend text: mark it consumed, reset the buffer and every client
+      // history, then re-issue a prompt with an empty line so the user
+      // opens on a fresh `user@host:path$ ` cue.
+      record.backendText = this.readAll(record)
+      void record.buffer.truncate()
       this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
+      record.inputQueue.push('\n')
       this.pump(record)
     }, () => {
       record.activeSend = undefined
+      record.initializing = false
       this.pump(record)
     })
   }
@@ -190,12 +205,15 @@ export class DshellTerminalBridge extends Service {
       }
       const command = text.trim()
       if (command === 'clear' || command === 'cls') {
-        record.inputQueue.push(text)
+        // dsh's sanitizer strips the clear-screen ANSI from scrollback, so
+        // the visual clear can only happen here: mark everything the
+        // backend currently holds as consumed, reset the buffer and client
+        // histories, then re-issue a prompt with an empty line.
+        record.backendText = this.readAll(record)
+        void record.buffer.truncate()
+        this.broadcast(dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
+        record.inputQueue.push('\n')
         this.pump(record)
-        record.activeSend?.done.then(() => {
-          record.buffer.truncate()
-          this.broadcast(dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
-        }, () => {})
         return
       }
       record.inputQueue.push(text)
@@ -234,7 +252,14 @@ export class DshellTerminalBridge extends Service {
     }
   }
 
-  /** Poll backend scrollback for new lines and fan them out. */
+  /**
+   * Poll backend scrollback for new content and fan it out. The cursor is
+   * the full retained text of the previous tick: dsh's scrollback mutates
+   * in place (the trailing prompt is a partial line that grows, echo
+   * completion extends the last line), so a prefix extension is the delta;
+   * anything else means retention slid under the cursor and both the
+   * window and every client resync from the retained tail.
+   */
   private startTail(record: MainRecord): void {
     const tick = async (): Promise<void> => {
       if (record.tailBusy) return
@@ -243,49 +268,25 @@ export class DshellTerminalBridge extends Service {
         const snapshot = this.ctx.terminals.list(record.agent)
           .find(item => item.sessionId === record.ptyId)
         if (snapshot === undefined) throw new Error('main PTY vanished')
-        const probe = this.ctx.terminals.read(record.agent, record.ptyId, { offset: 0, count: 1 })
-        const total = probe.totalLines
-        if (total < record.seenLines
-          || (total === record.seenLines && probe.truncated && probe.text !== record.lastNewest)) {
-          // Backend retention slid under the cursor (cap reached): resync the
-          // window from the full retained scrollback. Lines older than the
-          // read bound are treated as consumed — they are unrecoverable.
-          const full = this.ctx.terminals.read(record.agent, record.ptyId, { offset: 0, count: 100_000 })
-          record.buffer.resync(full.text)
-          record.seenLines = total
-          record.lastNewest = probe.text
-          this.broadcast(record.dshSessionId, {
-            kind: 'output', chunk: full.text, time: Date.now(), replay: true,
-          })
-        } else if (total > record.seenLines) {
-          // Consume unseen lines oldest-first until caught up. Relative
-          // position p counts back from the newest line, so absolute index
-          // = total - 1 - p and a page [offset, offset+want) covers absolute
-          // [total-offset-want, total-offset); the cursor therefore advances
-          // to `total - offset` per page. A page shorter than requested
-          // (maxReadBytes bound) drops its head — acceptable for flood
-          // output, matching dsh's own read bounds.
-          let consumed = record.seenLines
-          let chunk = ''
-          for (;;) {
-            const remaining = total - consumed
-            if (remaining <= 0) break
-            const want = Math.min(remaining, TAIL_PROBE_LINES)
-            const offset = remaining - want
-            const page = this.ctx.terminals.read(record.agent, record.ptyId, { offset, count: want })
-            if (page.text.length > 0) {
-              chunk = chunk.length === 0 ? page.text : `${chunk}\n${page.text}`
+        const fresh = this.readAll(record)
+        // The init echo is scrubbed wholesale at first settle: until then
+        // the tail only advances the cursor, streaming nothing.
+        if (record.initializing) {
+          record.backendText = fresh
+        } else if (fresh !== record.backendText) {
+          if (fresh.startsWith(record.backendText)) {
+            const delta = fresh.slice(record.backendText.length)
+            if (delta.length > 0) {
+              record.buffer.append(delta)
+              this.broadcast(record.dshSessionId, { kind: 'output', chunk: delta, time: Date.now() })
             }
-            consumed = total - offset
+          } else {
+            record.buffer.resync(fresh)
+            this.broadcast(record.dshSessionId, {
+              kind: 'output', chunk: fresh, time: Date.now(), replay: true,
+            })
           }
-          record.seenLines = consumed
-          record.lastNewest = probe.text
-          if (chunk.length > 0) {
-            record.buffer.append(chunk)
-            this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
-          }
-        } else {
-          record.lastNewest = probe.text
+          record.backendText = fresh
         }
         if (snapshot.status.kind === 'exited') {
           this.broadcast(record.dshSessionId, {
@@ -302,6 +303,11 @@ export class DshellTerminalBridge extends Service {
       }
     }
     record.tailTimer = setInterval(() => { void tick() }, TAIL_INTERVAL_MS)
+  }
+
+  /** The retained backend scrollback, oldest first (tail-capped by dsh). */
+  private readAll(record: MainRecord): string {
+    return this.ctx.terminals.read(record.agent, record.ptyId, { offset: 0, count: TAIL_READ_LINES }).text
   }
 
   private async dropMain(record: MainRecord): Promise<void> {
@@ -371,7 +377,10 @@ export class DshellTerminalBridge extends Service {
         kind: 'info', user: this.promptUser, host: this.promptHost, home: homedir(),
       }))
       client.send(JSON.stringify({
-        kind: 'output', chunk: record.buffer.text(), time: Date.now(), replay: true,
+        kind: 'output',
+        chunk: record.initializing ? '' : record.buffer.text(),
+        time: Date.now(),
+        replay: true,
       }))
     }, (error: unknown) => {
       client.send(JSON.stringify({ kind: 'error', message: String(error) }))
