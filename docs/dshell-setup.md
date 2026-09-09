@@ -4,6 +4,13 @@ The minimum toolchain and workspace shape required to boot dsh with
 the dshell bundle active. Read this once before touching the repo on
 a fresh machine.
 
+## Branch model
+
+Development happens on `dev`; `master` holds stable phase boundaries
+only. Every phase lands on `dev` and is merged back to `master`
+(usually a fast-forward) once its acceptance check passes. Do not
+commit directly to `master`.
+
 ## Required tools
 
 | Tool | Version | Source |
