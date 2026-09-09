@@ -94,9 +94,13 @@ interface TerminalDockProps {
   model: ModelChipFace | undefined
   submitShell(text: string): void
   submitAgent(text: string): Promise<void>
+  /** Host slash-command executor (`/clear`, stock `/compact`); absent with no session. */
+  runCommand: ((line: string) => Promise<string>) | undefined
+  /** `/new`: create a session inheriting the current cwd and open it. */
+  createSession: (() => Promise<void>) | undefined
 }
 
-const PREFIX_PATTERN = /^\/(agent|shell|terminal)(?:\s+([\s\S]+))?\s*$/
+const PREFIX_PATTERN = /^\/(agent|shell|terminal|clear|new|compact)(?:\s+([\s\S]+))?\s*$/
 
 /** Strip dsh's prompt-protocol OSC markers (133;D + 133;A/B/C + OSC 1337 sequences). */
 const OSC_DS_PROBE = /\x1b\]133;[^\x07\x1b]*(\x07|\x1b\\)/g
@@ -303,6 +307,11 @@ const errorStyle: CSSProperties = {
   fontSize: 12,
   padding: '0 4px',
 }
+const noticeStyle: CSSProperties = {
+  color: 'var(--dshell-muted)',
+  fontSize: 12,
+  padding: '0 4px',
+}
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 const chipMenuStyle: CSSProperties = {
   position: 'absolute',
@@ -489,6 +498,42 @@ function collapseBackspaces(text: string): string {
   return out
 }
 
+/** Cap to the newest `maxBytes` UTF-8 bytes without splitting a codepoint. */
+function capUtf8Tail(text: string, maxBytes: number): string {
+  const bytes = new TextEncoder().encode(text)
+  if (bytes.length <= maxBytes) return text
+  const slice = bytes.subarray(bytes.length - maxBytes)
+  let skip = 0
+  while (skip < slice.length && (slice[skip]! & 0b1100_0000) === 0b1000_0000) skip++
+  return new TextDecoder().decode(slice.subarray(skip))
+}
+
+/**
+ * Design 4.6: the recent main-PTY output as a fenced context block —
+ * anchored on the newest prompt line before the trailing idle prompt,
+ * capped at 100 lines and 4 KiB. Empty when the shell has no recent
+ * command worth anchoring. (The plugin `source` stamp of the design is
+ * host-only — the client wire always stamps `user` — so the block rides
+ * inside the user message with an explicit header instead.)
+ */
+function terminalContextBlock(history: string): string {
+  const lines = history.replace(/\n+$/, '').split('\n')
+  let end = lines.length
+  if (end > 0 && /^[^ ]*[@:][^ ]*[$#] $/.test(lines[end - 1] ?? '')) end -= 1
+  let start = 0
+  for (let i = end - 1; i >= 0; i--) {
+    if (/[$#] $/.test(lines[i] ?? '')) {
+      start = i + 1
+      break
+    }
+  }
+  const window = lines.slice(start, end).join('\n')
+  if (window.trim().length === 0) return ''
+  const linesCapped = window.split('\n').slice(-100).join('\n')
+  const capped = capUtf8Tail(linesCapped, 4 * 1024)
+  return `[dshell 终端上下文] 用户 main 终端最近一次命令的输入与输出:\n\`\`\`\n${capped}\n\`\`\``
+}
+
 function PtyScrollback(props: { pty: PtyStreamService; sessionId: SessionId | undefined }): ReactElement {
   const ref = useRef<HTMLDivElement | null>(null)
   // Re-render on every bridge store change so the latest PTY chunk shows.
@@ -525,6 +570,7 @@ function PtyScrollback(props: { pty: PtyStreamService; sessionId: SessionId | un
 function TerminalDock(props: TerminalDockProps): ReactElement {
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const mode = useSyncExternalStore(
     props.mode?.subscribe ?? (() => () => {}),
@@ -563,7 +609,13 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
       props.submitShell(payload)
       return
     }
-    props.submitAgent(payload).catch((reason: unknown) => {
+    const sessionId = props.sessionId
+    if (sessionId === undefined) {
+      setError('没有打开的会话')
+      return
+    }
+    const block = terminalContextBlock(props.pty === undefined ? '' : props.pty.read(String(sessionId)))
+    props.submitAgent(block.length === 0 ? payload : `${block}\n\n${payload}`).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : String(reason))
     })
   }
@@ -573,10 +625,33 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
     setText('')
     const match = PREFIX_PATTERN.exec(raw.trim())
     if (match !== null) {
-      const next: SessionMode = match[1] === 'agent' ? 'agent' : 'shell'
-      props.mode?.set(next)
-      const payload = match[2] ?? ''
-      if (payload.trim() !== '') dispatch(next, payload.trim())
+      const name = match[1] ?? ''
+      const payload = (match[2] ?? '').trim()
+      if (name === 'agent' || name === 'shell' || name === 'terminal') {
+        const next: SessionMode = name === 'agent' ? 'agent' : 'shell'
+        props.mode?.set(next)
+        if (payload !== '') dispatch(next, payload)
+        return
+      }
+      // Real commands: /new is client-side (the current-session selection
+      // is client-only state); /clear and stock /compact ride the host
+      // executor. Command results surface as an ephemeral notice — the
+      // command/run flow nodes render in the hidden chat scaffold.
+      if (props.sessionId === undefined) return
+      if (name === 'new') {
+        if (props.createSession === undefined) return
+        props.createSession().catch((reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : String(reason))
+        })
+        return
+      }
+      if (props.runCommand === undefined) return
+      props.runCommand(raw.trim()).then((notice) => {
+        setError(null)
+        setNotice(notice.length === 0 ? null : notice)
+      }, (reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : String(reason))
+      })
       return
     }
     if (props.sessionId === undefined) return
@@ -648,6 +723,7 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
       createElement(ThemeChip),
     ),
     error !== null ? createElement('div', { style: errorStyle }, error) : null,
+    error === null && notice !== null ? createElement('div', { style: noticeStyle }, notice) : null,
   )
 }
 
@@ -720,6 +796,21 @@ export function apply(ctx: Context): void {
         submitAgent: async (text: string) => {
           if (sessionId === undefined) throw new Error('dshell-mode: no session open')
           await scopedConversation(sessionId).send(text)
+        },
+        runCommand: sessionId === undefined ? undefined : async (line: string) => {
+          const face = sessions.binding(sessionId)?.session
+          if (face === undefined) throw new Error(`dshell-mode: session "${String(sessionId)}" resolved no session face`)
+          const result = await face.command(line)
+          if (result.ok !== true) throw new Error(String(result.error.message))
+          // The command's own result text lands in the command/run event log,
+          // not this admission promise; the notice confirms admission only.
+          return result.value.matched === true ? `已执行 ${line}` : `${line} 未被识别`
+        },
+        createSession: sessionId === undefined ? undefined : async () => {
+          const list = sessions.list.getSnapshot()
+          const cwd = list.current === undefined ? undefined : list.byId[list.current]?.cwd
+          const created = await sessions.create(cwd === undefined ? {} : { cwd })
+          sessions.open(created)
         },
       }),
     },

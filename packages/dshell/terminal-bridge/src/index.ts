@@ -37,6 +37,13 @@ export { DEFAULT_PTY_BUFFER_OPTIONS, PtyBuffer } from './buffer.js'
 
 export const name = '@deepseek-ai/dsh-dshell-terminal-bridge'
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The bridge service instance (Service key `dshellTerminalBridge`). */
+    dshellTerminalBridge: DshellTerminalBridge
+  }
+}
+
 /** Poll interval for the backend scrollback tail loop. */
 const TAIL_INTERVAL_MS = 200
 /** Read bound per tick: the full retained scrollback (dsh caps at maxReadBytes). */
@@ -205,15 +212,7 @@ export class DshellTerminalBridge extends Service {
       }
       const command = text.trim()
       if (command === 'clear' || command === 'cls') {
-        // dsh's sanitizer strips the clear-screen ANSI from scrollback, so
-        // the visual clear can only happen here: mark everything the
-        // backend currently holds as consumed, reset the buffer and client
-        // histories, then re-issue a prompt with an empty line.
-        record.backendText = this.readAll(record)
-        void record.buffer.truncate()
-        this.broadcast(dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
-        record.inputQueue.push('\n')
-        this.pump(record)
+        this.performClear(record)
         return
       }
       record.inputQueue.push(text)
@@ -221,6 +220,40 @@ export class DshellTerminalBridge extends Service {
     }, (error: unknown) => {
       console.warn('dshell-bridge: input dropped:', error)
     })
+  }
+
+  /**
+   * `/clear` command entry: wipe one session's main-shell history. dsh's
+   * sanitizer strips the ANSI clear-screen sequence, so the visual clear
+   * only happens here.
+   */
+  async clearSession(dshSessionId: string): Promise<void> {
+    const record = await this.ensureMainShell(dshSessionId)
+    this.performClear(record)
+  }
+
+  /**
+   * The main PTY's addressable `TerminalSessionId`, spawning the shell on
+   * first need — what `dshell_get_main_terminal` hands the agent so
+   * `terminal_send` lands in the user's visible shell.
+   */
+  async mainTerminalId(dshSessionId: string): Promise<TerminalSessionId> {
+    const record = await this.ensureMainShell(dshSessionId)
+    return record.ptyId
+  }
+
+  /**
+   * Wipe the visible history and re-issue a prompt: mark everything the
+   * backend currently holds as consumed, reset the buffer and client
+   * histories, then queue an empty line so bash renders a fresh
+   * `user@host:path$ ` cue.
+   */
+  private performClear(record: MainRecord): void {
+    record.backendText = this.readAll(record)
+    void record.buffer.truncate()
+    this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
+    record.inputQueue.push('\n')
+    this.pump(record)
   }
 
   /** Deliver a foreground signal to the main PTY. */

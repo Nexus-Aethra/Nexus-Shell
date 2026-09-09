@@ -21,7 +21,13 @@
     "lib/types/**/*.d.ts"
   ],
   "dependencies": {
-    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"
+    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
+    "@deepseek-ai/dsh-commands": "link:../../../dsh/packages/interaction/commands",
+    "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
+    "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
+    "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh/packages/core/tools"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

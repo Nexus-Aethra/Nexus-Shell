@@ -75,6 +75,24 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-commands':
+        specifier: link:../../../dsh/packages/interaction/commands
+        version: link:../../../dsh/packages/interaction/commands
+      '@deepseek-ai/dsh-dshell-terminal-bridge':
+        specifier: link:../terminal-bridge
+        version: link:../terminal-bridge
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../dsh/packages/llm/llm
+        version: link:../../../dsh/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../dsh/packages/core/tools
+        version: link:../../../dsh/packages/core/tools
     devDependencies:
       tsdown:
         specifier: ^0.22.14
