@@ -17,5 +17,8 @@
     "build:client": "pnpm -r --filter @deepseek-ai/dsh-dshell-* run build:client",
     "typecheck": "tsc -b tsconfig.host.json && tsc -b tsconfig.client.json",
     "lint": "echo 'lint deferred: dshell packages do not yet carry oxlint config; copy dsh/.oxlintrc.json when ready'"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.13"
   }
 }

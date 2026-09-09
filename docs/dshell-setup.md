@@ -64,8 +64,8 @@ EOF
 The Nexus-Shell repository lives next to the dsh checkout:
 
 ```
+~/.bashrc                 # node + pnpm bootstrap (created by setup, outside the repo)
 Nexus-Shell/
-├── .bashrc                # node + pnpm bootstrap (created by setup)
 ├── dsh/                   # local reference checkout, never tracked
 ├── docs/                  # design contract and roadmap
 ├── packages/dshell/
@@ -75,7 +75,9 @@ Nexus-Shell/
 │   ├── mode/              # composer toggle (Phase 5+)
 │   └── commands/          # /clear /new /compact + model tool (Phase 6/8)
 ├── scripts/
-│   └── install-into-dsh-profile.sh
+│   ├── install-into-dsh-profile.sh
+│   └── bootstrap-profile-client.sh
+├── tsdown.dshell.preset.ts
 └── (root) package.json + pnpm-workspace.yaml + tsconfig.*.json
 ```
 
@@ -91,11 +93,13 @@ never accidentally pushed.
 2. Nexus-Shell/ pnpm install
                 pnpm --filter "@deepseek-ai/dsh-dshell-*" run build
 3. (one-time)   ./scripts/install-into-dsh-profile.sh
-4. (each session) cd dsh && pnpm dsh web
+4. (one-time)   ./scripts/bootstrap-profile-client.sh
+5. (each session) cd dsh && pnpm dsh web
 ```
 
-After step 3, the dsh web profile picks up dshell automatically — no
-`--patch` flag needed.
+After step 4, the dsh web profile picks up dshell automatically — no
+`--patch` flag needed — and both the host stack and the client bundle
+roster are materialized.
 
 ## Why three pnpm operations for the dshell side
 
@@ -112,6 +116,51 @@ After step 3, the dsh web profile picks up dshell automatically — no
 
 Re-running the script is safe: pnpm no-ops when packages are already
 installed.
+
+## Client bundles: the `__ModuleLoader__` closure contract
+
+dsh's browser side does not load plugins as ES modules. Every client
+bundle must be a CJS closure handed to the module table:
+
+```js
+window.__ModuleLoader__.load({ id: '<pkg-name>', factory: (require) => {
+  var module = { exports: {} }; var exports = module.exports;
+  /* ... compiled plugin face ... */
+  return module.exports; } });
+```
+
+A raw ESM bundle (`export const apply = ...`) throws a syntax error
+inside the combo loader, which **kills the whole module table** — the
+page then fails with `loaded without registering "<pkg>" via
+__ModuleLoader__.load` for *every* dsh package, not just the malformed
+one. Symptom: `Failed to load plugins` on boot.
+
+dsh builds its own bundles with `dsh/packages/client/tsdown.client.ts`,
+but that preset cannot run outside the dsh repository (its
+`workspaceManifest` globs `dsh/packages/*/*` only). The repo-root
+`tsdown.dshell.preset.ts` reproduces the artifact contract locally:
+
+- `format: 'cjs'`, `platform: 'browser'`, and `entryFileNames:
+  'client.js'` — dsh's bundle server (`dsh-client-modules`) serves
+  exactly `lib/client.js` per package under `/plugins/`.
+- `banner` / `intro` / `footer` must sit **inside `outputOptions`**,
+  matching dsh's own preset. A top-level `banner` is honored but a
+  top-level `intro` is silently dropped, and the `intro` is what
+  defines the `exports` the CJS interop writes to — losing it yields
+  `exports is not defined` at load time.
+- The banner stamps the package id into the `__ModuleLoader__.load`
+  handoff; it must match the `name` in the package manifest exactly.
+
+Client-face packages (`conversation`, `terminal-bridge`, `mode`) wrap
+the preset in `tsdown.config.ts` and run it via
+`tsdown --config-loader tsx` — `tsx` is a root devDependency because
+tsdown cannot resolve its own config loader from a foreign workspace.
+The `MIXED_EXPORTS` warning during `build:client` is benign: dsh
+consumes the factory closure, not the CJS `module.exports`.
+
+The `dshell-bundle` patch also disables dsh's `client-hmr` row. HMR is
+dev-only but ships in the client roster, and a missing HMR bundle is a
+hard load failure outside the dsh dev workflow.
 
 ## Common pitfalls
 
@@ -134,8 +183,17 @@ installed.
   inserts new ids.
 - **`tsdown: no packages/*/*/package.json declares the name ...`** —
   dsh's `tsdown.client.ts` globs `dsh/packages/*/*` only. Do not
-  reuse it from dshell packages — they should emit with plain
-  `tsc --emitDeclarationOnly false` instead.
+  reuse it from dshell packages — use the local
+  `tsdown.dshell.preset.ts` instead.
+- **`loaded without registering "<pkg>" via __ModuleLoader__.load`
+  for many packages at once** — one bundle in the combo failed to
+  execute. For dshell bundles the usual cause is raw ESM output; see
+  the closure-contract section above. Rebuild with
+  `pnpm --filter "@deepseek-ai/dsh-dshell-*" run build:client`, then
+  reinstall and restart.
+- **`exports is not defined`** — the tsdown preset's
+  `banner`/`footer`/`intro` were hoisted out of `outputOptions`. Only
+  the nested form survives; see above.
 
 ## Verifying Phase 0
 
@@ -161,38 +219,40 @@ The 401 response confirms **three** things and **only** those:
 3. dsh's cookie-auth gate (`ctx.connection.authorizeIndex`) is
    reachable.
 
-It does **not** prove the browser UI renders. dsh's web profile
-populates its `client/` roster from `apps/web/package.json`'s dev
-deps plus the `dsh.client` rows in `bundle/web-app/cordis.patch.yml`,
-and the corresponding `lib/client.js` files must exist under
-`$DSH_HOME/profiles/web/node_modules/@deepseek-ai/...`. When you run
-`pnpm dsh web` for the first time on a fresh profile, **none of those
-client bundles are materialised** — dsh does not invoke
-`pnpm --filter @deepseek-ai/dsh-web-frontend run build` itself. The
-host-side stack works because it never touches the browser half;
-the browser stack fails on first render with
-`client-modules: bundle /plugins/...?@deepseek-ai/dsh-client-hmr/client.js
-loaded without registering "@deepseek-ai/dsh-client-hmr" via
-__ModuleLoader__.load` and similar errors for every other dsh
-client package.
+The 401 alone does **not** prove the browser UI renders. dsh's web
+profile populates its `client/` roster from `apps/web/package.json`'s
+dev deps plus the `dsh.client` rows in
+`bundle/web-app/cordis.patch.yml`, and the corresponding
+`lib/client.js` files must exist under
+`$HOME/.dsh/profiles/web/node_modules/@deepseek-ai/...`. On a fresh
+profile **none of those client bundles are materialised** — dsh
+assumes the profile lives inside the dsh monorepo and reaches every
+package via workspace `link:` paths, but dshell runs the profile as an
+independent workspace. Two provisioning steps close the gap:
 
-This is a dsh provisioning gap, not a dshell bug. Phase 0 ends at
-the 401 boundary; rendering the full Web UI is a Phase 1 prerequisite
-that lives outside dshell's design. Phase 1 adds the client bundles
-by whatever means dsh upstream eventually ships — likely a
-`pnpm --filter @deepseek-ai/dsh-web-frontend run build` invocation
-followed by a profile reinstall.
+1. `./scripts/install-into-dsh-profile.sh` — registers the four dshell
+   plugins plus the bundle layer (see *Why three pnpm operations*).
+2. `./scripts/bootstrap-profile-client.sh` — mirrors dsh's monorepo
+   dependency closure into the profile by adding every
+   `@deepseek-ai/dsh-*` runtime dep of `dsh-web-app` as a `link:` spec
+   pointing at the sibling `dsh/` checkout (~82 packages), which also
+   exposes the built `dsh-web-frontend` dist. Re-running is safe.
 
-If a future dsh release ships a built dist inside the profile setup,
-the 401 + browser-render checks will collapse into one. Until then,
-treat the browser half as a downstream check, not a Phase 0
-deliverable.
+Browser-side acceptance after both steps: the page renders the full
+dsh UI with no `Failed to load plugins` banner, and the boot payload
+(`window.__DSH_BOOT__.entries`) advertises all client entries including
+the three dshell bundles (`dsh-dshell-conversation`,
+`dsh-dshell-terminal-bridge`, `dsh-dshell-mode`). Verified in-browser
+on 2026-09-09.
 
 ## Where to go next
 
 - Read [`dshell-design.md`](./dshell-design.md) and
   [`dshell-architecture.md`](./dshell-architecture.md) before
   touching Phase 1+ code.
-- Phase 1 lands the first non-stub: the `terminal` target's browser
-  ViewBuilder must keep its empty snapshot shape until Phase 4 adds the
-  xterm.js canvas.
+- Phase 0.5 (client provisioning, closure-format bundles, in-browser
+  verification) is complete — its artifacts are the two
+  `scripts/*.sh` files and `tsdown.dshell.preset.ts`. Continue with
+  Phase 1+ in [`dshell-roadmap.md`](./dshell-roadmap.md).
+- The `terminal` target's browser ViewBuilder keeps its empty snapshot
+  shape until Phase 4 adds the xterm.js canvas.

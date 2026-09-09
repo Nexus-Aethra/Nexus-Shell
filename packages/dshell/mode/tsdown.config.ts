@@ -1,5 +1,3 @@
-import { clientBundle } from '../../../dsh/packages/client/tsdown.client.ts'
+import { dshellClientBundle } from '../../../tsdown.dshell.preset.ts'
 
-export default clientBundle('@deepseek-ai/dsh-dshell-mode', [
-  'lib/types/index.js',
-])
+export default dshellClientBundle('@deepseek-ai/dsh-dshell-mode')

@@ -13,7 +13,7 @@
     },
     "./client": {
       "types": "./lib/client/index.d.ts",
-      "default": "./lib/client/index.js"
+      "default": "./lib/client.js"
     }
   },
   "dsh": {
@@ -22,9 +22,9 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --emitDeclarationOnly false",
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly false && tsdown --config-loader tsx",
     "build:host": "tsc -p tsconfig.json --emitDeclarationOnly false",
-    "build:client": "tsc -p tsconfig.json --emitDeclarationOnly false"
+    "build:client": "tsdown --config-loader tsx"
   },
   "files": [
     "lib/index.js",
