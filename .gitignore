@@ -1,0 +1,27 @@
+# dsh upstream checkout — never track this directory.
+# It is a local source mirror used for reference while developing dshell
+# plugins. Updating it is done by pulling the upstream repo separately.
+dsh/
+
+# Node / pnpm artifacts
+node_modules/
+.pnpm-store/
+
+# Build outputs
+packages/*/lib/
+packages/*/dist/
+*.tsbuildinfo
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs and tmp
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.tmp/
