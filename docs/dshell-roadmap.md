@@ -184,7 +184,7 @@ Plugins touched:
   Per-session mode store; Enter dispatch by mode (`shell` → bridge
   `send`, `agent` → `scopedConversation.send`); `/agent` / `/shell`
   prefix parsing; model chip over `ctx.modelDirectories` (shared with
-  `/code, no child-hole collision).
+  `/model`, no child-hole collision).
 - `dshell-conversation` (browser face) — registers a no-renderer
   `ConversationViewDefinition` on target `terminal` whose `isActive`
   returns `true`. The framework treats the target as visible activity
@@ -207,10 +207,10 @@ Acceptance check (current state — see screenshot in conversation):
   Enter sends to the main PTY; the next prompt appears in the
   scrollback above.
 - Mode toggles: clicking the `⌨ shell` / `✳ agent` chip flips mode
-  and the input placeholder. `/agent` and / `/terminal` prefixes from
+  and the input placeholder. `/agent` and `/shell` prefixes from
   the dock dispatch immediately and flip mode in one keystroke.
 - Model chip lists the shared directory and updates selection in
-  sync with `/code.
+  sync with `/model`.
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 

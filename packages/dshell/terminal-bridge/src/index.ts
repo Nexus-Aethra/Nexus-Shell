@@ -17,7 +17,7 @@
  * backends fix rows/cols at spawn (§ 5).
  */
 
-import { homedir } from 'node:os'
+import { homedir, userInfo, hostname } from 'node:os'
 import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -69,6 +69,9 @@ export class DshellTerminalBridge extends Service {
   private readonly pendingMain = new Map<Agent, Promise<MainRecord>>()
   private readonly clients = new Map<string, Set<WebSocket>>()
   private readonly boundSession = new Map<WebSocket, string>()
+  /** OS identity for the bash prompt; safe for embedding inside PS1 quotes. */
+  readonly promptUser = safeShellWord(userInfo().username)
+  readonly promptHost = safeShellWord(hostname())
 
   constructor(ctx: Context) {
     super(ctx, 'dshellTerminalBridge')
@@ -135,14 +138,64 @@ export class DshellTerminalBridge extends Service {
     }
     this.mains.set(agent, record)
     this.startTail(record)
+    // Replace dsh's stock `dsh> ` prompt with a bash-style `user@host:path$`
+    // cue once the shell is ready. dsh's terminal-bash backend hardcodes
+    // PS1 and its PROMPT_COMMAND re-asserts it after every prompt render,
+    // so both are rewritten together. The command text carries only
+    // backslash-literal escapes (\u \h \w \033): dsh's input sanitizer
+    // strips raw ESC bytes, while bash expands the literals at render/run
+    // time. Runs before any user input; queued input serializes behind it.
+    this.runInit(record)
     return record
   }
 
-  /** Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the active send). */
+  /** Queue the prompt-rewrite init and wipe its setup echo from the scrollback. */
+  private runInit(record: MainRecord): void {
+    // ONE line: dsh's stock PROMPT_COMMAND re-asserts PS1='dsh> ' on every
+    // prompt render, so a multi-line batch races — the prompt between line 1
+    // (PS1) and line 2 (PROMPT_COMMAND) resets PS1 back. Joining with `; `
+    // leaves no render window, and the new PROMPT_COMMAND re-asserts from a
+    // dedicated variable so the prompt survives any later clobber.
+    const init = [
+      `export DSHELL_PS1='\\u@\\h:\\w\\$ '; export PS1="$DSHELL_PS1"; export PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?"; PS1="$DSHELL_PS1"'`,
+      'clear',
+      '',
+    ].join('\n')
+    const operation = this.ctx.terminals.startSend(record.agent, record.ptyId, { text: init, submit: false })
+    record.activeSend = operation
+    void operation.done.then(() => {
+      record.activeSend = undefined
+      // The init echo (export line + clear) never deserves screen space:
+      // reset the buffer and every client history to a clean slate.
+      record.buffer.truncate()
+      this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
+      this.pump(record)
+    }, () => {
+      record.activeSend = undefined
+      this.pump(record)
+    })
+  }
+
+  /**
+   * Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the
+   * active send). `clear`/`cls` also truncate the bridge buffer: dsh's
+   * sanitizer strips the ANSI clear-screen sequence from scrollback, so
+   * the visual clear only happens if the bridge performs it.
+   */
   feed(dshSessionId: string, text: string): void {
     void this.ensureMainShell(dshSessionId).then((record) => {
       if (text === '\u0003' && record.activeSend !== undefined) {
         record.activeSend.cancel()
+        return
+      }
+      const command = text.trim()
+      if (command === 'clear' || command === 'cls') {
+        record.inputQueue.push(text)
+        this.pump(record)
+        record.activeSend?.done.then(() => {
+          record.buffer.truncate()
+          this.broadcast(dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
+        }, () => {})
         return
       }
       record.inputQueue.push(text)
@@ -315,6 +368,9 @@ export class DshellTerminalBridge extends Service {
       set.add(client)
       this.boundSession.set(client, dshSessionId)
       client.send(JSON.stringify({
+        kind: 'info', user: this.promptUser, host: this.promptHost, home: homedir(),
+      }))
+      client.send(JSON.stringify({
         kind: 'output', chunk: record.buffer.text(), time: Date.now(), replay: true,
       }))
     }, (error: unknown) => {
@@ -331,6 +387,11 @@ export class DshellTerminalBridge extends Service {
       if (client.readyState === WebSocket.OPEN) client.send(data)
     }
   }
+}
+
+/** Defensive escape: drop chars that would let a quoted $PS1 leak out. */
+function safeShellWord(s: string): string {
+  return s.replace(/[^A-Za-z0-9._-]/g, '_')
 }
 
 /** Reject one unauthenticated upgrade with dsh's status semantics. */

@@ -49,6 +49,10 @@ interface WireFrame {
   replay?: boolean
   reason?: string
   message?: string
+  /** `info` frames: OS identity the dock uses to build bash prompts. */
+  user?: string
+  host?: string
+  home?: string
 }
 
 interface SessionHistory {
@@ -62,6 +66,13 @@ export class PtyStreamService extends Service {
     sessionId: undefined,
     status: 'idle',
     version: 0,
+  })
+
+  /** OS identity from the server's `info` frame (bash prompt material). */
+  readonly host = createSnapshotStore<{ user: string; host: string; home: string }>({
+    user: '',
+    host: '',
+    home: '',
   })
 
   private readonly histories = new Map<string, SessionHistory>()
@@ -132,6 +143,14 @@ export class PtyStreamService extends Service {
           replay: frame.replay === true,
         })
         if (frame.replay !== true) console.debug('[dshell-pty]', frame.chunk)
+        return
+      }
+      if (frame.kind === 'info') {
+        this.host.set({
+          user: typeof frame.user === 'string' ? frame.user : '',
+          host: typeof frame.host === 'string' ? frame.host : '',
+          home: typeof frame.home === 'string' ? frame.home : '',
+        })
         return
       }
       if (frame.kind === 'closed') {

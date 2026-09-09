@@ -5,7 +5,7 @@
  * (`conversation.composer.bar`, priority -1 — lowest renders) and replaces
  * the chat-shaped InputBar with a single full-bleed terminal-style column:
  * the main PTY scrollback streams above a monospace input line at the
- * bottom. Mode chip + model chip live inline with the input.
+ * bottom. Mode chip + model chip + theme chip live inline with the input.
  *
  * Per-session mode routes Enter — `shell` forwards the line to the
  * bridge-owned main PTY through the terminal-bridge ws client; `agent`
@@ -21,6 +21,11 @@
  * seat: a child hole has exactly one declarer and the shadowed
  * composer-bar entry already declared it, so renderSlot from the
  * shadowing entry would be unauthorized.
+ *
+ * Themes: four palettes (midnight, solarized, dracula, monochrome) re-skin
+ * the dock's CSS variables AND the bash prompt colors (the bridge reads
+ * the active theme from a localStorage key the dock writes when the
+ * theme changes, via a follow-up `export PS1=...` send).
  */
 
 import {
@@ -96,54 +101,202 @@ const PREFIX_PATTERN = /^\/(agent|shell|terminal)(?:\s+([\s\S]+))?\s*$/
 /** Strip dsh's prompt-protocol OSC markers (133;D + 133;A/B/C + OSC 1337 sequences). */
 const OSC_DS_PROBE = /\x1b\]133;[^\x07\x1b]*(\x07|\x1b\\)/g
 
+/** Theme registry. `accent` colors the active-mode chip + prompt glyph; `user` / `path` color the bash PS1 segments. */
+interface Theme {
+  readonly id: string
+  readonly label: string
+  readonly bg: string
+  readonly text: string
+  readonly muted: string
+  readonly border: string
+  readonly borderStrong: string
+  readonly inputBar: string
+  readonly accent: string
+  readonly accentText: string
+  readonly accentBorder: string
+  readonly accentFaint: string
+  readonly menuBg: string
+  readonly menuBorder: string
+  /** Bash PS1 ANSI SGR for the user@host segment. */
+  readonly ps1User: string
+  /** Bash PS1 ANSI SGR for the path segment. */
+  readonly ps1Path: string
+}
+
+const THEMES: readonly Theme[] = [
+  {
+    id: 'midnight',
+    label: '午夜',
+    bg: 'transparent',
+    text: '#e8e8ec',
+    muted: '#9d9da6',
+    border: '#1c1d22',
+    borderStrong: '#2c2c33',
+    inputBar: 'rgba(8, 8, 11, 0.6)',
+    accent: '#7c3aed',
+    accentText: '#cbb5ff',
+    accentBorder: '#4c2a8a',
+    accentFaint: 'rgba(124, 58, 237, 0.12)',
+    menuBg: '#131418',
+    menuBorder: '#2a2b31',
+    ps1User: '1;32',
+    ps1Path: '1;34',
+  },
+  {
+    id: 'solarized',
+    label: '柔和',
+    bg: 'transparent',
+    text: '#93a1a1',
+    muted: '#657b83',
+    border: '#0f3a44',
+    borderStrong: '#268bd2',
+    inputBar: 'rgba(7, 38, 43, 0.55)',
+    accent: '#b58900',
+    accentText: '#fdf6e3',
+    accentBorder: '#8a6a00',
+    accentFaint: 'rgba(181, 137, 0, 0.14)',
+    menuBg: '#002b36',
+    menuBorder: '#0f3a44',
+    ps1User: '1;33',
+    ps1Path: '1;32',
+  },
+  {
+    id: 'dracula',
+    label: '神秘',
+    bg: 'transparent',
+    text: '#f8f8f2',
+    muted: '#6272a4',
+    border: '#44475a',
+    borderStrong: '#6272a4',
+    inputBar: 'rgba(40, 42, 54, 0.6)',
+    accent: '#ff79c6',
+    accentText: '#ffb3da',
+    accentBorder: '#bd4188',
+    accentFaint: 'rgba(255, 121, 198, 0.14)',
+    menuBg: '#282a36',
+    menuBorder: '#44475a',
+    ps1User: '1;35',
+    ps1Path: '1;36',
+  },
+  {
+    id: 'forest',
+    label: '森林',
+    bg: 'transparent',
+    text: '#d0d7c5',
+    muted: '#8a9a76',
+    border: '#1f2e1c',
+    borderStrong: '#4a6b3a',
+    inputBar: 'rgba(15, 25, 18, 0.6)',
+    accent: '#7fb069',
+    accentText: '#bce09a',
+    accentBorder: '#4a6b3a',
+    accentFaint: 'rgba(127, 176, 105, 0.14)',
+    menuBg: '#141c14',
+    menuBorder: '#2a3a26',
+    ps1User: '1;32',
+    ps1Path: '1;33',
+  },
+]
+
+const DEFAULT_THEME_ID = 'midnight'
+
+function getTheme(id: string): Theme {
+  return THEMES.find(t => t.id === id) ?? THEMES[0]!
+}
+
+const THEME_STORAGE_KEY = 'dshell.theme'
+
+/** Module-level theme store; single subscription feeds every dock instance. */
+const themeStore = createSnapshotStore<string>(
+  (() => {
+    if (typeof localStorage === 'undefined') return DEFAULT_THEME_ID
+    try {
+      const stored = localStorage.getItem(THEME_STORAGE_KEY)
+      return getTheme(stored ?? DEFAULT_THEME_ID).id
+    } catch {
+      return DEFAULT_THEME_ID
+    }
+  })(),
+)
+
+function setTheme(id: string): void {
+  const theme = getTheme(id)
+  themeStore.set(theme.id)
+  if (typeof localStorage !== 'undefined') {
+    try { localStorage.setItem(THEME_STORAGE_KEY, theme.id) } catch { /* ignore */ }
+  }
+}
+
+/** Stable no-session host-info snapshot (uSES-safe identity). */
+const EMPTY_HOST_INFO: { user: string; host: string; home: string } = { user: '', host: '', home: '' }
+const subscribeNoop = () => () => {}
+
 const rootStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   flex: '1 1 auto',
   minHeight: 0,
-  background: '#0d0d10',
-  color: '#d6d6dc',
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.012) 0%, rgba(0,0,0,0.25) 100%)',
+  color: 'var(--dshell-fg)',
+  fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
   fontSize: 13,
-  lineHeight: 1.45,
+  lineHeight: 1.55,
+  letterSpacing: 0,
 }
 const scrollStyle: CSSProperties = {
   flex: '1 1 auto',
   minHeight: 0,
   overflowY: 'auto',
   overflowX: 'hidden',
-  padding: '10px 12px 4px',
+  padding: '14px 16px 8px',
   whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
+  wordBreak: 'break-word',
+  scrollbarColor: 'var(--dshell-border-strong) transparent',
 }
 const inputBarStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 8,
-  borderTop: '1px solid #1f1f24',
-  padding: '8px 12px',
+  gap: 10,
+  borderTop: '1px solid var(--dshell-border)',
+  padding: '10px 14px 12px',
   flex: '0 0 auto',
+  background: 'var(--dshell-input-bar)',
+  backdropFilter: 'blur(8px)',
 }
 const modeChipStyle: CSSProperties = {
-  border: '1px solid #3a3a42',
+  border: '1px solid var(--dshell-border-strong)',
   background: 'transparent',
-  color: 'inherit',
+  color: 'var(--dshell-muted)',
   cursor: 'pointer',
-  borderRadius: 6,
-  padding: '4px 8px',
-  fontSize: 12,
+  borderRadius: 999,
+  padding: '3px 10px',
+  fontSize: 11,
   whiteSpace: 'nowrap',
   fontFamily: 'inherit',
+  transition: 'color 120ms, border-color 120ms',
+}
+const modeChipStyleActive: CSSProperties = {
+  ...modeChipStyle,
+  color: 'var(--dshell-accent)',
+  borderColor: 'var(--dshell-accent-border)',
+}
+const promptPrefixStyle: CSSProperties = {
+  color: 'var(--dshell-accent)',
+  fontWeight: 600,
+  whiteSpace: 'pre',
+  userSelect: 'none',
+  marginRight: 6,
 }
 const inputStyle: CSSProperties = {
   flex: 1,
   background: 'transparent',
   border: 'none',
   outline: 'none',
-  color: 'inherit',
+  color: 'var(--dshell-fg)',
   fontFamily: 'inherit',
   fontSize: 13,
   minWidth: 0,
+  padding: '2px 0',
 }
 const errorStyle: CSSProperties = {
   color: '#f87171',
@@ -153,36 +306,133 @@ const errorStyle: CSSProperties = {
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 const chipMenuStyle: CSSProperties = {
   position: 'absolute',
-  bottom: 'calc(100% + 6px)',
+  bottom: 'calc(100% + 8px)',
   right: 0,
-  minWidth: 220,
-  maxHeight: 320,
+  minWidth: 200,
+  maxHeight: 360,
   overflowY: 'auto',
-  background: '#16161a',
-  border: '1px solid #2c2c33',
-  borderRadius: 8,
+  background: 'var(--dshell-menu-bg)',
+  border: '1px solid var(--dshell-menu-border)',
+  borderRadius: 10,
   padding: 4,
-  zIndex: 30,
-  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
+  zIndex: 60,
+  boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55)',
 }
 const chipGroupStyle: CSSProperties = {
-  fontSize: 11,
-  color: '#8a8a94',
-  padding: '6px 8px 2px',
+  fontSize: 10.5,
+  color: 'var(--dshell-muted)',
+  textTransform: 'uppercase',
+  letterSpacing: 0.6,
+  padding: '8px 10px 4px',
   whiteSpace: 'nowrap',
+  fontWeight: 600,
 }
 const chipItemStyle: CSSProperties = {
-  display: 'block',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
   width: '100%',
   textAlign: 'left',
   background: 'transparent',
   border: 'none',
-  color: 'inherit',
+  color: 'var(--dshell-fg)',
   cursor: 'pointer',
-  borderRadius: 5,
-  padding: '5px 8px',
+  borderRadius: 6,
+  padding: '6px 10px',
   fontSize: 12,
   whiteSpace: 'nowrap',
+  fontFamily: 'inherit',
+  transition: 'background 80ms',
+}
+const chipItemStyleActive: CSSProperties = {
+  ...chipItemStyle,
+  background: 'var(--dshell-accent-faint)',
+  color: 'var(--dshell-accent-text)',
+}
+const swatchStyle: CSSProperties = {
+  width: 14,
+  height: 14,
+  borderRadius: 3,
+  border: '1px solid rgba(255,255,255,0.1)',
+  flex: '0 0 auto',
+}
+
+/** Apply the theme's CSS variables onto the dock root element. */
+function applyThemeVars(el: HTMLElement | null, theme: Theme): void {
+  if (el === null) return
+  const s = el.style
+  s.setProperty('--dshell-bg', theme.bg)
+  s.setProperty('--dshell-fg', theme.text)
+  s.setProperty('--dshell-muted', theme.muted)
+  s.setProperty('--dshell-border', theme.border)
+  s.setProperty('--dshell-border-strong', theme.borderStrong)
+  s.setProperty('--dshell-input-bar', theme.inputBar)
+  s.setProperty('--dshell-accent', theme.accent)
+  s.setProperty('--dshell-accent-text', theme.accentText)
+  s.setProperty('--dshell-accent-border', theme.accentBorder)
+  s.setProperty('--dshell-accent-faint', theme.accentFaint)
+  s.setProperty('--dshell-menu-bg', theme.menuBg)
+  s.setProperty('--dshell-menu-border', theme.menuBorder)
+}
+
+/**
+ * Build the PS1 rewrite for a theme. Backslash-literal escapes only —
+ * dsh's input sanitizer strips raw ESC bytes, while bash expands \e \u \h
+ * \w at render time. Colors survive in the real PTY but dsh's scrollback
+ * sanitizer strips them from the browser stream (documented dsh contract).
+ * One line with the new PROMPT_COMMAND re-asserting from $DSHELL_PS1, so
+ * no prompt render between assignments can reset the prompt.
+ */
+function ps1For(theme: Theme): string {
+  const colored = [
+    `\\e[${theme.ps1User}m\\u@\\h\\e[0m:\\e[${theme.ps1Path}m\\w\\e[0m`,
+    '\\$ ',
+  ].join('')
+  return `export DSHELL_PS1='${colored}'; export PS1="$DSHELL_PS1"; export PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?"; PS1="$DSHELL_PS1"'\n`
+}
+
+/** Tiny preview swatch showing a theme's two PS1 colors side by side. */
+function ThemeSwatch(props: { theme: Theme }): ReactElement {
+  return createElement('span', {
+    style: {
+      ...swatchStyle,
+      background: `linear-gradient(135deg, ${props.theme.accent} 0%, ${props.theme.accent} 55%, ${props.theme.text} 55%, ${props.theme.text} 100%)`,
+    },
+  })
+}
+
+/** The dock's theme chip: a palette dot + a flat picker over the theme registry. */
+function ThemeChip(): ReactElement {
+  const [open, setOpen] = useState(false)
+  const currentId = useSyncExternalStore(
+    themeStore.subscribe,
+    () => themeStore.getSnapshot(),
+  )
+  const current = getTheme(currentId)
+  return createElement('div', { style: chipSeatStyle },
+    createElement('button', {
+      style: modeChipStyle,
+      title: '终端配色',
+      onClick: () => { setOpen(!open) },
+    }, createElement(ThemeSwatch, { theme: current }), ` ${current.label}`),
+    open ? createElement('div', { style: chipMenuStyle },
+      THEMES.map(theme => {
+        const active = theme.id === current.id
+        return createElement('button', {
+          key: theme.id,
+          style: active ? chipItemStyleActive : chipItemStyle,
+          onClick: () => {
+            setOpen(false)
+            setTheme(theme.id)
+          },
+        },
+          createElement(ThemeSwatch, { theme }),
+          createElement('span', null, theme.label),
+          active ? createElement('span', { style: { marginLeft: 'auto', color: 'var(--dshell-accent)' } }, '✓') : null,
+        )
+      }),
+    ) : null,
+  )
 }
 
 /** The dock's model chip: current selection + a flat picker over the shared directory. */
@@ -194,39 +444,35 @@ function ModelChip(props: { face: ModelChipFace }): ReactElement {
   )
   if (open && state.groups.length === 0 && state.status !== 'loading') props.face.load()
   const current = state.current
-  const currentLabel = current === null ? '模型' : current.model
+  const currentLabel = current === null ? '选择模型' : current.model
   const groups = state.groups
   return createElement('div', { style: chipSeatStyle },
     createElement('button', {
-      style: modeChipStyle,
+      style: { ...modeChipStyle, color: current === null ? '#9d9da6' : '#cbb5ff' },
       title: '切换模型',
       onClick: () => {
         setOpen(!open)
         props.face.load()
       },
-    }, `▣ ${currentLabel}`),
+    }, `◆ ${currentLabel}`),
     open ? createElement('div', { style: chipMenuStyle },
       groups.length === 0
         ? createElement('div', { style: chipGroupStyle },
-          state.status === 'loading' ? '目录加载中…' : '目录暂可用')
+          state.status === 'loading' ? '目录加载中…' : '目录暂不可用')
         : groups.map(group =>
           createElement('div', { key: group.id },
             createElement('div', { style: chipGroupStyle }, group.name),
-            group.models.map(model => createElement('button', {
-              key: model.id,
-              style: {
-                ...chipItemStyle,
-                background: current?.provider === group.id && current?.model === model.id
-                  ? '#26262e'
-                  : 'transparent',
-              },
-              onClick: () => {
-                setOpen(false)
-                void props.face.select({ provider: group.id, model: model.id })
-              },
-            }, current?.provider === group.id && current?.model === model.id
-              ? `✓ ${model.name}`
-              : model.name)),
+            group.models.map(model => {
+              const active = current?.provider === group.id && current?.model === model.id
+              return createElement('button', {
+                key: model.id,
+                style: active ? chipItemStyleActive : chipItemStyle,
+                onClick: () => {
+                  setOpen(false)
+                  void props.face.select({ provider: group.id, model: model.id })
+                },
+              }, (active ? '✓ ' : '  ') + model.name)
+            }),
           )),
     ) : null,
   )
@@ -267,10 +513,37 @@ function PtyScrollback(props: { pty: PtyStreamService; sessionId: SessionId | un
 function TerminalDock(props: TerminalDockProps): ReactElement {
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const mode = useSyncExternalStore(
     props.mode?.subscribe ?? (() => () => {}),
     props.mode?.getSnapshot ?? (() => 'shell' as SessionMode),
   )
+  const themeId = useSyncExternalStore(
+    themeStore.subscribe,
+    () => themeStore.getSnapshot(),
+  )
+  const theme = getTheme(themeId)
+  // Server's OS identity arrives on the ws `info` frame; subscribing keeps
+  // the PS1 effect honest when it lands after mount.
+  const hostInfo = useSyncExternalStore(
+    props.pty?.host.subscribe ?? subscribeNoop,
+    () => props.pty?.host.getSnapshot() ?? EMPTY_HOST_INFO,
+  )
+
+  // Re-skin the dock whenever the theme changes; also re-issue the bash
+  // PS1 so the shell prompt follows the palette (colors surface in the
+  // real PTY; the browser scrollback stays monochrome — dsh strips ANSI).
+  useEffect(() => {
+    applyThemeVars(rootRef.current, theme)
+  }, [theme])
+  const appliedThemeRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (props.sessionId === undefined || props.pty === undefined) return
+    if (props.pty.host.getSnapshot().user === '') return
+    if (appliedThemeRef.current === theme.id) return
+    appliedThemeRef.current = theme.id
+    props.submitShell(ps1For(theme))
+  }, [theme, props.sessionId, props.pty, hostInfo.user])
 
   const dispatch = (target: SessionMode, payload: string): void => {
     setError(null)
@@ -302,19 +575,23 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
   const placeholder = props.sessionId === undefined
     ? '新建会话后开始'
     : mode === 'shell'
-      ? '输入命令 — /agent 切到对话'
-      : '与 AI 对话 — /shell 切回命令'
+      ? '输入命令…  /agent 切到对话'
+      : '与 AI 对话…  /shell 切回命令'
+  const promptGlyph = props.sessionId === undefined
+    ? '›'
+    : mode === 'shell' ? '$' : '✦'
 
-  return createElement('div', { style: rootStyle, 'data-dshell-dock': '' },
+  return createElement('div', { ref: rootRef, style: rootStyle, 'data-dshell-dock': '' },
     props.pty !== undefined
       ? createElement(PtyScrollback, { pty: props.pty, sessionId: props.sessionId })
-      : createElement('div', { style: { ...scrollStyle, color: '#6a6a74' } }, '正在加载终端…'),
+      : createElement('div', { style: { ...scrollStyle, color: 'var(--dshell-muted)' } }, '正在加载终端…'),
     createElement('div', { style: inputBarStyle },
       createElement('button', {
-        style: modeChipStyle,
+        style: mode === 'shell' ? modeChipStyle : modeChipStyleActive,
         title: '点击切换模式（/agent、/shell）',
         onClick: () => { props.mode?.set(mode === 'shell' ? 'agent' : 'shell') },
-      }, mode === 'shell' ? '⌨ shell' : '✳ agent'),
+      }, mode === 'shell' ? '$ shell' : '✦ agent'),
+      createElement('span', { style: promptPrefixStyle }, promptGlyph),
       createElement('input', {
         style: inputStyle,
         value: text,
@@ -332,6 +609,7 @@ function TerminalDock(props: TerminalDockProps): ReactElement {
       props.sessionId !== undefined && props.model !== undefined
         ? createElement(ModelChip, { face: props.model })
         : null,
+      createElement(ThemeChip),
     ),
     error !== null ? createElement('div', { style: errorStyle }, error) : null,
   )
