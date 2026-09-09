@@ -51,7 +51,7 @@ Everything the user sees in dshell is either an existing dsh event projected
 through a registered target or a PTY byte stream surfaced through a ws
 upgrade route owned by `dshell-terminal-bridge`.
 
-## 4. Six decisions
+## 4. Seven decisions
 
 ### 4.1 Session isolation
 
@@ -186,6 +186,53 @@ which returns the `TerminalSessionId` of the bridge-owned main shell.
 The agent uses this id when interacting with the user's shell. Without
 this tool, the agent has no reliable way to refer to `main` — `name`
 is owner-local display metadata only, not an addressable handle.
+
+### 4.7 Workspace removal
+
+dsh's workspace registry groups sessions under a user-picked directory,
+and the stock web UI gates the composer behind a "选择工作区" picker.
+A terminal-first shell has no use for this: the terminal's "workspace"
+is the PTY's current directory, which changes constantly. The runtime
+half of dsh never reads the registry anyway — agent spawn, PTY, file
+tools, sandbox, subagents, ACP, and hooks all consume
+`session.header.cwd` (a one-time copy taken at session creation), and
+dsh's own docs call the feature optional
+(`dsh/docs/subsystems/workspace.md`: "an optional host-side capability,
+not part of the agent-loop spine"). Only the web-app bundle mounts it.
+
+dshell removes the concept through a dedicated package
+`dshell-workspace` (Phase 1.5), without forking:
+
+- The dshell bundle patch disables the four web-app rows `workspace`,
+  `workspace-controller`, `ui-workspace`, and `directory-picker`.
+- Disabling alone would hang the shell: `session-controller` (host)
+  and `ui-conversation` / `ui-sidebar` (client) hard-inject
+  `workspaceRegistry` / `workspaces` / `uiWorkspace`, and
+  ConversationRoot requires the `slots.provideRoot({ hooks: {
+  workspaces } })` root hook. The package therefore provides same-key
+  replacement services (Cordis service keys are plain strings): a
+  minimal host registry stub covering the consumed surface, and client
+  stubs plus the root hook.
+- The hero picker and sidebar workspace grouping disappear with the
+  `ui-workspace` row; the composer's inert gate
+  (`sessionId === undefined || (hero && chipTitle === undefined)`)
+  reduces to plain "no session open".
+
+Sessions are created via `sessions.create({ cwd })` (workspaceId
+omitted) — a stock dsh creation path, workspaceId and cwd being
+alternatives by contract.
+
+Consequences:
+
+- Session creation never asks for a workspace. The sidebar falls back
+  to dsh's built-in flat session list.
+- Session cwd is immutable after creation (`ApiSessionCwdConflict`):
+  one session = one fixed agent working root. The PTY `cd`s freely;
+  Phase 7's context injection reports the live PTY cwd to the agent so
+  it always knows where the user is. Cross-directory work means a new
+  session (`/new`) — matching the terminal habit of cd-then-work.
+- The removed registry is not backed up or migrated; existing
+  `$DSH_HOME/storages/workspace` data is simply no longer read.
 
 ## 5. Wire protocol
 

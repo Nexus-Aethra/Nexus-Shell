@@ -56,6 +56,33 @@ npx @deepseek-ai/dsh web --profile web
 # drives the chat target because nothing changes that one.
 ```
 
+## Phase 1.5 — Workspace removal
+
+Goal: the workspace concept is gone from the running shell — no picker
+gate, no sidebar grouping, sessions created directly by cwd.
+
+Covers decision: 4.7 (workspace removal).
+
+Plugins touched:
+
+- `dshell-workspace` (new, two-faced) — host face provides a minimal
+  `workspaceRegistry` stub so `session-controller`'s inject resolves;
+  client face provides `workspaces` + `uiWorkspace` stubs and the
+  root `workspaces` hook that ConversationRoot requires.
+- `dshell-bundle` — inserts the `dshell-workspace` row and disables
+  the stock rows `workspace`, `workspace-controller`, `ui-workspace`,
+  `directory-picker`.
+
+Acceptance check:
+
+- dsh web boots with the four stock rows disabled and dshell's
+  replacements active; no pending-fiber hang, no missing-root-hook
+  crash.
+- The composer is live without any workspace pick; creating a session
+  goes through `sessions.create({ cwd })` with no workspace attached.
+- The sidebar shows one flat session list; no workspace picker or
+  grouping anywhere in the UI.
+
 ## Phase 2 — Main shell lifecycle
 
 Goal: bridge owns a `name: 'main'` PTY for the active agent; the PTY

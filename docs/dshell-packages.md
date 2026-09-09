@@ -24,9 +24,10 @@ when it contributes to model-visible state.
   set.
 
 - Each package name uses one dash-separated role token after `dshell`:
-  `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`.
+  `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`,
+  `workspace`.
 
-## The five packages
+## The six packages
 
 ### `dshell-bundle`
 
@@ -96,6 +97,25 @@ when it contributes to model-visible state.
 - Touches decisions: 4.5 (real commands), 4.6 (agent access to main
   PTY id).
 
+### `dshell-workspace`
+
+- Role: removes dsh's workspace concept from the running shell
+  (design 4.7). Two-faced Cordis package:
+  - **Host face** provides a `workspaceRegistry`-keyed stub covering
+    the surface `session-controller` consumes, so the stock row
+    `workspace` can be disabled without hanging the host boot.
+  - **Browser face** provides `workspaces`- and `uiWorkspace`-keyed
+    stubs plus the root `workspaces` hook, so the stock row
+    `ui-workspace` can be disabled without hanging ui-conversation /
+    ui-sidebar or crashing ConversationRoot.
+- dsh services depended on: none beyond the replaced keys; it
+  *provides* `workspaceRegistry` (host), `workspaces` + `uiWorkspace`
+  (client).
+- Introduced in: Phase 1.5.
+- Touches decisions: 4.7 (workspace removal) and indirectly 4.5 —
+  `/new` creates sessions via `sessions.create({ cwd })` with no
+  workspace attached.
+
 ## What is not a dshell package
 
 The following dsh components are reused unchanged. They are listed here
@@ -124,8 +144,9 @@ dshell-bundle
   ├── dshell-mode
   │     ├── dshell-conversation
   │     └── dshell-terminal-bridge
-  └── dshell-commands
-        └── dshell-terminal-bridge
+  ├── dshell-commands
+  │     └── dshell-terminal-bridge
+  └── dshell-workspace        (replaces the disabled stock rows)
 ```
 
 There are no cycles. `dshell-bundle` is the install root; the others
@@ -158,5 +179,15 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.dshellPtyBuffer` — per-session rolling buffer of recent
   `main` PTY output (≤ 100 lines / 4 KiB). Read by `dshell-mode`
   when injecting context.
+
+### Replaces (same-key providers over disabled stock rows)
+
+- `workspaceRegistry` (host) — stubbed by `dshell-workspace` so
+  `session-controller` resolves after the stock `workspace` row is
+  disabled.
+- `workspaces` + `uiWorkspace` (client) + the root `workspaces` hook —
+  stubbed by `dshell-workspace` so ui-conversation / ui-sidebar
+  resolve and ConversationRoot mounts after the stock `ui-workspace`
+  row is disabled.
 
 No new public `ctx` key is added to dsh itself.
