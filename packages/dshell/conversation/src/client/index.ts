@@ -65,16 +65,22 @@ export function apply(ctx: Context): void {
 
   ctx.effect(() => ctx.uiConversation.views.register(viewDefinition))
 
+  // Activation must land before ui-conversation resolves the shell phase,
+  // or the blank session renders the centered hero and the view area stays
+  // collapsed. The session binding can lag the list notification, so a
+  // failed attempt is NOT recorded — the next notification retries. Only a
+  // target the assembler accepted (activeTargets gains it) is remembered,
+  // so a user's own view choice is never re-stolen for that session.
   const activated = new Set<string>()
   ctx.effect(() => {
     const reconcile = (): void => {
       const current = sessions.list.getSnapshot().current
       if (current === undefined || activated.has(String(current))) return
-      activated.add(String(current))
       try {
         ctx.uiConversation.binding(current).activate('terminal')
-      } catch (error) {
-        console.warn('dshell-conversation: terminal activation failed:', error)
+        activated.add(String(current))
+      } catch {
+        // Session scope not materialized yet; retry on the next change.
       }
     }
     const dispose = sessions.list.subscribe(reconcile)

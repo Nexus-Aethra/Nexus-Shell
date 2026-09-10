@@ -29,6 +29,7 @@
  */
 
 import {
+  Component,
   createElement,
   useEffect,
   useRef,
@@ -234,16 +235,6 @@ export function subscribeTheme(listener: () => void): () => void {
   return themeStore.subscribe(listener)
 }
 
-const scrollStyle: CSSProperties = {
-  flex: '1 1 auto',
-  minHeight: 0,
-  overflowY: 'auto',
-  overflowX: 'hidden',
-  padding: '14px 16px 8px',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-  scrollbarColor: 'var(--dshell-border-strong) transparent',
-}
 const modeChipStyle: CSSProperties = {
   border: '1px solid var(--dshell-border-strong)',
   background: 'transparent',
@@ -393,8 +384,18 @@ function PtyCanvas(props: {
       const probeBox = probe.getBoundingClientRect()
       const charWidth = probeBox.width / 40
       const lineHeight = probeBox.height
-      const cols = Math.max(20, Math.floor(el.clientWidth / charWidth) - 1)
-      const rows = Math.max(6, Math.floor(el.clientHeight / lineHeight))
+      // The probe has no metrics until the view area gets laid out (and a
+      // hidden/zero-size ancestor yields 0 or NaN). xterm's resize throws
+      // "This API only accepts integers" on non-finite input, so guard.
+      if (!Number.isFinite(charWidth) || charWidth <= 0) return
+      if (!Number.isFinite(lineHeight) || lineHeight <= 0) return
+      if (el.clientWidth <= 0 || el.clientHeight <= 0) return
+      // Clamp hard: a layout feedback loop (container growing with the
+      // rendered screen) would otherwise runaway to hundreds of thousands
+      // of rows.
+      const cols = Math.min(500, Math.max(20, Math.floor(el.clientWidth / charWidth) - 1))
+      const rows = Math.min(300, Math.max(6, Math.floor(el.clientHeight / lineHeight)))
+      if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
       const size = sizeRef.current
       if (size !== undefined && size.cols === cols && size.rows === rows) return
       sizeRef.current = { cols, rows }
@@ -516,7 +517,16 @@ function PtyCanvas(props: {
     return eventSource.subscribe(() => { render(eventSource.getSnapshot()) })
   }, [eventSource, props.pty])
 
-  return createElement('div', { ref, style: { ...scrollStyle, position: 'relative', width: '100%', maxWidth: '100%' } },
+  return createElement('div', {
+    ref,
+    style: {
+      position: 'absolute',
+      inset: 0,
+      overflow: 'hidden',
+      padding: '10px 14px 8px',
+      boxSizing: 'border-box',
+    },
+  },
     createElement('span', {
       ref: probeRef,
       style: {
@@ -526,72 +536,164 @@ function PtyCanvas(props: {
     }, 'W'.repeat(40)))
 }
 
-/** Compact dshell controls rendered into the stock composer's
- * `conversation.input.left` slot. Stock InputBar already supplies
- * `/`/`@` trigger popups, context meter, model select, attachment, and
- * send/stop; this entry just adds the shell/agent mode chip and a
- * shell-mode hint. The mode store is the per-session one defined in
- * `apply()`; the chip is purely a view over it. */
+/** Standard stock props this entry receives from the composer bar owner. */
+interface DshellInputStandardProps {
+  /** Live composer state (draft text) — the submit router reads it. */
+  useInput?: <S>(sel: (state: { draft: string }) => S, eq?: (a: S, b: S) => boolean) => S
+  /** Programmatic draft writes (the router clears the composer after a shell send). */
+  inputActions?: { setDraft(text: string): void }
+}
+
+/**
+ * Compact dshell controls rendered into the stock composer's
+ * `conversation.input.left` slot, plus the dual-mode submit router.
+ *
+ * Mode is a per-session store (`shell` | `agent`, default `shell`):
+ *  - `agent` — the stock composer behaves exactly like dsh: Enter runs
+ *    the command adjudication / sends the prompt, `/` and `@` popups,
+ *    model select, context ring, attachments all untouched.
+ *  - `shell` — Enter (and the stock send button) is captured and the
+ *    draft goes to the bridge-owned main PTY instead of the model. A
+ *    leading `/` is left to the stock command pipeline in both modes
+ *    (`/clear`, `/new`, skills), so the composer's command surface keeps
+ *    working. The stock internals expose no submit hook for plain text
+ *    (`matchEnter` is only polled for trigger-prefixed lines), so the
+ *    router is a capture-phase listener on the composer card that reads
+ *    the draft from the stock input store and clears it through
+ *    `inputActions`.
+ */
 function DshellLeftControls(props: {
   sessionId: SessionId | undefined
   mode: SnapshotStore<SessionMode> | undefined
   pty: PtyStreamService | undefined
   setMode(next: SessionMode): void
   submitShell(text: string): void
-}): ReactElement | null {
-  if (props.sessionId === undefined) return null
+} & DshellInputStandardProps): ReactElement | null {
   const mode = useSyncExternalStore(
     props.mode?.subscribe ?? (() => () => {}),
     props.mode?.getSnapshot ?? (() => 'shell' as SessionMode),
   )
+  // Latest draft, kept in a ref so the DOM-level listener reads it
+  // without re-subscribing on every keystroke.
+  const draft = props.useInput?.(state => state.draft) ?? ''
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const pty = props.pty
+  const sendShell = props.submitShell
+  const clearDraft = props.inputActions?.setDraft
+
+  useEffect(() => {
+    if (pty === undefined || clearDraft === undefined) return
+    const route = (): boolean => {
+      if (modeRef.current !== 'shell') return false
+      const text = draftRef.current
+      if (text.trim().length === 0) return false
+      // A leading slash belongs to the stock command/trigger pipeline
+      // (`/clear`, `/new`, skills, …) in both modes — never to bash.
+      if (text.trimStart().startsWith('/')) return false
+      sendShell(text)
+      clearDraft('')
+      return true
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+      const target = event.target
+      if (!(target instanceof Element) || target.closest('[data-composer-card]') === null) return
+      if (!route()) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+    const onPointerDown = (event: MouseEvent): void => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (target.closest('[class*="_primary"]') === null) return
+      if (target.closest('[data-composer-card]') === null) return
+      if (!route()) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('click', onPointerDown, true)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('click', onPointerDown, true)
+    }
+  }, [pty, sendShell, clearDraft])
+
+  if (props.sessionId === undefined) return null
   const next: SessionMode = mode === 'shell' ? 'agent' : 'shell'
   const glyph = mode === 'shell' ? '$' : '✦'
   const label = mode === 'shell' ? 'shell' : 'agent'
   return createElement('div', { style: chipSeatStyle },
     createElement('button', {
       style: modeChipStyle,
-      title: mode === 'shell' ? '切换到对话模式' : '切换到 shell 模式',
+      title: mode === 'shell' ? '当前:shell 模式,Enter 直接执行命令' : '当前:对话模式,Enter 发送给 AI',
       onClick: () => { props.setMode(next) },
     }, `${glyph} ${label}`),
-    mode === 'shell' && props.pty !== undefined
-      ? createElement('div', { style: { color: 'var(--dshell-muted, #9d9da6)', fontSize: 12, marginLeft: 8 } },
-          'shell 模式下,用 /shell <cmd> 跑命令')
-      : null,
+    createElement('div', { style: { color: 'var(--dshell-muted, #9d9da6)', fontSize: 12, marginLeft: 8 } },
+      mode === 'shell' ? 'Enter 执行命令 · / 看指令' : 'Enter 发送对话 · / 看指令'),
   )
 }
 
-/** dshell PTY canvas rendered into the stock composer's
- * `conversation.composer.dock` slot (the area below the composer card
- * in `InputBar.tsx:569-571`). It receives the same standardProps the
- * stock owner passes — we use the explicit `pty` + `sessions` props we
- * derive in our registration, since the dock slot's standardProps do
- * not include PtyStreamService. */
-function DshellDockCanvas(props: {
+/** Temporary diagnostic boundary: surfaces a render failure inside the
+ * dshell view instead of letting the stock slot boundary swallow it. */
+class DshellViewBoundary extends Component<{ children: ReactElement }, { error: string | null }> {
+  constructor(props: { children: ReactElement }) {
+    super(props)
+    this.state = { error: null }
+  }
+
+  static getDerivedStateFromError(error: unknown): { error: string } {
+    return { error: error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error) }
+  }
+
+  override render(): ReactElement {
+    if (this.state.error !== null) {
+      return createElement('pre', {
+        'data-dshell-view-error': '',
+        style: { color: '#f87171', fontSize: 12, whiteSpace: 'pre-wrap', padding: 12 },
+      }, this.state.error)
+    }
+    return this.props.children
+  }
+}
+
+/**
+ * The dshell main surface: the PTY canvas registered as the `terminal`
+ * conversation view (`conversation.view`, id `terminal`). The view area
+ * is the whole content column above the composer, so the canvas is
+ * full-bleed — the composer card below stays stock (its `/` | `@`
+ * popups, model select, context ring, attachments).
+ */
+function DshellTerminalView(props: {
   sessionId: SessionId | undefined
   pty: PtyStreamService
   sessions: ISessions
   theme: Theme
 }): ReactElement {
   return createElement('div', {
-    'data-dshell-pty-dock': '',
+    'data-dshell-terminal-view': '',
     style: {
-      borderTop: `1px solid ${props.theme.border}`,
-      background: props.theme.bg,
-      minHeight: 220,
-      maxHeight: '40vh',
-      width: '100%',
-      maxWidth: '100%',
+      position: 'relative',
+      display: 'flex',
+      flexDirection: 'column',
+      flex: '1 1 auto',
+      minHeight: 0,
+      minWidth: 0,
       overflow: 'hidden',
-      padding: 8,
-      boxSizing: 'border-box',
+      background: props.theme.bg,
     },
   },
-    createElement(PtyCanvas, {
-      pty: props.pty,
-      sessions: props.sessions,
-      sessionId: props.sessionId,
-      theme: props.theme,
-    }),
+    createElement(DshellViewBoundary, null,
+      createElement(PtyCanvas, {
+        pty: props.pty,
+        sessions: props.sessions,
+        sessionId: props.sessionId,
+        theme: props.theme,
+      }),
+    ),
   )
 }
 
@@ -643,14 +745,12 @@ export function apply(ctx: Context): void {
   // the composer surface, so the user gets stock features out of the box:
   // the `/` | `@` trigger popup (commands / skills / files / sessions),
   // context-occupancy ring, model select, attachment surface, subagent bar,
-  // and send / stop button. dshell contributes its own pieces as child
-  // entries into the stock slots:
-  //  - `conversation.input.left`   dshell mode chip + shell hint
-  //  - `conversation.composer.dock` the PTY canvas below the composer
-  // Stock's `InputBar` renders all of these through its own `renderSlot`
-  // chain (see dsh/packages/client/ui-conversation/src/client/skeleton/
-  // InputBar.tsx:518-570). dshell's TerminalDock is therefore gone — the
-  // visible surface is stock InputBar + dshell slots.
+  // and send / stop button. dshell contributes exactly two entries:
+  //  - `conversation.input.left`  the dual-mode chip + submit router
+  //  - `conversation.view` (id `terminal`)  the full-bleed PTY canvas
+  // The canvas is a conversation VIEW, not a composer child: the view
+  // area is the content column above the composer, while
+  // `conversation.composer.dock` lives inside the composer card.
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
     {
       // Own id so dshell can be addressed individually by future owners.
@@ -671,11 +771,12 @@ export function apply(ctx: Context): void {
     },
     DshellLeftControls,
   ))
-  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
+  ctx.slots.inject('conversation.view', () => ctx.slots.register(
     {
-      id: 'dshell-pty-canvas',
-      name: 'conversation.composer.dock',
-      order: 100,
+      id: 'terminal',
+      name: 'conversation.view',
+      order: 20,
+      label: () => '终端',
       inject: (sessionId: SessionId | undefined) => ({
         sessionId,
         pty,
@@ -683,7 +784,7 @@ export function apply(ctx: Context): void {
         theme: getTheme(DEFAULT_THEME_ID),
       }),
     },
-    DshellDockCanvas,
+    DshellTerminalView,
   ))
 }
 

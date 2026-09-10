@@ -160,42 +160,48 @@ Acceptance check:
 
 ## Phase 4 — Fused terminal surface
 
-Goal: dshell owns the whole conversation surface. The stock
-`conversation.composer.bar` slot is shadowed at priority -1 by the
-dshell terminal dock (design 4.8): one full-bleed vertical column — the
-PTY scrollback streams above a monospace input line pinned to the
-bottom. Mode chip + model chip live inline with the input line; the
-stock chat composer and centered hero are gone.
+Goal: dshell owns the conversation surface without forking dsh's
+layout. The stock `conversation.bar` composer stays in place — it is
+dsh's InputBar, and dshell borrows it wholesale for its `/` | `@`
+trigger popup, context-occupancy ring, model select, attachment
+surface, and send/stop. dshell contributes exactly two entries into
+the stock slot tree:
 
-The Phase 1 interim terminal-tab approach (`conversation.view` slot
-with `id: 'terminal'`) was tried and abandoned. It split PTY output
-and the input dock into separate slot occupants whose layouts fought
-each other, and forced the stock `selectView` path through a `chat`
-default. Replacing it with a single composer-bar shadow that owns the
-entire column avoids both issues — the dock IS the surface.
+- `conversation.input.left` — the dual-mode chip (`$ shell` /
+  `✦ agent`) plus the shell-mode hint.
+- `conversation.view` (id `terminal`) — the full-bleed PTY canvas,
+  rendered in the view area above the composer.
+
+The earlier attempt to shadow `conversation.composer.bar` with a
+self-built dock was abandoned: it dropped every stock composer feature
+(no `/` popup, no context meter, no model select) and left the page
+layout to hand-written CSS overrides that fought the stock flex chain.
+Borrowing the composer and adding slots keeps the stock layout intact.
 
 Covers decisions: 4.1 (terminal-first surface), 4.5 (mode state),
 4.8 (terminal layout).
 
 Plugins touched:
 
-- `dshell-mode` (browser face) — registers the shadowing dock as a
-  full-height flex column: scrollback above, input bar at the bottom.
-  Per-session mode store; Enter dispatch by mode (`shell` → bridge
-  `send`, `agent` → `scopedConversation.send`); `/agent` / `/shell`
-  prefix parsing; model chip over `ctx.modelDirectories` (shared with
-  `/model`, no child-hole collision).
-- `dshell-conversation` (browser face) — registers a no-renderer
-  `ConversationViewDefinition` on target `terminal` whose `isActive`
-  returns `true`. The framework treats the target as visible activity
-  even in a blank session, so the conversation stays in `active` phase
-  instead of the centered `hero`. The same plugin auto-activates
-  `terminal` on every new session.
-- `dshell-workspace` (browser face) — keeps the interim CSS that
-  hides the hero chrome (`heroWorkspaceRow`, `headline`), pins the
-  dock to the bottom of the scroll column in `hero` phase, and in
-  `active` phase neutralizes the slot chain's `display:contents` /
-  `flex:0 1 auto` wrappers so the dock flex-grows to fill the seat.
+- `dshell-mode` (browser face) — registers the mode chip and the
+  `terminal` view. The per-session mode store (`shell` | `agent`,
+  default `shell`) drives both rendering and input: in `shell` mode a
+  capture-phase listener routes the composer's Enter (and its primary
+  send button) to the bridge PTY and clears the stock draft through
+  `inputActions.setDraft`; a leading `/` is always left to the stock
+  command pipeline so `/clear`, `/new`, and skills keep working. In
+  `agent` mode the stock submit path runs untouched.
+- `dshell-conversation` (browser face) — registers the no-renderer
+  `ConversationViewDefinition` on target `terminal` (`isActive` →
+  `true`) and auto-activates `terminal` per session. Activation is
+  retried until the session binding accepts it — a failed attempt is
+  not recorded, because an un-activated target leaves the shell in
+  `blank` phase and the view area collapsed.
+- `dshell-workspace` (browser face) — keeps only the hero chrome
+  hiding (`heroWorkspaceRow`, `headline`) and the hero composer
+  bottom-pin. The old `[data-phase="active"]` overrides (including
+  `viewArea { display: none }`) are gone: the stock active layout is
+  where the canvas and composer belong.
 
 Acceptance check (current state — see screenshot in conversation):
 

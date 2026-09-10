@@ -457,13 +457,13 @@ export function apply(ctx: Context): void {
   // the empty 'pending' snapshot routes it to the cwd-label branch.
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
 
-  // Interim (removed with the Phase 4 scaffold takeover, design 4.8): the
-  // stock hero row hardcodes a WorkspaceChip whose label falls back to the
-  // session cwd, and the blank-session hero banner ("探索未至之境") plus
-  // its centered layout fight the terminal-first surface. None of these
-  // are slots, so a plugin cannot unmount them — hide/reposition with a
-  // stylesheet instead. The CSS-module suffixes are stable; the hash
-  // prefixes are not, hence the contains-selectors.
+  // dshell is terminal-first: the blank-session hero banner ("探索未至之境")
+  // and its workspace chip fight the terminal surface, and neither is a slot,
+  // so a plugin cannot unmount them — hide/reposition with a stylesheet. The
+  // CSS-module suffixes are stable; the hash prefixes are not, hence the
+  // contains-selectors. Nothing here touches the active phase: the stock
+  // layout (docked composer + `conversation.view` area) is exactly where the
+  // dshell PTY canvas and composer belong, so it stays stock.
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.dshell = 'hero-interim-hide'
@@ -475,18 +475,6 @@ export function apply(ctx: Context): void {
       // a stable stock attribute on the conversation root.
       '[data-phase="hero"] [class*="scrollBody"] { justify-content: flex-end !important; }',
       '[class*="composerHero"] { padding-bottom: 14px !important; }',
-      // Active phase: the dock (fused PTY + input) IS the surface; let the
-      // composerSeat flex to fill the scroll body, neutralize the slot
-      // chain's display:contents + flex:0 1 auto wrappers so the dock's
-      // flex sizing reaches it, pin the dock root to the seat, and hide
-      // the stock view area / todo strip — content lives in the dock.
-      '[data-phase="active"] [class*="composerSeat"] { flex: 1 1 auto !important; min-height: 0 !important; display: flex !important; flex-direction: column !important; }',
-      '[data-phase="active"] [data-slot="conversation.composer"] { flex: 1 1 auto !important; display: flex !important; flex-direction: column !important; min-height: 0 !important; }',
-      '[data-phase="active"] [class*="composerStack"] { flex: 1 1 auto !important; min-height: 0 !important; }',
-      '[data-phase="active"] [data-slot="conversation.composer.bar"] { order: 99 !important; flex: 1 1 auto !important; min-height: 0 !important; display: flex !important; flex-direction: column !important; }',
-      '[data-phase="active"] [data-dshell-dock] { flex: 1 1 auto !important; min-height: 0 !important; }',
-      '[data-phase="active"] [data-slot="conversation.input.dock"] { display: none !important; }',
-      '[data-phase="active"] [class*="viewArea"] { display: none !important; }',
     ].join('\n')
     document.head.appendChild(style)
     return () => { style.remove() }
