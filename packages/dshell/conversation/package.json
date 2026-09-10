@@ -35,7 +35,8 @@
   "dependencies": {
     "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
     "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
-    "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation"
+    "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation",
+    "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer"
   },
   "devDependencies": {
     "@types/react": "~18.3.1",

@@ -112,6 +112,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../dsh/packages/client/ui-conversation
         version: link:../../../dsh/packages/client/ui-conversation
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
     devDependencies:
       '@types/react':
         specifier: ~18.3.1

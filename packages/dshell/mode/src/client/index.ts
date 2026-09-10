@@ -256,17 +256,22 @@ function injectXtermCss(): void {
   if (xtermCssInjected) return
   xtermCssInjected = true
   const style = document.createElement('style')
-  style.textContent = XTERM_CSS
+  // xterm's own CSS leaves the viewport opaque in some renderers; force the
+  // whole terminal tree transparent so the canvas blends with the app
+  // surface instead of painting a black card.
+  style.textContent = `${XTERM_CSS}\n.xterm,.xterm-viewport,.xterm-screen,.xterm-scrollable-element{background-color:transparent !important;}`
   document.head.append(style)
 }
 
-/** Map a dock theme palette onto the xterm renderer. */
+/** Map a dock theme palette onto the xterm renderer. The background stays
+ * fully transparent (8-digit hex is what xterm's parser reliably accepts)
+ * so the terminal blends with the app surface. */
 function xtermTheme(theme: Theme): ITheme {
   return {
-    background: theme.bg,
+    background: '#00000000',
     foreground: theme.text,
     cursor: theme.accent,
-    cursorAccent: theme.bg,
+    cursorAccent: '#00000000',
     selectionBackground: theme.accentFaint,
     selectionForeground: theme.text,
   }
@@ -275,7 +280,20 @@ function xtermTheme(theme: Theme): ITheme {
 /** A durable session event worth drawing into the canvas (4.4 merge). */
 interface SessionRow {
   readonly role: 'user' | 'assistant' | 'tool' | 'command'
+  /** Identity within the session log (type + seq), for collapse state. */
+  readonly key: string
+  /** Full display text; may span lines. */
   readonly text: string
+  /** Whether the row offers a collapse toggle (long agent/tool records). */
+  readonly collapsible: boolean
+}
+
+/** Line count above which a row starts collapsed in the merged timeline. */
+const COLLAPSE_THRESHOLD: Record<SessionRow['role'], number> = {
+  user: Number.POSITIVE_INFINITY,
+  assistant: 10,
+  tool: 3,
+  command: Number.POSITIVE_INFINITY,
 }
 
 function messageText(content: readonly unknown[] | undefined): string {
@@ -286,6 +304,23 @@ function messageText(content: readonly unknown[] | undefined): string {
     .join('')
 }
 
+function rowOf(
+  role: SessionRow['role'],
+  type: string,
+  seq: number,
+  text: string,
+): SessionRow | null {
+  const body = text.replace(/\n+$/, '')
+  if (body.trim().length === 0) return null
+  const lines = body.split('\n').length
+  return {
+    role,
+    key: `${type}:${seq}`,
+    text: body,
+    collapsible: lines > COLLAPSE_THRESHOLD[role],
+  }
+}
+
 /** Extract one displayable row from a durable Session event. */
 function sessionRowOf(event: SessionEventLike): SessionRow | null {
   if (event.type === 'user/message') {
@@ -293,16 +328,23 @@ function sessionRowOf(event: SessionEventLike): SessionRow | null {
     // The Phase 7 context block rides inside the user message; show only
     // the user's own words beneath it.
     const stripped = /^\[dshell 终端上下文\][\s\S]*?```\n([\s\S]*)$/.exec(text)
-    const own = stripped === null ? text : (stripped[1] ?? '')
-    return own.trim().length === 0 ? null : { role: 'user', text: own }
+    return rowOf('user', event.type, event.seq, stripped === null ? text : (stripped[1] ?? ''))
   }
-  if (event.type === 'assistant/message') return { role: 'assistant', text: messageText(event.data.message.content) }
-  if (event.type === 'tool/result') return { role: 'tool', text: messageText(event.data.message.content) }
+  if (event.type === 'assistant/message') {
+    return rowOf('assistant', event.type, event.seq, messageText(event.data.message.content))
+  }
+  if (event.type === 'tool/result') {
+    return rowOf('tool', event.type, event.seq, messageText(event.data.message.content))
+  }
   if (event.type === 'command/done') {
     const outcome = event.data.kind === 'error' ? `失败:${event.data.text ?? ''}` : (event.data.text ?? '')
-    return { role: 'command', text: `${outcome}`.trim().length === 0 ? '完成' : `${outcome}` }
+    return rowOf('command', event.type, event.seq, outcome.trim().length === 0 ? '完成' : outcome)
   }
-  if (event.type === 'command/run') return { role: 'command', text: `${event.data.args === undefined || event.data.args === '' ? event.data.name : `${event.data.name} ${event.data.args}`}` }
+  if (event.type === 'command/run') {
+    const args = event.data.args
+    const text = args === undefined || args === '' ? event.data.name : `${event.data.name} ${args}`
+    return rowOf('command', event.type, event.seq, text)
+  }
   return null
 }
 
@@ -313,15 +355,41 @@ const SESSION_ROW_COLOR: Record<SessionRow['role'], string> = {
   command: '\u001b[33m',
 }
 
-/** Draw one session row as dimmed `┃`-margined lines (design 4.4). */
-function writeSessionRow(term: XtermTerminal, row: SessionRow): void {
+const SESSION_ROW_LABEL: Record<SessionRow['role'], string> = {
+  user: '┃ 你',
+  assistant: '┃ AI',
+  tool: '┃✦ 工具',
+  command: '┃⚡ 命令',
+}
+
+/**
+ * Draw one session row as `┃`-margined lines (design 4.4). Long records
+ * render collapsed to their first line plus a toggle hint; the caller
+ * records the header's buffer line so a click can flip the state.
+ * @param term - target terminal.
+ * @param row - the row to draw.
+ * @param collapsed - whether the body is hidden.
+ * @returns the absolute buffer line of the header, or null when skipped.
+ */
+function writeSessionRow(term: XtermTerminal, row: SessionRow, collapsed: boolean): number | null {
   const color = SESSION_ROW_COLOR[row.role]
-  const label = row.role === 'user' ? '┃ 你' : row.role === 'assistant' ? '┃ AI' : row.role === 'tool' ? '┃✦ 工具' : '┃⚡ 命令'
-  const lines = row.text.replace(/\n+$/, '').split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const head = i === 0 ? `${color}${label}${'\u001b[0m'}` : `${color}┃${'\u001b[0m'}`
-    term.write(`${head} ${lines[i] ?? ''}\r\n`)
+  const reset = '\u001b[0m'
+  const dim = '\u001b[2m'
+  const lines = row.text.split('\n')
+  const summary = lines[0] ?? ''
+  const rest = lines.slice(1)
+  const buffer = term.buffer.active
+  const headerLine = buffer.baseY + buffer.cursorY
+  const hint = row.collapsible
+    ? collapsed
+      ? ` ${dim}[+${String(rest.length)} 行 ▸ 点击展开]${reset}`
+      : ` ${dim}[▾ 点击收起]${reset}`
+    : ''
+  term.write(`${color}${SESSION_ROW_LABEL[row.role]}${reset} ${summary}${hint}\r\n`)
+  if (!collapsed) {
+    for (const line of rest) term.write(`${color}┃${reset} ${line}\r\n`)
   }
+  return headerLine
 }
 
 /** The xterm.js canvas: raw ANSI stream + session events merged (4.4). */
@@ -389,12 +457,13 @@ function PtyCanvas(props: {
       // "This API only accepts integers" on non-finite input, so guard.
       if (!Number.isFinite(charWidth) || charWidth <= 0) return
       if (!Number.isFinite(lineHeight) || lineHeight <= 0) return
+      lineHeightRef.current = lineHeight
       if (el.clientWidth <= 0 || el.clientHeight <= 0) return
       // Clamp hard: a layout feedback loop (container growing with the
       // rendered screen) would otherwise runaway to hundreds of thousands
       // of rows.
-      const cols = Math.min(500, Math.max(20, Math.floor(el.clientWidth / charWidth) - 1))
-      const rows = Math.min(300, Math.max(6, Math.floor(el.clientHeight / lineHeight)))
+      const cols = Math.min(500, Math.max(20, Math.floor((el.clientWidth - 8) / charWidth)))
+      const rows = Math.min(300, Math.max(6, Math.floor((el.clientHeight - 12) / lineHeight)))
       if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
       const size = sizeRef.current
       if (size !== undefined && size.cols === cols && size.rows === rows) return
@@ -445,6 +514,9 @@ function PtyCanvas(props: {
     if (term === null) return
     const key = props.sessionId === undefined ? undefined : String(props.sessionId)
     sessionIdRef.current = key
+    // Collapse state is per session log; drop it when the log changes.
+    collapsedRef.current.clear()
+    rowLinesRef.current.clear()
     term.reset()
     if (key !== undefined) term.write(props.pty.read(key))
   }, [props.sessionId, props.pty])
@@ -464,14 +536,25 @@ function PtyCanvas(props: {
   const mergedReplayRef = useRef<(() => void) | undefined>(undefined)
   const replayPendingRef = useRef(false)
   const replayTimerRef = useRef<number | undefined>(undefined)
+  /** Rows the user collapsed, keyed by session + row key. */
+  const collapsedRef = useRef<Set<string>>(new Set())
+  /** Absolute buffer line of each row header → its collapse identity. */
+  const rowLinesRef = useRef<Map<number, { key: string; collapsible: boolean }>>(new Map())
+  const lineHeightRef = useRef(18)
   useEffect(() => {
     const term = termRef.current
     if (term === null || eventSource === undefined) return
     let watermark = 0
+    const drawRow = (id: string, row: SessionRow): void => {
+      const key = `${id}:${row.key}`
+      const line = writeSessionRow(term, row, collapsedRef.current.has(key))
+      if (line !== null) rowLinesRef.current.set(line, { key, collapsible: row.collapsible })
+    }
     const mergedReplay = (entries: readonly SessionEventLikeEntry[]): void => {
       const id = sessionIdRef.current
       if (id === undefined) return
       term.reset()
+      rowLinesRef.current.clear()
       const rows: { time: number; kind: 'pty' | 'session'; payload: string | SessionRow }[] = []
       for (const chunk of props.pty.chunks(id)) {
         if (chunk.text.length === 0) continue
@@ -486,10 +569,13 @@ function PtyCanvas(props: {
       rows.sort((a, b) => a.time - b.time || (a.kind === 'pty' ? -1 : 1))
       for (const item of rows) {
         if (item.kind === 'pty') term.write(item.payload as string)
-        else writeSessionRow(term, item.payload as SessionRow)
+        else drawRow(id, item.payload as SessionRow)
       }
     }
-    mergedReplayRef.current = () => { mergedReplay(eventSource.getSnapshot().entries) }
+    mergedReplayRef.current = () => {
+      const id = sessionIdRef.current
+      if (id !== undefined) mergedReplay(eventSource.getSnapshot().entries)
+    }
     const render = (win: SessionEventWindow): void => {
       if (win.change.kind === 'replace' || win.change.kind === 'prepend') {
         watermark = 0
@@ -505,10 +591,12 @@ function PtyCanvas(props: {
             // While a replay redraw is pending the row belongs to the same
             // transaction as the wipe — the redraw draws it in time order.
             if (replayPendingRef.current) continue
+            const id = sessionIdRef.current
+            if (id === undefined) continue
             // The cursor usually sits mid-line (after a live prompt); rows
             // are log entries and always start on their own line.
             if (term.buffer.active.cursorX > 0) term.write('\r\n')
-            writeSessionRow(term, row)
+            drawRow(id, row)
           }
         }
       }
@@ -517,14 +605,38 @@ function PtyCanvas(props: {
     return eventSource.subscribe(() => { render(eventSource.getSnapshot()) })
   }, [eventSource, props.pty])
 
+  // Click-to-collapse: map the clicked buffer line back to the row header.
+  useEffect(() => {
+    const el = ref.current
+    if (el === null) return
+    const onClick = (event: MouseEvent): void => {
+      const term = termRef.current
+      if (term === null) return
+      const screen = el.querySelector('.xterm-screen')
+      if (screen === null) return
+      const box = screen.getBoundingClientRect()
+      if (event.clientY < box.top || event.clientY > box.bottom) return
+      const viewportRow = Math.floor((event.clientY - box.top) / lineHeightRef.current)
+      const absolute = term.buffer.active.viewportY + viewportRow
+      const hit = rowLinesRef.current.get(absolute)
+      if (hit === undefined || !hit.collapsible) return
+      if (collapsedRef.current.has(hit.key)) collapsedRef.current.delete(hit.key)
+      else collapsedRef.current.add(hit.key)
+      mergedReplayRef.current?.()
+    }
+    el.addEventListener('click', onClick)
+    return () => { el.removeEventListener('click', onClick) }
+  }, [])
+
   return createElement('div', {
     ref,
     style: {
       position: 'absolute',
       inset: 0,
       overflow: 'hidden',
-      padding: '10px 14px 8px',
+      padding: '6px 10px 2px',
       boxSizing: 'border-box',
+      background: 'transparent',
     },
   },
     createElement('span', {
@@ -771,12 +883,19 @@ export function apply(ctx: Context): void {
     },
     DshellLeftControls,
   ))
+  // The terminal IS the conversation surface, so this entry takes over the
+  // stock `chat` view cell (same id, lower priority shadows it) instead of
+  // registering a sibling tab. That keeps the app at one surface: the view
+  // preference falls back to `chat`, and our entry is what renders there —
+  // no tab strip, no second view, no dependence on a store write. The
+  // shadowed stock entry stays registered, so the child slots it declares
+  // (`conversation.chat.node` rows) remain available to other plugins.
   ctx.slots.inject('conversation.view', () => ctx.slots.register(
     {
-      id: 'terminal',
+      id: 'chat',
       name: 'conversation.view',
-      order: 20,
-      label: () => '终端',
+      priority: -1,
+      label: () => '对话',
       inject: (sessionId: SessionId | undefined) => ({
         sessionId,
         pty,

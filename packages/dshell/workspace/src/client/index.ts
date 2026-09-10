@@ -470,6 +470,11 @@ export function apply(ctx: Context): void {
     style.textContent = [
       '[class*="heroWorkspaceRow"] { display: none !important; }',
       '[class*="headline"] { display: none !important; }',
+      // dshell has ONE surface: the terminal view interleaves PTY output and
+      // session records, so the stock view-tab strip (对话/轨迹/终端) only
+      // splits the shell in two. The stock views stay registered and the
+      // terminal target stays activated — only the switcher row is hidden.
+      '[data-slot="conversation.session.header"] [role="tablist"] { display: none !important; }',
       // Hero phase (no open session): pin the composer stack to the bottom of
       // the scroll column instead of the stock vertical center. data-phase is
       // a stable stock attribute on the conversation root.

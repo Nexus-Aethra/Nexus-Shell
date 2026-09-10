@@ -23,6 +23,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the sessions service merge (ctx.sessions).
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+// Type-only: pulls the renderer-owned slots service (ctx.slots).
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {
   ConversationViewBuilder,
   ConversationViewDefinition,
@@ -30,7 +32,7 @@ import type {
 
 export const name = '@deepseek-ai/dsh-dshell-conversation/client'
 
-export const inject = ['uiConversation', 'sessions'] as const
+export const inject = ['uiConversation', 'sessions', 'slots'] as const
 
 interface TerminalSnapshot {
   readonly rows: readonly never[]
@@ -65,27 +67,32 @@ export function apply(ctx: Context): void {
 
   ctx.effect(() => ctx.uiConversation.views.register(viewDefinition))
 
-  // Activation must land before ui-conversation resolves the shell phase,
-  // or the blank session renders the centered hero and the view area stays
-  // collapsed. The session binding can lag the list notification, so a
-  // failed attempt is NOT recorded — the next notification retries. Only a
-  // target the assembler accepted (activeTargets gains it) is remembered,
-  // so a user's own view choice is never re-stolen for that session.
-  const activated = new Set<string>()
+  // The terminal target must be the active view or the shell renders the
+  // (empty) chat transcript instead: ui-conversation resolves the shell
+  // phase from active targets, and its own restore path falls back to the
+  // `chat` view whenever the preference is unset. Re-assert on every
+  // session-list and view-slot change — our subscriptions are registered
+  // after ui-conversation's, so our activation runs last and wins the
+  // tick. `activate` is idempotent (the assembler ignores a target already
+  // active), and the dshell shell hides the view-tab strip, so there is no
+  // user view choice to preserve.
   ctx.effect(() => {
     const reconcile = (): void => {
       const current = sessions.list.getSnapshot().current
-      if (current === undefined || activated.has(String(current))) return
+      if (current === undefined) return
       try {
         ctx.uiConversation.binding(current).activate('terminal')
-        activated.add(String(current))
       } catch {
         // Session scope not materialized yet; retry on the next change.
       }
     }
-    const dispose = sessions.list.subscribe(reconcile)
+    const disposeList = sessions.list.subscribe(reconcile)
+    const disposeViews = ctx.slots.subscribe('conversation.view', reconcile)
     reconcile()
-    return dispose
+    return () => {
+      disposeList()
+      disposeViews()
+    }
   }, 'dshell-conversation: open into terminal view')
 }
 

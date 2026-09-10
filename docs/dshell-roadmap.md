@@ -169,8 +169,14 @@ the stock slot tree:
 
 - `conversation.input.left` — the dual-mode chip (`$ shell` /
   `✦ agent`) plus the shell-mode hint.
-- `conversation.view` (id `terminal`) — the full-bleed PTY canvas,
-  rendered in the view area above the composer.
+- `conversation.view` (id `chat`, shadowed) — the PTY canvas takes
+  over the stock chat cell rather than registering a sibling tab:
+  the view preference falls back to `chat`, so the canvas is what
+  renders there with no second view and no tab split. The canvas
+  interleaves PTY output with session records (design 4.4) and long
+  assistant/tool records render collapsed with a click-to-expand
+  header. The terminal background is transparent so the canvas blends
+  with the app surface instead of painting its own card.
 
 The earlier attempt to shadow `conversation.composer.bar` with a
 self-built dock was abandoned: it dropped every stock composer feature
