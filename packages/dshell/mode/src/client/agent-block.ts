@@ -432,6 +432,9 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
     : `${sanitizeRowText(stream.text)}${running ? '▍' : ''}`
   return createElement('div', {
     'data-dshell-block': 'agent',
+    // The bookmark rail looks each block up by its stable key, so the
+    // scroll-into-view can land on the right one.
+    'data-dshell-block-key': block.key,
     // The same 13px the terminal regions render at, so an answer and the
     // stream it came from read at one size.
     style: { margin: '14px 0 18px', overflow: 'hidden', fontSize: SPAN_FONT_SIZE, lineHeight: 1.6 },

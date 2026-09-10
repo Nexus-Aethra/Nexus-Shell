@@ -30,6 +30,7 @@ import { assembleTimeline, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
 import { ConnectionNotice, ConnectionPanel, connectionView } from './connection-notice.js'
 import { TodoCard, injectTodoCardCss, setTodoPanelSuppressed, type TodoItem } from './todo-card.js'
+import { BookmarkRail, bookmarksOf } from './bookmark-rail.js'
 import { useDshellTheme } from './theme.js'
 
 /**
@@ -380,6 +381,21 @@ export function BlockView(props: {
     return id !== undefined && state !== undefined && state.sessionId === id ? state.todos : []
   }, [version, id])
 
+  // The right-edge bookmark rail: one tick per agent turn in this session.
+  // `bookmarksOf` reads the same fold the column renders, so the strip stays
+  // in step with the cards — every turn that appears below also appears on
+  // the rail. Empty when the session has not had an agent yet, in which case
+  // the rail returns null and the surface looks exactly as it did before.
+  const bookmarks = useMemo(() => {
+    const state = foldRef.current
+    return id !== undefined && state !== undefined && state.sessionId === id
+      ? bookmarksOf(state.fold.blocks)
+      : []
+  }, [version, id])
+  // A jump unsticks the tail-pin so a fresh turn does not drag the reader
+  // back to the bottom while they are still reading an earlier block.
+  const handleJump = useCallback((): void => { pinned.current = false }, [])
+
   // How this session's terminal is doing. The wire state belongs to the
   // session it names, so a switch mid-render reads as "nothing yet" rather
   // than as the previous session's failure.
@@ -498,5 +514,14 @@ export function BlockView(props: {
         ...openSettings === undefined ? {} : { onSettings: openSettings },
       })
       : null,
+    // The right-edge bookmark rail sits on top of the column at zIndex 2 —
+    // below the connection panel (3) but above the scroll container, so it
+    // can scroll with the content when the column moves while keeping its
+    // own hover area interactive. It is null when there are no agent turns.
+    createElement(BookmarkRail, {
+      bookmarks,
+      scrollContainer: scroll.current,
+      onJump: handleJump,
+    }),
   )
 }
