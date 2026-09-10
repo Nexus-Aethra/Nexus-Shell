@@ -267,12 +267,27 @@ Acceptance check (current state — see screenshot in conversation):
   bash prints a fresh prompt. Init writes the custom PS1 +
   `PROMPT_COMMAND` (OSC 133;D marker) once, then `clear`; every
   session open starts from a replayed clean prompt.
-- **Readline keys the browser would swallow are mapped in the dock:**
-  Tab → `\t` (completion), ArrowUp/Down → `\x10`/`\x0e` (history, no
-  ESC bytes — those never survive the PTY input path), Ctrl+C →
-  `signalForeground(SIGINT)`. readline redraws erase with backspace
-  bytes; the canvas renders them natively (xterm.js), plain-text
-  reads collapse them.
+- **Focus follows mode (design 4.8), and the terminal chords work from
+  both focus owners.** Shell mode focuses the xterm canvas so raw keys
+  reach the PTY: `term.onData` forwards them while the mode ref says
+  `shell`, so Ctrl+C arrives as `\x03` (SIGINT), and Tab / arrows /
+  every readline key pass through untouched. `agent` mode blurs the
+  canvas and focuses the stock composer editor. A 400 ms heartbeat
+  re-claims the keyboard only when focus has fallen back to `body`
+  (page load, a modal closing), never stealing a deliberate click.
+  Because the composer is also an input line, its capture-phase router
+  mirrors the terminal chords in shell mode: Ctrl+C clears the draft
+  and sends `\x03`; Ctrl+Shift+C copies the canvas selection
+  (`term.getSelection()` through the module-level live-terminal
+  handle); Ctrl+Shift+V pastes into the PTY. The old dock's readline
+  key mapping is gone — raw mode makes it unnecessary.
+- **Selection is reverse video in the active palette.** xterm paints
+  the selection with the theme's `selectionBackground`; the old
+  12%-alpha accent was effectively invisible, and the *inactive* pair
+  is what shows while focus sits in the composer. Both pairs now use
+  the palette's `accent` for the highlight and `menuBg` for the glyphs,
+  so a selection reads as part of the current theme (`森林` highlights
+  green, `神秘` pink, …).
 - **Send settle with a custom PS1 (now agent-side only):** dsh's fast
   settle needs the stock `dsh> ` cue after the OSC 133;D marker
   (`promptTextSeen`); a custom PS1 disables it permanently, so sends

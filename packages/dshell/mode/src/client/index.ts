@@ -241,6 +241,20 @@ function useDshellTheme(): Theme {
 
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 
+/**
+ * The one live canvas terminal. The composer's key router needs it to copy
+ * the terminal selection (`Ctrl+Shift+C`) while the keyboard sits in the
+ * input line rather than the canvas.
+ */
+let activeTerm: XtermTerminal | null = null
+
+declare global {
+  interface Window {
+    /** Acceptance/debug handle: the live canvas terminal (see `xterm-css`). */
+    __DSHELL_TERM__?: XtermTerminal | null
+  }
+}
+
 let xtermCssInjected = false
 
 /** The combo loader serves one client.js per plugin — inject the stylesheet at runtime. */
@@ -256,16 +270,23 @@ function injectXtermCss(): void {
 }
 
 /** Map a dock theme palette onto the xterm renderer. The background stays
- * fully transparent (8-digit hex is what xterm's parser reliably accepts)
- * so the terminal blends with the app surface. */
+ * fully transparent so the terminal blends with the app surface instead of
+ * painting its own black card (the palette's `bg` is `transparent` too). */
 function xtermTheme(theme: Theme): ITheme {
   return {
     background: '#00000000',
     foreground: theme.text,
     cursor: theme.accent,
     cursorAccent: '#00000000',
-    selectionBackground: theme.accentFaint,
-    selectionForeground: theme.text,
+    // Reverse-video selection, keyed to the active palette: the highlight is
+    // the theme's own accent and the glyphs invert to its dark surface
+    // (`menuBg`), so a selection reads as part of the current theme rather
+    // than a fixed system blue. Both pairs are set — focus usually sits in
+    // the composer while the user drags across the canvas, and xterm would
+    // otherwise paint its near-invisible inactive colour.
+    selectionBackground: theme.accent,
+    selectionInactiveBackground: theme.accent,
+    selectionForeground: theme.menuBg,
   }
 }
 
@@ -394,6 +415,8 @@ function PtyCanvas(props: {
   sessions: ISessions
   sessionId: SessionId | undefined
   theme: Theme
+  /** Focus owner: shell mode routes keystrokes to the PTY (design 4.8). */
+  mode: SessionMode
 }): ReactElement {
   const ref = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<XtermTerminal | null>(null)
@@ -401,6 +424,10 @@ function PtyCanvas(props: {
   const sizeRef = useRef<{ cols: number; rows: number } | undefined>(undefined)
   const sessionIdRef = useRef<string | undefined>(undefined)
   const theme = props.theme
+  // Read inside the once-created xterm callbacks: only shell mode feeds the
+  // PTY, so a focus that lingers on the canvas in agent mode stays inert.
+  const modeRef = useRef(props.mode)
+  modeRef.current = props.mode
   const [eventSource, setEventSource] = useState<SessionEventSource | undefined>(undefined)
 
   // The binding (and its event window) materializes shortly after a session
@@ -442,6 +469,43 @@ function PtyCanvas(props: {
     })
     termRef.current = term
     term.open(el)
+    activeTerm = term
+    window.__DSHELL_TERM__ = term
+    // Raw keystrokes → PTY, but only while shell mode owns focus (design
+    // 4.8). Ctrl+C arrives as \x03 and interrupts the foreground job; Tab,
+    // arrows, and every readline key pass through untouched — the reason the
+    // canvas, not the rich composer, must hold focus in shell mode.
+    const dataSub = term.onData((data) => {
+      if (modeRef.current === 'shell') props.pty.send(data)
+    })
+    // Terminal copy/paste. The shell keeps Ctrl+C for SIGINT, so copy and
+    // paste ride Ctrl+Shift (Cmd+Shift on macOS), as in native terminals;
+    // returning false stops xterm from also acting on the chord.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true
+      const mod = event.ctrlKey || event.metaKey
+      if (!mod || !event.shiftKey) return true
+      const key = event.key.toLowerCase()
+      if (key === 'c') {
+        const selection = term.getSelection()
+        if (selection.length > 0 && navigator.clipboard !== undefined) {
+          void navigator.clipboard.writeText(selection).catch(() => { /* clipboard denied */ })
+        }
+        return false
+      }
+      if (key === 'v') {
+        if (navigator.clipboard !== undefined) {
+          void navigator.clipboard.readText().then(
+            (text) => {
+              if (modeRef.current === 'shell' && text.length > 0) props.pty.send(text)
+            },
+            () => { /* clipboard denied */ },
+          )
+        }
+        return false
+      }
+      return true
+    })
     const fit = (): void => {
       const probe = probeRef.current
       if (probe === null) return
@@ -494,11 +558,14 @@ function PtyCanvas(props: {
       }
     })
     return () => {
+      dataSub.dispose()
       offChunk()
       observer.disconnect()
       if (replayTimerRef.current !== undefined) clearTimeout(replayTimerRef.current)
       term.dispose()
       termRef.current = null
+      if (activeTerm === term) activeTerm = null
+      if (window.__DSHELL_TERM__ === term) delete window.__DSHELL_TERM__
       sessionIdRef.current = undefined
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- the pty service and theme are stable for the dock
@@ -522,6 +589,30 @@ function PtyCanvas(props: {
     const term = termRef.current
     if (term !== null) term.options.theme = xtermTheme(theme)
   }, [theme])
+
+  // Design 4.8: focus follows mode. Shell mode hands the keyboard to the
+  // canvas so the PTY receives raw keys; agent mode blurs it (the stock
+  // composer's editor is focused from DshellLeftControls). A low-frequency
+  // heartbeat re-claims the keyboard whenever focus has fallen back to
+  // `body` (page load, a modal closing, late stock chrome) — a deliberate
+  // click on the composer or a chrome button is never stolen, because those
+  // leave a real element focused.
+  useEffect(() => {
+    const term = termRef.current
+    if (term === null) return
+    if (props.mode !== 'shell') {
+      term.blur()
+      return
+    }
+    const grab = (): void => {
+      if (modeRef.current !== 'shell') return
+      const active = document.activeElement
+      if (active === null || active === document.body) term.focus()
+    }
+    grab()
+    const timer = window.setInterval(grab, 400)
+    return () => { clearInterval(timer) }
+  }, [props.mode, props.sessionId])
 
   // Design 4.4 merge: durable session events draw as dimmed ┃ rows. Window
   // replace/prepend (page load, history load) replays the full merged
@@ -689,6 +780,13 @@ function DshellLeftControls(props: {
   draftRef.current = draft
   const modeRef = useRef(mode)
   modeRef.current = mode
+  // Agent mode gives the keyboard back to the stock composer editor; the
+  // canvas blurs itself in PtyCanvas (focus follows mode, design 4.8).
+  useEffect(() => {
+    if (mode !== 'agent') return
+    const editor = document.querySelector('[contenteditable="true"][role="textbox"]')
+    if (editor instanceof HTMLElement) editor.focus()
+  }, [mode])
   const pty = props.pty
   const sendShell = props.submitShell
   const clearDraft = props.inputActions?.setDraft
@@ -707,9 +805,47 @@ function DshellLeftControls(props: {
       return true
     }
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
       const target = event.target
-      if (!(target instanceof Element) || target.closest('[data-composer-card]') === null) return
+      const inComposer = target instanceof Element && target.closest('[data-composer-card]') !== null
+      // Terminal chords must behave the same whether the keyboard is in the
+      // canvas or the composer: the composer is the input line too, so
+      // Ctrl+C interrupts the foreground job and Ctrl+Shift+C copies the
+      // terminal selection from either focus owner.
+      if (inComposer && modeRef.current === 'shell' && !event.isComposing) {
+        const mod = event.ctrlKey || event.metaKey
+        const key = event.key.toLowerCase()
+        if (event.ctrlKey && !event.metaKey && !event.shiftKey && key === 'c') {
+          // Bash's line editor abandons the current line on Ctrl+C, so the
+          // draft goes with it.
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          clearDraft('')
+          pty.send('\u0003')
+          return
+        }
+        if (mod && event.shiftKey && key === 'c') {
+          const selection = activeTerm?.getSelection() ?? ''
+          if (selection.length > 0) {
+            if (navigator.clipboard !== undefined) {
+              void navigator.clipboard.writeText(selection).catch(() => { /* clipboard denied */ })
+            }
+            event.preventDefault()
+            event.stopImmediatePropagation()
+            return
+          }
+        }
+        if (mod && event.shiftKey && key === 'v' && navigator.clipboard !== undefined) {
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          void navigator.clipboard.readText().then(
+            (text) => { if (text.length > 0) pty.send(text) },
+            () => { /* clipboard denied */ },
+          )
+          return
+        }
+      }
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+      if (!inComposer) return
       if (!route()) return
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -753,7 +889,7 @@ function DshellLeftControls(props: {
       onClick: () => { props.setMode(next) },
     }, `${glyph} ${label}`),
     createElement('div', { style: { color: theme.muted, fontSize: 12, marginLeft: 8 } },
-      mode === 'shell' ? 'Enter 执行命令 · /shell 切对话' : 'Enter 发送对话 · /agent 切终端'),
+      mode === 'shell' ? '直接输入 · Ctrl+C 中断 · Ctrl+Shift+C 复制' : 'Enter 发送对话 · /agent 切终端'),
   )
 }
 
@@ -791,10 +927,15 @@ function DshellTerminalView(props: {
   sessionId: SessionId | undefined
   pty: PtyStreamService
   sessions: ISessions
+  mode: SnapshotStore<SessionMode> | undefined
 }): ReactElement {
   // Palette changes re-render the canvas in place (PtyCanvas re-themes xterm
   // from props.theme without recreating the terminal).
   const theme = useDshellTheme()
+  const mode = useSyncExternalStore(
+    props.mode?.subscribe ?? (() => () => {}),
+    props.mode?.getSnapshot ?? (() => 'shell' as SessionMode),
+  )
   return createElement('div', {
     'data-dshell-terminal-view': '',
     style: {
@@ -814,6 +955,7 @@ function DshellTerminalView(props: {
         sessions: props.sessions,
         sessionId: props.sessionId,
         theme,
+        mode,
       }),
     ),
   )
@@ -1079,6 +1221,7 @@ export function apply(ctx: Context): void {
         sessionId,
         pty,
         sessions,
+        mode: sessionId === undefined ? undefined : modeFor(sessionId),
       }),
     },
     DshellTerminalView,
