@@ -21,7 +21,7 @@ import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
 import { sshDeviceRoot } from './paths.js'
-import { mountFor } from './mount.js'
+import { mountFor, remoteDirFor } from './mount.js'
 import { localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
 
 /**
@@ -331,16 +331,19 @@ export function installShellRouting(ctx: Context, router: SshRouter): () => void
     const agent = ctx.agents.currentInitiator()
     const target = agent === undefined ? undefined : router.targetForSession(String(agent.id))
     if (target === undefined) return spec
-    const { device, remoteRoot } = target
+    const { device, remoteRoot, mount } = target
     ctx.logger.info(`dshell-ssh: session "${String(agent?.id)}" runs on device "${device.name}"`)
-    // The remote directory is the session's own choice, falling back to the
-    // device's. It is deliberately NOT the session's cwd: the harness reads
-    // that path on THIS machine — instructions files, git root, file
-    // references — so a remote-only path would fail the turn before any tool
-    // ran, and the session keeps a local directory it can actually read.
+    // The directory the command runs in follows the caller's, translated: a
+    // tool that resolved a relative workdir against the session directory
+    // lands in the matching place on the device, and an absolute path the
+    // model gave is already a device path. A binding without a mount (written
+    // before mounts existed) has nothing to translate and uses the root.
+    const remoteDir = mount === undefined
+      ? remoteRoot
+      : remoteDirFor({ mount, remoteRoot }, spec.workdir)
     return {
       ...spec,
-      command: remoteShellLine(device, spec.command, remoteRoot),
+      command: remoteShellLine(device, spec.command, remoteDir),
       workdir: localCwd(),
       // The session's access mode describes what may happen on THIS machine,
       // and the only thing running here now is the `ssh` client. Leaving the

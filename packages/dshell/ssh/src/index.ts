@@ -28,6 +28,7 @@ import DshellFsPlugin from './fs-routing.js'
 import { sshDeviceRoot } from './paths.js'
 import { createSshRoute } from './route.js'
 import { installShellRouting, SSH_ROUTING_SERVICE, SshRouter } from './router.js'
+import { installSpawnRouting } from './spawn-routing.js'
 import { SSH_SETTINGS_NAMESPACE, SshSettingsSchema } from './ssh-settings.js'
 
 export const name = '@deepseek-ai/dsh-dshell-ssh'
@@ -55,6 +56,14 @@ export function apply(ctx: Context): void {
     routingCtx.effect(
       () => installShellRouting(routingCtx, router),
       'dshell-ssh: shell routing',
+    )
+  })
+  // `glob`/`grep` spawn ripgrep directly rather than going through `ctx.fs`,
+  // so their routing lives on the subprocess seam.
+  ctx.inject(['agents', 'subprocess'], (spawnCtx) => {
+    spawnCtx.effect(
+      () => installSpawnRouting(spawnCtx, router),
+      'dshell-ssh: search routing',
     )
   })
   // The connection test spawns `ssh` through the harness's own process

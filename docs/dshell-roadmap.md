@@ -631,10 +631,11 @@ Shipped:
   are separate 0600 files under `$DSH_HOME/dshell/ssh/keys/`, a card in
   the Plugins settings section to add/edit/test/delete them, and a durable
   session→device assignment chosen in the new-session dialog (the row then
-  reads `名称 ⌁ 设备`). The dialog asks for the run target first — a
-  本机 / SSH 设备 slider — and only shows the device list once SSH is
-  chosen; the device's directory then replaces the local continuity
-  default.
+  reads `名称 ⌁ 设备:远端目录`). The dialog asks for the run target first —
+  a 本机 / SSH 设备 slider — and only shows the device list once SSH is
+  chosen, with a 远端目录 field beside it (it follows the device until the
+  user types their own). An SSH session's local directory is not the user's
+  to choose: it is the mount directory described below.
 - Login method is per device: `key` (stored private key, or the harness
   user's own agent/config when none is stored) or `password` (stored
   0600, handed to ssh through OpenSSH's askpass hook — ssh has no password
@@ -654,19 +655,76 @@ Verified live against a private sshd on 127.0.0.1:2222 with its own host
 and client keys: a bound session's `echo $SSH_CONNECTION` returns the
 tunnel's addresses, an unbound session returns nothing.
 
-Not routed yet — each needs its own seam, in this order:
+Shipped since (the session now works in ONE place):
 
-- `ctx.subprocess` (spawn/resolveExecutable): the agent's `bash` goes
-  through `ctx.shell`, but `glob`/`grep` run ripgrep through
-  `ctx.subprocess` directly, and `terminal_*` goes through
-  `ctx.terminals` → backend → `ctx.subprocess.spawnTerminal`.
-- `ctx.fs`: `read`/`write`/`edit`/`str_replace_editor` operate on the
-  local filesystem and must move to a remote implementation (the E2B
-  pair `subprocess-e2b` / `fs-e2b` is the prior art for how a remote
-  provider replaces these single-owner services).
-- The visible dshell terminal: its PTY still spawns the local shell
+- The **mount directory**: a bound session's own directory is a local,
+  empty directory standing in for the device tree
+  (`$DSH_HOME/dshell/mnt/<device>/<remote path>`), and `remoteRoot` +
+  `mount` travel together in the binding. The harness owns the session
+  directory — it creates it at session creation and reads it later for
+  instruction files, project discovery and sandbox roots, all locally — so
+  a remote path fails those reads (EACCES on `/root/.git`) and a
+  coincidentally existing local path would silently be the wrong tree. An
+  empty local directory satisfies every one of those readers while
+  claiming nothing: the `.git` walk finds no marker and stops at the
+  session directory instead of reaching upward. This is why no preset has
+  to be forked.
+- **`ctx.fs` is dshell's provider**: loaded in place of the stock
+  `fs-sandbox` row and extending it, so an unbound session's calls are the
+  stock implementation verbatim while a bound session's
+  resolve/stat/read/list/write/edit run on the device over ssh
+  (`RemoteFileSystem`). Dispatch is by `ctx.agents.currentInitiator()`,
+  the same ambient signal the shell seam uses, because a filesystem call
+  carries no session field. The literal-edit and line-ending rules are
+  mirrored in `literal-edit.ts` (the local backend exposes them only
+  through its source subpath, which an emitting build cannot import) and
+  the per-call sandbox mode is enforced against the device's own tree.
+- **`ctx.subprocess.spawn`** is wrapped for the search tools: `glob`/`grep`
+  spawn ripgrep directly rather than through `ctx.fs`, so a bound session's
+  `rg` run is rewritten into `ssh … 'cd <dir> && exec rg …'`. Paths need no
+  translation — ripgrep prints them relative to the directory it ran in,
+  and a relative path means the same place to the session's file
+  operations. The shell path is deliberately not re-routed here (it is
+  already an `ssh` line). **The device needs `rg` on PATH**; a missing one
+  fails with a message that says so (install ripgrep on the device, or the
+  search tools have nothing to run).
+- **Connections are multiplexed** (`ControlMaster`, one socket per
+  destination under `$DSH_HOME/dshell/ssh/ctl/`): one file read is a
+  resolve, a stat and a cat, and a fresh connection each time costs a full
+  handshake and authentication.
+- The new-session dialog keeps the run target visible when no device is
+  registered (hiding it made SSH undiscoverable exactly when it was
+  needed) and links to Settings → 插件, scrolled to the device card. That
+  jump is best-effort — the settings panel keeps its open state and
+  selected section in component state, so its own controls are the only
+  way in — and falls back to naming the path.
+
+Verified live against the same private sshd: a bound session's relative
+`read` resolves to the device's file while the local mount directory stays
+empty, a relative `write` lands in the device's tree, and `grep` over `.`
+returns the device's files (the mount is empty, so those results could only
+come from the device). An unbound session's `read` and `glob` are unchanged.
+
+Not routed yet:
+
+- `ctx.subprocess.spawnTerminal` / `ctx.terminals`: the visible dshell
+  terminal's PTY still spawns the local shell
   (`DshellPtyBackend` → `nodePty.spawn('/bin/bash')`), so the user's own
   prompt remains local even in a bound session.
+- The persona's prompt variable `{{cwd}}` still renders the session's own
+  directory, which for a bound session is the mount path. Overriding it
+  needs a per-agent registration (`ctx.agents.get` returns a bare agent and
+  the variable is registered per agent by the agent loop), so the honest
+  fix is a dshell-owned preset row — the one place a preset fork would pay
+  for itself.
+- Remote instruction files and project skills are not loaded: the mount
+  directory is empty by design, so `agent-instructions` and
+  `skill-filesystem` find nothing there. The model can read them with the
+  file tools, which now work on the device.
+- `@`-file references index the empty mount directory, so a bound session
+  gets no candidates until file-reference search has its own seam.
+- Remote commands assume a POSIX/GNU userland (`stat`, `realpath`, `find`,
+  `mktemp`, `chmod --reference`).
 
 ## Phase 10 — Packaging
 
