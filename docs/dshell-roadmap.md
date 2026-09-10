@@ -426,57 +426,34 @@ Blocks as the view's primary unit (in progress). The single-canvas
 surface caps presentation at the character grid — per-cell colour, no
 rounded corners, no element-level type, no hover states. The block view
 (`block-view.ts`, registered as a sibling `conversation.view` tab
-labelled 块视图) makes a DOM column the surface instead, with one card
-per shell command run or agent task:
+labelled 块视图) makes a DOM column the surface, and a block is a
+*stretch of the session*, not a command:
 
-- A shell run is sliced from the PTY stream on the shell's own
-  `OSC 133 ; D ; <exit>` markers and rendered by its own xterm instance
-  (`block-terminal.ts`), so colours, carriage-return redraws and
-  full-screen programs keep working without re-implementing ANSI. The
-  header carries the command, the exit chip and the run's own
-  timestamp; a run taller than ten rows folds to its tail.
-- An agent task reuses the block fold and renders as a card: header plus
-  a two-line preview folded, every row expanded.
-- Both kinds sort on one timeline (`block-model.ts`), so the merge the
-  canvas performed is preserved.
+- Everything the terminal printed between two agent tasks is one shell
+  region, rendered by a real xterm (`block-terminal.ts`) with no chrome
+  of its own: PS1 line, command echoes and output exactly as the shell
+  produced them. Regions are cut by wall-clock task boundaries
+  (`splitByTime` in the bridge), so a stretch spanning several tasks is
+  split between them and interleaving survives — verified live with a
+  shell/agent/shell/agent run yielding `S A…A S A S A`.
+- An agent task is a card: coloured, labelled rows in the canvas's own
+  role palette, a two-line preview folded, every row expanded, and its
+  closing line.
+- The seat mirrors the canvas's view shell. Its scrolling column is
+  absolutely positioned so it contributes no intrinsic height — without
+  that the view area grows to content and the composer lands on top of
+  the output (522px view area vs a composer starting at 604px).
+
+Dropped along the way: slicing shell output per command. A block per
+`OSC 133;D` run gave every command a synthetic header card and destroyed
+the terminal's own design; the marker scanner and its `commands()` API
+were removed again.
 
 Still open: terminal input parity (the canvas owns `onData` for Tab,
-arrows and Ctrl+C, so interactive shell work still needs that tab), PTY
-sizing while the block tab is active, per-row folding inside an expanded
-task card, and virtualizing long sessions (blocks older than the last
-forty render sanitized text rather than a live terminal).
-
-Notes:
-
-- Terminal-context injection was originally client-side (a fenced block
-  prepended to the user message by the dock's own submit path). Phase 7
-  moved it host-side (`agent/pre-step` + a plugin-sourced user message),
-  which is where the message source is durable; the canvas filters
-  non-`user`-sourced `user/message` rows so the block never renders as a
-  fake user bubble.
-- The `terminal` view builder from Phase 1/4 stays: it renders
-  nothing and only marks the session as active activity.
-- Composer-targeting note for browser automation: the dock input is
-  the `input[placeholder^="输入命令"]` element; xterm.js also renders
-  a hidden `xterm-helper-textarea` labeled `Terminal input` — typing
-  into that goes to xterm, not the composer.
-
-Acceptance check (verified in the browser):
-
-- Raw ANSI colors: `ls --color=auto /etc` renders blue dirs / cyan
-  symlinks in the canvas (xterm.js, not sanitized plain text).
-- `/clear` from the dock: canvas shows `⚡ 命令 clear` +
-  `⚡ 命令 终端已清空。` above the fresh prompt; the notice confirms
-  admission; `command/run` + `command/done` land in the event window.
-- Page reload: the persisted session window replays merged — rows
-  above, retained prompt below.
-- Tab completion, ↑/↓ history, Ctrl+C still work end-to-end (raw
-  control chars through the bridge ws → PTY).
-
-Follow-ups: assistant live-chunk streaming rows (transient events
-currently settle into `assistant/message` only on completion);
-canvas-focus mode (design 4.8 — the canvas holds focus in shell
-mode); PTY scrollback persistence across bridge restarts (4.9).
+arrows and Ctrl+C, so interactive shell work still needs that tab),
+full-screen programs (PTY rows follow the seat, but a region renders at
+its own content height), per-row folding inside an expanded task card,
+and virtualizing long sessions.
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 

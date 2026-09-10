@@ -34,6 +34,8 @@ export interface TurnBlock {
   /** `step/start` count and summed tokens, for the closing notice. */
   steps: number
   tokens: number
+  /** The closing line, once the turn ends; the block view draws it inline. */
+  notice: { readonly time: number; readonly text: string } | undefined
   /** `turn:step` pairs already counted, so any carrier can report a step. */
   readonly seen: Set<string>
 }
@@ -73,7 +75,7 @@ export function createFold(): BlockFold {
 export function emptyBlock(key: string, time: number, title: string): TurnBlock {
   return {
     key, turn: undefined, title, status: 'running', rows: [], stream: undefined,
-    startedAt: time, steps: 0, tokens: 0, seen: new Set(),
+    startedAt: time, steps: 0, tokens: 0, seen: new Set(), notice: undefined,
   }
 }
 
@@ -191,7 +193,11 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
       fold.open = undefined
       fold.phase = undefined
     }
-    fold.notices.push({ time, text: noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }, time) })
+    const text = noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }, time)
+    // The block view draws the notice with its block; the canvas keeps the
+    // flat notice list because it interleaves them as timeline items.
+    block.notice = { time, text }
+    fold.notices.push({ time, text })
     return
   }
   const rows = sessionRowsOf(event, fold.toolNames)

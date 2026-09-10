@@ -141,3 +141,48 @@ export function timeAt(
   }
   return timeline[0]?.t ?? 0
 }
+
+/**
+ * Cut the text at wall-clock boundaries, so a shell stretch that spans several
+ * agent tasks is split between them instead of being lumped at one end.
+ *
+ * Bytes older than the recorded timeline have no per-frame time (a replay
+ * delivers them as one frame), so they form the first piece — the reader still
+ * sees them before the tasks that came after.
+ * @param text - the session's current text.
+ * @param timeline - the persisted arrival timeline.
+ * @param chunks - the raw chunks, used when no timeline was recorded.
+ * @param boundaries - ascending epoch-ms cuts, one per task start.
+ * @returns `boundaries.length + 1` pieces, oldest first.
+ */
+export function splitByTime(
+  text: string,
+  timeline: readonly TimelineEntry[],
+  chunks: readonly TimedChunk[],
+  boundaries: readonly number[],
+): { text: string; time: number }[] {
+  const frameTimes = timeline.length > 0
+    ? { offset: Math.max(0, text.length - timelineBytes(timeline)), lengths: timeline.map(entry => entry.n), times: timeline.map(entry => entry.t) }
+    : { offset: 0, lengths: chunks.map(chunk => chunk.text.length), times: chunks.map(chunk => chunk.time) }
+  const cuts: number[] = []
+  let floor = frameTimes.offset
+  for (const boundary of boundaries) {
+    let cut = text.length
+    let seen = floor
+    for (const [index, time] of frameTimes.times.entries()) {
+      if (time >= boundary) { cut = seen; break }
+      seen += frameTimes.lengths[index] ?? 0
+    }
+    cut = Math.max(floor, Math.min(text.length, cut))
+    cuts.push(cut)
+    floor = cut
+  }
+  const pieces: { text: string; time: number }[] = []
+  let start = 0
+  for (const [index, cut] of cuts.entries()) {
+    pieces.push({ text: text.slice(start, cut), time: index === 0 ? 0 : (boundaries[index - 1] ?? 0) })
+    start = cut
+  }
+  pieces.push({ text: text.slice(start), time: boundaries.at(-1) ?? 0 })
+  return pieces
+}

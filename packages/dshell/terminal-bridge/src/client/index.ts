@@ -16,19 +16,17 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the sessions service merge (ctx.sessions).
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
-import { splitCommands, type PtyCommand } from './commands.js'
 import {
   TIMELINE_LIMITS,
   loadTimeline,
   saveTimeline,
   segmentsOf,
-  timeAt,
+  splitByTime,
   timelineBytes,
   type PtyTextSegment,
   type TimelineEntry,
 } from './timeline.js'
 
-export type { PtyCommand } from './commands.js'
 export type { PtyTextSegment, TimelineEntry } from './timeline.js'
 
 export const name = '@deepseek-ai/dsh-dshell-terminal-bridge/client'
@@ -127,6 +125,21 @@ export class PtyStreamService extends Service {
   }
 
   /**
+   * The session's PTY text cut at wall-clock boundaries: piece i is what the
+   * terminal printed before the i-th boundary, and the final piece is
+   * everything after the last one. The block view uses the task starts as
+   * boundaries, so each shell stretch lands between the tasks it sat between.
+   * @param dshSessionId - the session whose text to cut.
+   * @param boundaries - ascending epoch-ms cuts.
+   * @returns `boundaries.length + 1` pieces, oldest first.
+   */
+  slices(dshSessionId: string, boundaries: readonly number[]): readonly { text: string; time: number }[] {
+    const history = this.histories.get(dshSessionId)
+    if (history === undefined) return []
+    return splitByTime(this.read(dshSessionId), history.timeline, history.chunks, boundaries)
+  }
+
+  /**
    * The session's PTY text as timed segments. A bind replay arrives as one
    * frame, so a rebuild that used chunk timestamps would place the whole
    * scrollback at the moment of the bind; this slices it back with the
@@ -144,20 +157,6 @@ export class PtyStreamService extends Service {
     return segmentsOf(this.read(dshSessionId), history.timeline)
   }
 
-  /**
-   * The session's shell command runs, oldest first, sliced on the shell's own
-   * `OSC 133 ; D` markers. The last entry is the in-flight tail (`live`), which
-   * has no marker yet. A shell that never emits markers yields one live entry
-   * holding the whole history, so callers can always render something.
-   * @param dshSessionId - the session whose stream to slice.
-   * @returns the command runs, in execution order.
-   */
-  commands(dshSessionId: string): readonly PtyCommand[] {
-    const history = this.histories.get(dshSessionId)
-    if (history === undefined) return []
-    const text = this.read(dshSessionId)
-    return splitCommands(text, offset => timeAt(history.timeline, history.chunks, text.length, offset))
-  }
 
   /** Switch the connection to one session (undefined disconnects). */
   bind(dshSessionId: string | undefined): void {
@@ -356,8 +355,6 @@ export interface DshellPtyDebug {
   send(text: string): void
   signal(signal: 'SIGINT' | 'SIGTERM' | 'SIGTSTP'): void
   text(): string
-  /** Shell command runs sliced on the shell's own end-of-command markers. */
-  commands(): readonly PtyCommand[]
 }
 
 declare global {
@@ -397,10 +394,6 @@ export function apply(ctx: Context): void {
     const sessionId = stream.state.getSnapshot().sessionId
     return sessionId === undefined ? '' : stream.read(sessionId)
   },
-    commands(): readonly PtyCommand[] {
-      const sessionId = stream.state.getSnapshot().sessionId
-      return sessionId === undefined ? [] : stream.commands(sessionId)
-    },
   }
 }
 
