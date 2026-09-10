@@ -18,7 +18,9 @@
  */
 
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { DeviceConnection } from './devices.js'
+import { sshDeviceRoot } from './paths.js'
 
 /**
  * Options every harness-spawned `ssh` carries, apart from authentication.
@@ -36,6 +38,15 @@ const BASE_OPTIONS = [
   '-o', 'ConnectTimeout=10',
   // No pseudo-terminal on the piped paths: callers asked for byte streams.
   '-T',
+  // Connection reuse. One tool call is several `ssh` invocations — a file read
+  // is a resolve, a stat and a cat — and each fresh connection costs a TCP
+  // handshake plus authentication (about a second against a remote host,
+  // against roughly ten milliseconds over a shared master). `%C` lets OpenSSH
+  // derive the socket name from the destination, so no id has to be escaped
+  // into a path here. Failure to create the socket is non-fatal under `auto`.
+  '-o', 'ControlMaster=auto',
+  '-o', `ControlPath=${join(sshDeviceRoot(), 'ctl', '%C')}`,
+  '-o', 'ControlPersist=120s',
 ] as const
 
 /** Quote one word for a POSIX shell. */

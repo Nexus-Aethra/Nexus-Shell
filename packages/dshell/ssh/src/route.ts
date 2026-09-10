@@ -50,8 +50,10 @@ export function createSshRoute(deps: SshRouteDeps): ConnectionFetchRoute {
         return await state()
       case 'test':
         return { ...await state(), testResult: await deps.router.test(input.deviceId, deps.ctx) }
+      case 'mount':
+        return { ...await state(), mountPath: await deps.router.mountPath(input.deviceId, input.remoteRoot ?? null) }
       case 'bind':
-        await deps.router.bind(input.sessionId, input.deviceId)
+        await deps.router.bind(input.sessionId, input.deviceId, input.remoteRoot ?? null, input.mount ?? null)
         return await state()
       default:
         return { ...await state(), error: '未知操作' }

@@ -53,10 +53,46 @@ export class SshClientService extends Service {
 
   /** The device one session runs on, or undefined for local execution. */
   deviceOf(sessionId: string): DeviceView | undefined {
-    const binding = this.snapshot.bindings.find(entry => entry.sessionId === sessionId)
+    const binding = this.bindingOf(sessionId)
     return binding === undefined
       ? undefined
       : this.snapshot.devices.find(device => device.id === binding.deviceId)
+  }
+
+  /** One session's assignment, including any directory override. */
+  bindingOf(sessionId: string): DeviceBinding | undefined {
+    return this.snapshot.bindings.find(entry => entry.sessionId === sessionId)
+  }
+
+  /**
+   * Take the user to this plugin's card in the settings panel.
+   *
+   * There is no service for opening settings: the panel's open state and its
+   * selected section are component-local viewing state inside the stock shell
+   * (`ui-settings-general`'s `SettingsRoot`), so the only way in is the shell's
+   * own controls. This clicks them, then scrolls our card into view — the
+   * `data-dshell-card` hook below is what makes the landing point exact rather
+   * than "somewhere in the plugins tab".
+   *
+   * Best-effort by nature: it depends on two stock control labels. A false
+   * return tells the caller to describe the path in words instead.
+   *
+   * @returns whether the settings entry was found and opened.
+   */
+  revealInSettings(): boolean {
+    const trigger = document.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"][aria-expanded]')
+    if (trigger === null) return false
+    trigger.click()
+    // The panel and its section body mount on later frames.
+    window.requestAnimationFrame(() => {
+      const nav = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
+        .find(candidate => ['插件', 'Plugins'].includes(candidate.textContent?.trim() ?? ''))
+      nav?.click()
+      window.requestAnimationFrame(() => {
+        document.querySelector('[data-dshell-card="ssh"]')?.scrollIntoView({ block: 'center' })
+      })
+    })
+    return true
   }
 
   /** Read the registry. */
@@ -79,9 +115,32 @@ export class SshClientService extends Service {
     await this.send({ action: 'test', deviceId })
   }
 
-  /** Assign a session to a device, or pass null to run it locally. */
-  async bind(sessionId: string, deviceId: string | null): Promise<void> {
-    await this.send({ action: 'bind', sessionId, deviceId })
+  /**
+   * Assign a session to a device, or pass null to run it locally.
+   * @param remoteRoot - directory to run in on that device; null uses the
+   *   device's own.
+   * @param mount - local mount directory for that tree; null keeps the
+   *   session's file operations local.
+   */
+  async bind(
+    sessionId: string,
+    deviceId: string | null,
+    remoteRoot: string | null = null,
+    mount: string | null = null,
+  ): Promise<void> {
+    await this.send({ action: 'bind', sessionId, deviceId, remoteRoot, mount })
+  }
+
+  /**
+   * The local mount directory for one device tree. The rule lives host-side
+   * (it depends on `$DSH_HOME`), so ask rather than deriving it here.
+   * @param deviceId - device the tree belongs to.
+   * @param remoteRoot - directory on that device; null uses the device's own.
+   * @returns the absolute local directory, or undefined if the host refused.
+   */
+  async mountFor(deviceId: string, remoteRoot: string | null): Promise<string | undefined> {
+    const body = await this.send({ action: 'mount', deviceId, remoteRoot })
+    return body.mountPath
   }
 
   /** Clear the last result line. */
@@ -90,7 +149,7 @@ export class SshClientService extends Service {
     this.publish({ ...this.snapshot, testResult: undefined, error: undefined })
   }
 
-  private async send(request: SshRequest): Promise<void> {
+  private async send(request: SshRequest): Promise<SshResponse> {
     try {
       const response = await fetch(DSHELL_SSH_PATH, {
         method: request.action === 'list' ? 'GET' : 'POST',
@@ -106,9 +165,11 @@ export class SshClientService extends Service {
         error: body.error,
         loaded: true,
       })
+      return body
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       this.publish({ ...this.snapshot, error: reason })
+      return { devices: this.snapshot.devices, bindings: this.snapshot.bindings, error: reason }
     }
   }
 

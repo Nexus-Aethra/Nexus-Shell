@@ -1,8 +1,16 @@
 /**
- * The new-session dialog (design 4.7 naming paragraph): optional name and
- * starting directory, defaulted to terminal continuity (the most recent
- * session's cwd). Confirm creates the session, renames it durably, and opens
- * it; failures surface inline and keep the dialog up.
+ * The new-session dialog (design 4.7 naming paragraph): optional name, a run
+ * target, and the directory that target starts in. Confirm creates the
+ * session, assigns the device when one was chosen, and opens it; failures
+ * surface inline and keep the dialog up.
+ *
+ * The two targets ask for different directories, and neither question is
+ * interchangeable. A LOCAL session starts in a directory on this machine. An
+ * SSH session asks where on the DEVICE to start, and gets a local MOUNT
+ * directory here that stands in for that tree: the harness owns the session
+ * directory (it creates it, then reads it for instructions files, project
+ * discovery and sandbox roots), so it must be a real, empty, readable path on
+ * this machine, and the execution seams translate it back to the device.
  */
 
 import {
@@ -14,7 +22,8 @@ import { newSessionDialog } from './dialog-store.js'
 import type { PresetChoice } from './rows.js'
 import {
   backdropStyle, cancelButtonStyle, createButtonStyle, dialogActionsStyle, dialogErrorStyle,
-  dialogStyle, dialogTitleStyle, fieldInputStyle, fieldLabelStyle,
+  dialogStyle, dialogTitleStyle, emptyDeviceStyle, fieldInputStyle, fieldLabelStyle,
+  linkButtonStyle,
 } from './list-styles.js'
 
 /** Where a new session runs. */
@@ -78,7 +87,19 @@ export interface NewSessionDialogProps {
   /** Registered devices, when the SSH plugin is composed. */
   devices?: readonly { id: string; name: string; remoteRoot: string }[] | undefined
   /** Assign the created session to a device; absent keeps it local. */
-  bind?: ((sessionId: SessionId, deviceId: string | null) => Promise<void>) | undefined
+  bind?: ((
+    sessionId: SessionId,
+    deviceId: string | null,
+    remoteRoot?: string | null,
+    mount?: string | null,
+  ) => Promise<void>) | undefined
+  /** Local mount directory for a device tree; absent disables SSH sessions. */
+  mountFor?: ((deviceId: string, remoteRoot: string | null) => Promise<string | undefined>) | undefined
+  /**
+   * Take the user to the SSH plugin's settings card. Absent when the SSH
+   * plugin is not composed, in which case the SSH target is not offered.
+   */
+  revealSettings?: (() => boolean) | undefined
 }
 
 export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
@@ -87,6 +108,9 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const [preset, setPreset] = useState('')
   const [target, setTarget] = useState<SessionTarget>('local')
   const [deviceId, setDeviceId] = useState('')
+  const [remoteDir, setRemoteDir] = useState('')
+  /** Set once the user edits the remote directory, so a device change stops prefilling it. */
+  const [remoteTyped, setRemoteTyped] = useState(false)
   const [presets, setPresets] = useState<PresetChoice[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -105,20 +129,22 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const devices = props.devices ?? []
   const selectedDevice = devices.find(candidate => candidate.id === deviceId)
 
-  // The directory stays local: it is what the harness itself reads (git root,
-  // instructions files). The device's own directory is what the commands run
-  // in, and routing applies it on the remote side.
-  const targetHint = selectedDevice === undefined
-    ? null
-    : createElement('div', { style: fieldLabelStyle },
-      `该设备上的命令在 ${selectedDevice.remoteRoot} 下执行`)
-
-  /** Choosing SSH lands on the first device, so the picker never means "none". */
+  /**
+   * Choosing SSH lands on the first device, so the picker never means "none",
+   * and prefills that device's directory. The directory follows the device
+   * until the user types one of their own, so changing devices never
+   * overwrites a path they just entered.
+   */
+  const pickDevice = (next: string): void => {
+    setDeviceId(next)
+    if (remoteTyped) return
+    setRemoteDir(devices.find(candidate => candidate.id === next)?.remoteRoot ?? '')
+  }
   const pickTarget = (next: SessionTarget): void => {
     setTarget(next)
     if (next === 'local') return
     const device = selectedDevice ?? devices[0]
-    if (device !== undefined) setDeviceId(device.id)
+    if (device !== undefined) pickDevice(device.id)
   }
 
   const submit = async (): Promise<void> => {
@@ -126,14 +152,24 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
     setBusy(true)
     setError(null)
     try {
+      // A chosen target with nothing to run on must not fall back to local:
+      // the session would silently be a local one under an SSH label.
+      if (target === 'ssh' && deviceId === '') throw new Error('请先添加并选择一台 SSH 设备')
+      const remote = target === 'ssh' && deviceId !== ''
+      const remoteRoot = remote ? remoteDir.trim() === '' ? null : remoteDir.trim() : null
+      // The mount is the session's directory here, so the session cannot be
+      // created without it: a device-bound session whose cwd were a normal
+      // local directory would look plausible and quietly point nowhere.
+      const mount = remote ? await props.mountFor?.(deviceId, remoteRoot) : undefined
+      if (remote && mount === undefined) throw new Error('无法解析设备挂载目录')
       const sessionId = await props.createSession(
         name.trim() === '' ? undefined : name.trim(),
-        dir.trim() === '' ? undefined : dir.trim(),
+        remote ? mount : dir.trim() === '' ? undefined : dir.trim(),
         preset === '' ? undefined : preset,
       )
-      // The assignment is what makes this session's commands run remotely, so
-      // a failure here must surface rather than silently run them locally.
-      await props.bind?.(sessionId, target === 'ssh' && deviceId !== '' ? deviceId : null)
+      // The assignment is what makes this session's operations run remotely,
+      // so a failure here must surface rather than silently run them locally.
+      await props.bind?.(sessionId, remote ? deviceId : null, remoteRoot, mount ?? null)
       newSessionDialog.set(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -141,6 +177,14 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       setBusy(false)
     }
   }
+  // Adding a device from inside the dialog leaves the select empty, and no
+  // change event ever fires for it; adopt the first device once one exists.
+  useEffect(() => {
+    if (target !== 'ssh' || deviceId !== '' || devices.length === 0) return
+    pickDevice(devices[0]?.id ?? '')
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- pickDevice is a plain closure over the same state
+  }, [target, deviceId, devices.length])
+
   const presetOptions = presets ?? []
   const presetField = presetOptions.length === 0
     ? null
@@ -163,11 +207,28 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   },
     createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
       createElement('div', { style: dialogTitleStyle }, '新会话'),
-      devices.length === 0
+      props.revealSettings === undefined
         ? null
         : createElement('div', null,
           createElement('div', { style: fieldLabelStyle }, '运行位置'),
           createElement(TargetSwitch, { value: target, disabled: busy, onChange: pickTarget })),
+      target !== 'ssh' || devices.length > 0
+        ? null
+        : createElement('div', { style: emptyDeviceStyle },
+          createElement('span', null, '还没有配置任何设备。'),
+          createElement('button', {
+            type: 'button',
+            style: linkButtonStyle,
+            disabled: busy,
+            onClick: () => {
+              // The device card lives in Settings → 插件. If the shell's own
+              // controls are not where we expect them, say the path instead of
+              // silently doing nothing.
+              if (props.revealSettings?.() !== true) {
+                setError('请在「设置 → 插件 → SSH 设备」中添加设备')
+              }
+            },
+          }, '去设置中添加')),
       target !== 'ssh' || devices.length === 0
         ? null
         : createElement('div', null,
@@ -177,34 +238,46 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
             value: deviceId,
             disabled: busy,
             onChange: (event: ChangeEvent<HTMLSelectElement>) => {
-              setDeviceId(event.target.value)
+              pickDevice(event.target.value)
             },
           },
             ...devices.map(device => createElement('option', {
               key: device.id,
               value: device.id,
-            }, `${device.name}（${device.remoteRoot}）`)),
+            }, device.name)),
           )),
-      targetHint,
+      target !== 'ssh' || devices.length === 0
+        ? null
+        : createElement('div', null,
+          createElement('div', { style: fieldLabelStyle }, '远端目录'),
+          createElement('input', {
+            style: fieldInputStyle,
+            value: remoteDir,
+            autoFocus: true,
+            placeholder: selectedDevice === undefined ? '登录目录' : selectedDevice.remoteRoot,
+            onChange: (event) => { setRemoteTyped(true); setRemoteDir(event.target.value) },
+            onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
+          })),
       createElement('div', null,
         createElement('div', { style: fieldLabelStyle }, '名称'),
         createElement('input', {
           style: fieldInputStyle,
           value: name,
-          autoFocus: true,
           placeholder: '可选，留空则用目录名',
           onChange: (event) => { setName(event.target.value) },
           onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
         })),
-      createElement('div', null,
-        createElement('div', { style: fieldLabelStyle }, '起始目录'),
-        createElement('input', {
-          style: fieldInputStyle,
-          value: dir,
-          placeholder: props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录',
-          onChange: (event) => { setDir(event.target.value) },
-          onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
-        })),
+      target === 'ssh'
+        ? null
+        : createElement('div', null,
+          createElement('div', { style: fieldLabelStyle }, '起始目录'),
+          createElement('input', {
+            style: fieldInputStyle,
+            value: dir,
+            placeholder: props.defaultCwd === undefined ? '默认目录' : '会话的工作目录',
+            onChange: (event) => { setDir(event.target.value) },
+            onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
+          })),
       presetField,
       error !== null ? createElement('div', { style: dialogErrorStyle }, error) : null,
       createElement('div', { style: dialogActionsStyle },

@@ -39,7 +39,20 @@ export interface DeviceSeat {
   /** Registered devices, for the new-session picker. */
   devices: () => readonly { id: string; name: string; remoteRoot: string }[]
   /** Assign a created session to a device (null keeps it local). */
-  bind: (sessionId: SessionId, deviceId: string | null) => Promise<void>
+  bind: (
+    sessionId: SessionId,
+    deviceId: string | null,
+    remoteRoot?: string | null,
+    mount?: string | null,
+  ) => Promise<void>
+  /** Local mount directory for one device tree; undefined when the host refused. */
+  mountFor: (deviceId: string, remoteRoot: string | null) => Promise<string | undefined>
+  /**
+   * Take the user to the SSH plugin's settings card. Used when the picker has
+   * nothing to offer; returns false when the settings entry could not be found,
+   * so the dialog can say where to go instead.
+   */
+  revealSettings: () => boolean
 }
 
 /** Props the sidebar slot injects into the flat session list. */
@@ -152,12 +165,19 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     deviceSeat?.subscribe ?? noopSubscribe,
     deviceSeat?.getSnapshot ?? (() => NO_DEVICES),
   )
-  /** The device a session runs on, as a row suffix; local sessions get none. */
+  /**
+   * The device a session runs on, as a row suffix; local sessions get none.
+   *
+   * The remote directory is always shown, because the session's own directory
+   * is a local mount standing in for it — printing that path would say nothing
+   * about where the session actually works.
+   */
   const deviceLabel = (sessionId: SessionId): string => {
     const binding = ssh.bindings.find(entry => entry.sessionId === String(sessionId))
     if (binding === undefined) return ''
     const device = ssh.devices.find(candidate => candidate.id === binding.deviceId)
-    return device === undefined ? '' : ` ⌁ ${device.name}`
+    if (device === undefined) return ''
+    return ` ⌁ ${device.name}:${binding.remoteRoot ?? device.remoteRoot}`
   }
   const [archivedOpen, setArchivedOpen] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<{ id: SessionId; title: string } | undefined>(undefined)
@@ -304,6 +324,8 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         ...deviceSeat === undefined ? {} : {
           devices: deviceSeat.devices(),
           bind: deviceSeat.bind,
+          mountFor: deviceSeat.mountFor,
+          revealSettings: deviceSeat.revealSettings,
         },
       })
       : null,

@@ -66,6 +66,14 @@
 # (host `workspaceRegistry`, client `workspaces` + `uiWorkspace` + root
 # hook) so session-controller and ui-conversation/ui-sidebar still resolve.
 # Sessions are created by cwd instead; see docs/dshell-design.md § 4.7.
+# The filesystem provider is dshell's own. `ctx.fs` has exactly one provider,
+# and dshell's takes the stock backend's place (extending it) so a session
+# bound to a device has its file operations — read, write, edit, list — run on
+# that device instead of this machine. The local half of every call is the
+# stock implementation verbatim; see packages/dshell/ssh/src/fs-routing.ts.
+- id: fs-sandbox
+  disabled: true
+
 - id: workspace
   disabled: true
 - id: workspace-controller

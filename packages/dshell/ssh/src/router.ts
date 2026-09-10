@@ -20,7 +20,26 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
+import { sshDeviceRoot } from './paths.js'
+import { mountFor } from './mount.js'
 import { localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
+
+/**
+ * Service name under which the router is published.
+ *
+ * The filesystem provider is loaded as its own plugin — it has to be, to take
+ * the stock backend's place — and it resolves a call's session through this
+ * router. A provided service is how two plugins in one package share a value
+ * without either reaching into the other's instance.
+ */
+export const SSH_ROUTING_SERVICE = 'dshellSshRouting'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Session→device assignments, published by the dshell-ssh plugin. */
+    dshellSshRouting: SshRouter
+  }
+}
 
 /**
  * The one method this module replaces, typed structurally: the concrete
@@ -32,10 +51,19 @@ interface ShellExecutorShape {
   resolve(this: unknown, request: ShellExecRequest): ShellExecSpec
 }
 
+/** Where one session runs: the device, the directory on it, and its local mount. */
+interface Assignment {
+  readonly deviceId: string
+  /** Session-level directory override; undefined uses the device's own. */
+  readonly remoteRoot?: string | undefined
+  /** Local directory standing in for that tree; undefined on pre-mount bindings. */
+  readonly mount?: string | undefined
+}
+
 /** Session → device assignments, durable because routing must survive a restart. */
 class BindingStore {
   private loaded = false
-  private entries = new Map<string, string>()
+  private entries = new Map<string, Assignment>()
 
   constructor(private readonly path: string) {}
 
@@ -45,27 +73,61 @@ class BindingStore {
     try {
       const parsed = JSON.parse(await readFile(this.path, 'utf8')) as unknown
       if (typeof parsed !== 'object' || parsed === null) return
-      for (const [sessionId, deviceId] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof deviceId === 'string' && deviceId.length > 0) this.entries.set(sessionId, deviceId)
+      for (const [sessionId, value] of Object.entries(parsed as Record<string, unknown>)) {
+        // A bare string is the shape written before sessions could pick their
+        // own remote directory; it still means "this device, its directory".
+        if (typeof value === 'string' && value.length > 0) {
+          this.entries.set(sessionId, { deviceId: value })
+          continue
+        }
+        if (typeof value !== 'object' || value === null) continue
+        const record = value as Record<string, unknown>
+        const deviceId = record.deviceId
+        if (typeof deviceId !== 'string' || deviceId.length === 0) continue
+        const remoteRoot = record.remoteRoot
+        const mount = record.mount
+        this.entries.set(sessionId, {
+          deviceId,
+          ...typeof remoteRoot === 'string' && remoteRoot.length > 0 ? { remoteRoot } : {},
+          ...typeof mount === 'string' && mount.length > 0 ? { mount } : {},
+        })
       }
     } catch {
       // No assignments yet.
     }
   }
 
-  get(sessionId: string): string | undefined {
+  get(sessionId: string): Assignment | undefined {
     return this.entries.get(sessionId)
   }
 
-  all(): readonly { sessionId: string; deviceId: string }[] {
-    return [...this.entries].map(([sessionId, deviceId]) => ({ sessionId, deviceId }))
+  all(): readonly { sessionId: string; deviceId: string; remoteRoot?: string | undefined; mount?: string | undefined }[] {
+    return [...this.entries].map(([sessionId, entry]) => ({ sessionId, ...entry }))
   }
 
-  /** Assign or clear one session's device, durably. */
-  async set(sessionId: string, deviceId: string | null): Promise<void> {
+  /**
+   * Assign or clear one session's device, durably.
+   * @param sessionId - session to assign.
+   * @param deviceId - device, or null to run locally again.
+   * @param remoteRoot - session directory on that device; null clears the
+   *   override so the device's own directory applies.
+   * @param mount - local directory standing in for that tree; null omits it,
+   *   which leaves the session with no remote file operations (only the shell
+   *   path, which needs no mount).
+   */
+  async set(
+    sessionId: string,
+    deviceId: string | null,
+    remoteRoot: string | null = null,
+    mount: string | null = null,
+  ): Promise<void> {
     await this.load()
     if (deviceId === null) this.entries.delete(sessionId)
-    else this.entries.set(sessionId, deviceId)
+    else {
+      const override = remoteRoot === null || remoteRoot.trim() === '' ? {} : { remoteRoot: remoteRoot.trim() }
+      const mounted = mount === null || mount.trim() === '' ? {} : { mount: mount.trim() }
+      this.entries.set(sessionId, { deviceId, ...override, ...mounted })
+    }
     await mkdir(dirname(this.path), { recursive: true })
     const temporary = `${this.path}.tmp`
     await writeFile(temporary, JSON.stringify(Object.fromEntries(this.entries), null, 2), 'utf8')
@@ -94,7 +156,7 @@ export class SshRouter {
   }
 
   /** Every session→device assignment. */
-  async assignments(): Promise<readonly { sessionId: string; deviceId: string }[]> {
+  async assignments(): Promise<readonly { sessionId: string; deviceId: string; remoteRoot?: string | undefined; mount?: string | undefined }[]> {
     await this.bindings.load()
     return this.bindings.all()
   }
@@ -103,13 +165,22 @@ export class SshRouter {
    * Assign a session to a device, or clear it with `null`.
    * @param sessionId - session to assign.
    * @param deviceId - device, or null to run locally again.
+   * @param remoteRoot - directory to run in on that device; null uses the
+   *   device's own `remoteRoot`.
+   * @param mount - local mount directory for that tree, from {@link mountPath};
+   *   null keeps the session's file operations local-only.
    */
-  async bind(sessionId: string, deviceId: string | null): Promise<void> {
+  async bind(
+    sessionId: string,
+    deviceId: string | null,
+    remoteRoot: string | null = null,
+    mount: string | null = null,
+  ): Promise<void> {
     if (deviceId !== null && this.connections.get(deviceId) === undefined) {
       await this.refreshDevices()
       if (this.connections.get(deviceId) === undefined) throw new Error(`未知设备：${deviceId}`)
     }
-    await this.bindings.set(sessionId, deviceId)
+    await this.bindings.set(sessionId, deviceId, remoteRoot, mount)
   }
 
   /**
@@ -132,15 +203,42 @@ export class SshRouter {
   }
 
   /**
-   * The device one session runs on, or undefined for local execution.
+   * Where one session runs, or undefined for local execution.
+   *
    * Synchronous on purpose: it is read inside `spawn`/`resolve`, which cannot
    * await. The caches it reads are filled at load and on every mutation.
+   *
    * @param sessionId - ambient agent id of the executing call.
-   * @returns the connection parameters, when the session is bound.
+   * @returns the connection, the remote directory and the local mount standing
+   *   in for it; `mount` is undefined for a binding written before mounts, so
+   *   only the shell path is routed for those.
    */
-  deviceForSession(sessionId: string): DeviceConnection | undefined {
-    const deviceId = this.bindings.get(sessionId)
-    return deviceId === undefined ? undefined : this.connections.get(deviceId)
+  targetForSession(
+    sessionId: string,
+  ): { device: DeviceConnection; remoteRoot: string; mount: string | undefined } | undefined {
+    const assignment = this.bindings.get(sessionId)
+    if (assignment === undefined) return undefined
+    const device = this.connections.get(assignment.deviceId)
+    return device === undefined
+      ? undefined
+      : { device, remoteRoot: assignment.remoteRoot ?? device.remoteRoot, mount: assignment.mount }
+  }
+
+  /**
+   * The local mount directory for one device tree.
+   * @param deviceId - device the tree belongs to.
+   * @param remoteRoot - directory on that device; null uses the device's own.
+   * @returns absolute local directory (not created here — the session's
+   *   creation already creates its working directory).
+   */
+  async mountPath(deviceId: string, remoteRoot: string | null): Promise<string> {
+    if (this.connections.get(deviceId) === undefined) {
+      await this.refreshDevices()
+      if (this.connections.get(deviceId) === undefined) throw new Error(`未知设备：${deviceId}`)
+    }
+    const device = this.connections.get(deviceId)
+    const root = remoteRoot === null || remoteRoot.trim() === '' ? device?.remoteRoot ?? '~' : remoteRoot.trim()
+    return mountFor(deviceId, root)
   }
 
   /** Connect once and report what answered, for the UI's Test action. */
@@ -185,6 +283,9 @@ export class SshRouter {
   }
 
   private async reload(): Promise<void> {
+    // The connection-sharing socket lives here; ssh creates the socket, not
+    // the directory, so it has to exist first.
+    await mkdir(join(sshDeviceRoot(), 'ctl'), { recursive: true, mode: 0o700 })
     await this.bindings.load()
     await this.refreshDevices()
   }
@@ -228,16 +329,18 @@ export function installShellRouting(ctx: Context, router: SshRouter): () => void
   target.resolve = function resolve(this: unknown, request: ShellExecRequest): ShellExecSpec {
     const spec = original.call(this, request)
     const agent = ctx.agents.currentInitiator()
-    const device = agent === undefined ? undefined : router.deviceForSession(String(agent.id))
-    if (device === undefined) return spec
+    const target = agent === undefined ? undefined : router.targetForSession(String(agent.id))
+    if (target === undefined) return spec
+    const { device, remoteRoot } = target
     ctx.logger.info(`dshell-ssh: session "${String(agent?.id)}" runs on device "${device.name}"`)
-    // The remote directory comes from the DEVICE, not from the session's cwd:
-    // the session keeps a path that is meaningful (and readable) on this
-    // machine, because the harness itself reads it — instructions files, git
-    // root, file references — and a remote-only path would fail those locally.
+    // The remote directory is the session's own choice, falling back to the
+    // device's. It is deliberately NOT the session's cwd: the harness reads
+    // that path on THIS machine — instructions files, git root, file
+    // references — so a remote-only path would fail the turn before any tool
+    // ran, and the session keeps a local directory it can actually read.
     return {
       ...spec,
-      command: remoteShellLine(device, spec.command, device.remoteRoot),
+      command: remoteShellLine(device, spec.command, remoteRoot),
       workdir: localCwd(),
       // The session's access mode describes what may happen on THIS machine,
       // and the only thing running here now is the `ssh` client. Leaving the

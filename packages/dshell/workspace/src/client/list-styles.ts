@@ -134,6 +134,15 @@ export const fieldInputStyle: CSSProperties = {
   outline: 'none',
 }
 export const dialogErrorStyle: CSSProperties = { color: '#f87171', fontSize: 12 }
+/** Empty-registry line in the dialog: the statement plus the way out of it. */
+export const emptyDeviceStyle: CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, opacity: 0.75,
+}
+/** Inline text button that reads as a link next to that statement. */
+export const linkButtonStyle: CSSProperties = {
+  border: 'none', background: 'none', padding: 0, font: 'inherit',
+  color: '#7aa2f7', cursor: 'pointer', textDecoration: 'underline',
+}
 export const dialogActionsStyle: CSSProperties = {
   display: 'flex',
   gap: 8,

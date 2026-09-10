@@ -299,7 +299,10 @@ export function apply(ctx: Context): void {
         name: device.name,
         remoteRoot: device.remoteRoot,
       })),
-      bind: (sessionId, deviceId) => ssh.bind(String(sessionId), deviceId),
+      bind: (sessionId, deviceId, remoteRoot, mount) =>
+        ssh.bind(String(sessionId), deviceId, remoteRoot ?? null, mount ?? null),
+      mountFor: (deviceId, remoteRoot) => ssh.mountFor(deviceId, remoteRoot),
+      revealSettings: () => ssh.revealInSettings(),
     }
   })
   const workspaces = new DshellWorkspaces(ctx, panel)

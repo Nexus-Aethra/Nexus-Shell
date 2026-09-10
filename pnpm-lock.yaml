@@ -231,6 +231,21 @@ importers:
       '@deepseek-ai/dsh-client-ui-settings-plugins':
         specifier: link:../../../dsh/packages/client/ui-settings-plugins
         version: link:../../../dsh/packages/client/ui-settings-plugins
+      '@deepseek-ai/dsh-fs':
+        specifier: link:../../../dsh/packages/fs/fs
+        version: link:../../../dsh/packages/fs/fs
+      '@deepseek-ai/dsh-fs-local':
+        specifier: link:../../../dsh/packages/fs/fs-local
+        version: link:../../../dsh/packages/fs/fs-local
+      '@deepseek-ai/dsh-fs-sandbox':
+        specifier: link:../../../dsh/packages/fs/fs-sandbox
+        version: link:../../../dsh/packages/fs/fs-sandbox
+      '@deepseek-ai/dsh-sandbox':
+        specifier: link:../../../dsh/packages/sandbox/sandbox
+        version: link:../../../dsh/packages/sandbox/sandbox
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../../../dsh/packages/sandbox/sandbox-policy
+        version: link:../../../dsh/packages/sandbox/sandbox-policy
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session

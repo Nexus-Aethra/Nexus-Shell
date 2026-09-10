@@ -66,6 +66,17 @@ export interface DeviceInput {
 export interface DeviceBinding {
   readonly sessionId: string
   readonly deviceId: string
+  /**
+   * Directory the session's commands run in on that device, when the session
+   * overrides the device's own. Absent means the device's `remoteRoot`.
+   */
+  readonly remoteRoot?: string | undefined
+  /**
+   * Local directory standing in for that remote tree, which is also the
+   * session's own working directory. Absent on bindings written before
+   * mount directories existed.
+   */
+  readonly mount?: string | undefined
 }
 
 /** One request body the route accepts; `list` is also the GET shape. */
@@ -74,7 +85,24 @@ export type SshRequest =
   | { readonly action: 'save'; readonly device: DeviceInput }
   | { readonly action: 'delete'; readonly deviceId: string }
   | { readonly action: 'test'; readonly deviceId: string }
-  | { readonly action: 'bind'; readonly sessionId: string; readonly deviceId: string | null }
+  | {
+    readonly action: 'bind'
+    readonly sessionId: string
+    readonly deviceId: string | null
+    /** Remote directory for this session; null or absent uses the device's. */
+    readonly remoteRoot?: string | null
+    /** Local mount directory for that tree, as returned by `mount`. */
+    readonly mount?: string | null
+  }
+  | {
+    /**
+     * The local mount directory for one device tree. The rule is host-owned
+     * (it depends on `$DSH_HOME`), so the browser asks rather than deriving it.
+     */
+    readonly action: 'mount'
+    readonly deviceId: string
+    readonly remoteRoot?: string | null
+  }
 
 /** One response body; `error` is a refusal the UI shows verbatim. */
 export interface SshResponse {
@@ -82,5 +110,7 @@ export interface SshResponse {
   readonly bindings: readonly DeviceBinding[]
   /** Human-readable result of the last `test`, when one was requested. */
   readonly testResult?: string | undefined
+  /** Local mount directory, answering the `mount` action. */
+  readonly mountPath?: string | undefined
   readonly error?: string | undefined
 }

@@ -14,8 +14,6 @@
  * the PTY backend) and is not claimed here.
  */
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the host agent service merge (ctx.agents.currentInitiator).
 import type {} from '@deepseek-ai/dsh-agent'
@@ -26,25 +24,31 @@ import type {} from '@deepseek-ai/dsh-settings'
 // Type-only: pulls the shell and subprocess service merges.
 import type {} from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
+import DshellFsPlugin from './fs-routing.js'
+import { sshDeviceRoot } from './paths.js'
 import { createSshRoute } from './route.js'
-import { installShellRouting, SshRouter } from './router.js'
+import { installShellRouting, SSH_ROUTING_SERVICE, SshRouter } from './router.js'
 import { SSH_SETTINGS_NAMESPACE, SshSettingsSchema } from './ssh-settings.js'
 
 export const name = '@deepseek-ai/dsh-dshell-ssh'
 
 export { DSHELL_SSH_PATH, type DeviceView, type SshResponse } from './protocol.js'
+export { harnessHome, mountBase, sshDeviceRoot } from './paths.js'
+export { mountFor, toMountPath, toRemotePath, type MountMapping } from './mount.js'
 export type { SshSettings } from './ssh-settings.js'
-
-/** Device directory under the harness home. */
-export function sshDeviceRoot(): string {
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dshell', 'ssh')
-}
 
 export function apply(ctx: Context): void {
   ctx.inject(['settings'], (settingsCtx) => {
     settingsCtx.settings.register(SSH_SETTINGS_NAMESPACE, SshSettingsSchema)
   })
   const router = new SshRouter(sshDeviceRoot())
+  // Published so the filesystem provider — loaded as its own plugin, in place
+  // of the stock backend — can resolve a call's session without this module
+  // handing it anything directly.
+  ctx.provide(SSH_ROUTING_SERVICE, router)
+  // `ctx.fs` for device-bound sessions. The composition disables the stock
+  // `fs-sandbox` row, because a service name has exactly one provider.
+  ctx.plugin(DshellFsPlugin)
   // Routing waits for both services: the shell executor is what gets wrapped,
   // and the agent registry is how the wrapped call learns whose session it is.
   ctx.inject(['shell', 'agents'], (routingCtx) => {
