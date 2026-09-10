@@ -498,6 +498,11 @@ export function apply(ctx: Context): void {
       '}',
       // The dashed pick-a-workspace ring only makes sense on a rounded card.
       '[data-composer-card]::after { display: none !important; }',
+      // Stock chat-width drag handles (a col-resize strip whose ::after is a
+      // short 3px glow bar that lights up on hover). They resize the chat
+      // content width, which dshell's full-bleed canvas and composer ignore —
+      // in a terminal surface they read as a stray sliding light column.
+      '[class*="widthHandle"] { display: none !important; }',
     ].join('\n')
     document.head.appendChild(style)
     return () => { style.remove() }
