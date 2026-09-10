@@ -8,17 +8,22 @@
  * plumbing, cancellation and output collection apply to the remote command
  * too, because `ssh` forwards them).
  *
+ * Password logins use OpenSSH's askpass hook, since `ssh` deliberately has no
+ * password flag: an environment variable names the helper, and the helper
+ * reads the password file belonging to that connection.
+ *
  * One consequence is deliberate and documented at the call sites: killing the
  * local `ssh` is how a remote command is cancelled, so the remote side sees
  * the session close (sshd then hangs up the command's process group).
  */
 
+import { homedir } from 'node:os'
 import type { DeviceConnection } from './devices.js'
-import type { DeviceView } from './protocol.js'
 
 /** Options every harness-spawned `ssh` carries. */
 const BASE_OPTIONS = [
-  // Never prompt: a missing key must fail the command, not hang a turn.
+  // Prompting is never allowed: a missing secret must fail the command rather
+  // than hang a turn. Password auth reads its secret from askpass, not a tty.
   '-o', 'BatchMode=yes',
   // Trust on first use. The alternative — refusing unknown hosts — would make
   // a freshly added device unusable without a manual known_hosts edit.
@@ -38,6 +43,30 @@ function destination(target: { user: string; host: string }): string {
   return `${target.user}@${target.host}`
 }
 
+/** Environment a device's connection needs, beyond the harness defaults. */
+export function sshEnv(device: DeviceConnection): Record<string, string> {
+  if (device.auth !== 'password' || device.secretFile === undefined) return {}
+  return {
+    // ssh runs $SSH_ASKPASS and reads the password from its stdout. REQURE
+    // forces the hook even where a tty could be probed for one.
+    SSH_ASKPASS: device.askpassFile,
+    SSH_ASKPASS_REQUIRE: 'force',
+    // Some builds still require a DISPLAY before consulting askpass.
+    DISPLAY: 'dshell:0',
+    DSHELL_SSH_PASSWORD_FILE: device.secretFile,
+  }
+}
+
+/** Authentication arguments for one device. */
+function authArgs(device: DeviceConnection): string[] {
+  if (device.auth === 'password') {
+    // Without this, a reachable key or agent would silently be preferred and
+    // the device would connect as someone else.
+    return ['-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no']
+  }
+  return device.secretFile === undefined ? [] : ['-i', device.secretFile]
+}
+
 /**
  * The `ssh` argv that runs one remote command line.
  * @param device - device to connect to.
@@ -49,7 +78,7 @@ export function sshArgv(device: DeviceConnection, remoteCommand: string): string
     'ssh',
     ...BASE_OPTIONS,
     '-p', String(device.port),
-    ...device.keyFile === undefined ? [] : ['-i', device.keyFile],
+    ...authArgs(device),
     destination(device),
     '--',
     remoteCommand,
@@ -61,6 +90,7 @@ export function sshArgv(device: DeviceConnection, remoteCommand: string): string
  * directory. The caller's command is transported verbatim: it is quoted for
  * the local shell, and the remote side re-quotes it for `bash -lc`, so no
  * layer re-interprets the user's own quoting.
+ *
  * @param device - device to connect to.
  * @param command - the command as the user/tool wrote it.
  * @param remoteCwd - directory to run in; empty means the login directory.
@@ -69,10 +99,16 @@ export function sshArgv(device: DeviceConnection, remoteCommand: string): string
 export function remoteShellLine(device: DeviceConnection, command: string, remoteCwd: string): string {
   const cd = remoteCwd.trim() === '' ? '' : `cd ${quote(remoteCwd)} && `
   const payload = `${cd}exec bash -lc ${quote(command)}`
-  return sshArgv(device, payload).map(quote).join(' ')
+  const env = Object.entries(sshEnv(device)).map(([name, value]) => `${name}=${quote(value)}`)
+  return [...env, ...sshArgv(device, payload)].map(quote).join(' ')
 }
 
 /** A device's connection parameters, resolved for display. */
-export function describeTarget(device: DeviceView): string {
-  return `${device.user}@${device.host}:${String(device.port)}`
+export function deviceLabel(device: DeviceConnection): string {
+  return `${device.name} · ${device.user}@${device.host}:${String(device.port)}`
+}
+
+/** Default working directory for locally-spawned `ssh` processes. */
+export function localCwd(): string {
+  return homedir()
 }

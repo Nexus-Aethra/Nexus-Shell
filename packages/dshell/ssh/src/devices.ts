@@ -12,9 +12,9 @@
 
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { DeviceInput, DeviceView } from './protocol.js'
+import type { DeviceAuth, DeviceInput, DeviceView } from './protocol.js'
 
-/** A stored device record; `keyFile` is the basename of its key, when one exists. */
+/** A stored device record; the secret path is absent when none is stored. */
 interface DeviceRecord {
   id: string
   name: string
@@ -22,8 +22,10 @@ interface DeviceRecord {
   port: number
   user: string
   remoteRoot: string
-  /** Absolute path of the private key file, absent when the device has none. */
-  keyFile?: string
+  /** Login method; `key` may still have no stored secret (the ambient agent). */
+  auth: DeviceAuth
+  /** Absolute path of the stored key or password file. */
+  secretFile?: string
 }
 
 /** A device id safe to interpolate into a path. */
@@ -37,7 +39,20 @@ export interface DeviceConnection {
   readonly port: number
   readonly user: string
   readonly remoteRoot: string
-  readonly keyFile: string | undefined
+  readonly auth: DeviceAuth
+  /** Stored key or password file, when one exists. */
+  readonly secretFile: string | undefined
+  /** The askpass helper every password-auth connection points ssh at. */
+  readonly askpassFile: string
+}
+
+/** Stored secret path of a parsed record, accepting the legacy field name. */
+function readSecretPath(raw: Record<string, unknown>): { secretFile?: string } {
+  for (const field of ['secretFile', 'keyFile']) {
+    const value = raw[field]
+    if (typeof value === 'string' && value.length > 0) return { secretFile: value }
+  }
+  return {}
 }
 
 /** Coerce one parsed record, dropping anything that cannot be used. */
@@ -57,7 +72,11 @@ function asRecord(value: unknown): DeviceRecord | undefined {
     port,
     user: raw.user,
     remoteRoot: typeof raw.remoteRoot === 'string' && raw.remoteRoot.length > 0 ? raw.remoteRoot : '~',
-    ...typeof raw.keyFile === 'string' && raw.keyFile.length > 0 ? { keyFile: raw.keyFile } : {},
+    auth: raw.auth === 'password' ? 'password' : 'key',
+    // `keyFile` is this field's earlier name: documents written before the
+    // login-method split carry it, and dropping it would silently detach an
+    // already-stored key from its device.
+    ...readSecretPath(raw),
   }
 }
 
@@ -82,9 +101,14 @@ export class DeviceStore {
     return join(this.root, 'devices.json')
   }
 
-  /** The key directory. */
-  private get keyDir(): string {
+  /** The secret directory (private keys and passwords, never the document). */
+  private get secretDir(): string {
     return join(this.root, 'keys')
+  }
+
+  /** The askpass helper ssh runs to obtain a stored password. */
+  get askpassPath(): string {
+    return join(this.root, 'askpass.sh')
   }
 
   /** Every device, in registration order. */
@@ -105,7 +129,9 @@ export class DeviceStore {
       port: record.port,
       user: record.user,
       remoteRoot: record.remoteRoot,
-      keyFile: record.keyFile,
+      auth: record.auth,
+      secretFile: record.secretFile,
+      askpassFile: this.askpassPath,
     }
   }
 
@@ -120,6 +146,7 @@ export class DeviceStore {
     const id = input.id ?? this.uniqueId(idFor(input.name))
     const existing = this.records.find(record => record.id === id)
     if (input.id !== undefined && existing === undefined) throw new Error(`未知设备：${input.id}`)
+    const auth: DeviceAuth = input.auth ?? existing?.auth ?? 'key'
     const record: DeviceRecord = {
       id,
       name: input.name.trim() !== '' ? input.name.trim() : (existing?.name ?? input.host),
@@ -129,15 +156,19 @@ export class DeviceStore {
       remoteRoot: input.remoteRoot?.trim() !== undefined && input.remoteRoot.trim() !== ''
         ? input.remoteRoot.trim()
         : (existing?.remoteRoot ?? '~'),
-      ...existing?.keyFile === undefined ? {} : { keyFile: existing.keyFile },
+      auth,
+      ...existing?.secretFile === undefined ? {} : { secretFile: existing.secretFile },
     }
     if (record.host === '' || record.user === '') throw new Error('host 与 user 不能为空')
-    if (input.key !== undefined) {
-      if (input.key.trim() === '') {
-        await this.removeKey(record)
+    // Switching the login method retires the other secret: a stored password
+    // must not linger on a device that now authenticates by key.
+    if (existing !== undefined && existing.auth !== auth) await this.removeSecret(record)
+    const submitted = auth === 'password' ? input.password : input.key
+    if (submitted !== undefined) {
+      if (submitted.trim() === '') {
+        await this.removeSecret(record)
       } else {
-        const keyFile = await this.writeKey(record.id, input.key)
-        record.keyFile = keyFile
+        record.secretFile = await this.writeSecret(record.id, auth, submitted)
       }
     }
     this.records = existing === undefined
@@ -155,7 +186,7 @@ export class DeviceStore {
     await this.ensure()
     const record = this.records.find(candidate => candidate.id === deviceId)
     if (record === undefined) return
-    await this.removeKey(record)
+    await this.removeSecret(record)
     this.records = this.records.filter(candidate => candidate.id !== deviceId)
     await this.saveDocument()
   }
@@ -168,7 +199,8 @@ export class DeviceStore {
       port: record.port,
       user: record.user,
       remoteRoot: record.remoteRoot,
-      hasKey: record.keyFile !== undefined,
+      auth: record.auth,
+      hasSecret: record.secretFile !== undefined,
     }
   }
 
@@ -181,21 +213,40 @@ export class DeviceStore {
     }
   }
 
-  /** Write one private key with owner-only permissions. */
-  private async writeKey(deviceId: string, key: string): Promise<string> {
-    await mkdir(this.keyDir, { recursive: true, mode: 0o700 })
-    const path = join(this.keyDir, deviceId)
-    // A trailing newline is required by OpenSSH's key parser.
-    const body = key.endsWith('\n') ? key : `${key}\n`
+  /** Write one secret (private key or password) with owner-only permissions. */
+  private async writeSecret(deviceId: string, auth: DeviceAuth, secret: string): Promise<string> {
+    await mkdir(this.secretDir, { recursive: true, mode: 0o700 })
+    const path = join(this.secretDir, auth === 'password' ? `${deviceId}.password` : deviceId)
+    // A trailing newline is required by OpenSSH's key parser; a password file
+    // is read verbatim by the askpass helper, which strips it.
+    const body = secret.endsWith('\n') ? secret : `${secret}\n`
     await writeFile(path, body, { mode: 0o600 })
     await chmod(path, 0o600)
     return path
   }
 
-  private async removeKey(record: DeviceRecord): Promise<void> {
-    if (record.keyFile === undefined) return
-    await rm(record.keyFile, { force: true })
-    delete record.keyFile
+  private async removeSecret(record: DeviceRecord): Promise<void> {
+    if (record.secretFile === undefined) return
+    await rm(record.secretFile, { force: true })
+    delete record.secretFile
+  }
+
+  /**
+   * Write the askpass helper. ssh has no password flag, so password auth goes
+   * through OpenSSH's own hook: ssh executes this script and reads the password
+   * from its stdout, and the script reads whichever file the connection names
+   * in `DSHELL_SSH_PASSWORD_FILE`.
+   */
+  private async writeAskpass(): Promise<void> {
+    await mkdir(this.root, { recursive: true, mode: 0o700 })
+    const body = [
+      '#!/bin/sh',
+      '# dshell-ssh: hands ssh the password stored for one device (see askpassPath).',
+      'cat "$DSHELL_SSH_PASSWORD_FILE"',
+      '',
+    ].join('\n')
+    await writeFile(this.askpassPath, body, { mode: 0o700 })
+    await chmod(this.askpassPath, 0o700)
   }
 
   /** Load once; a missing or unreadable document is an empty registry. */
@@ -212,6 +263,7 @@ export class DeviceStore {
     } catch {
       this.records = []
     }
+    await this.writeAskpass()
   }
 
   /** Rewrite the document atomically. */

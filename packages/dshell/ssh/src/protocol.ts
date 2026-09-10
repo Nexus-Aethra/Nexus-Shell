@@ -17,7 +17,10 @@ export const DSHELL_SSH_PATH = '/api/dshell/ssh'
 /** Settings namespace owned by this plugin; also the device card's slot key. */
 export const SSH_SETTINGS_NAMESPACE = 'dshell-ssh'
 
-/** One configured device as the UI sees it — never includes key material. */
+/** How a device authenticates. */
+export type DeviceAuth = 'key' | 'password'
+
+/** One configured device as the UI sees it — never includes secret material. */
 export interface DeviceView {
   readonly id: string
   /** Display name the session picker lists. */
@@ -30,8 +33,10 @@ export interface DeviceView {
   readonly user: string
   /** Directory a session bound to this device starts in (the remote path). */
   readonly remoteRoot: string
-  /** Whether a private key was stored for this device. */
-  readonly hasKey: boolean
+  /** Selected login method. */
+  readonly auth: DeviceAuth
+  /** Whether the secret for {@link auth} (key or password) is stored. */
+  readonly hasSecret: boolean
 }
 
 /** One device as submitted by the UI; `key` is write-only. */
@@ -42,12 +47,19 @@ export interface DeviceInput {
   readonly port?: number | undefined
   readonly user: string
   readonly remoteRoot?: string | undefined
+  /** Login method; defaults to `key` on create. */
+  readonly auth?: DeviceAuth | undefined
   /**
-   * PEM/OpenSSH private key contents. Omitted keeps the stored key; empty
-   * string removes it (the device then relies on the harness user's own ssh
-   * agent and config).
+   * PEM/OpenSSH private key contents, used when `auth` is `key`. Omitted keeps
+   * the stored secret; empty string removes it (the device then relies on the
+   * harness user's own ssh agent and config).
    */
   readonly key?: string | undefined
+  /**
+   * Password, used when `auth` is `password`. Same omitted/empty semantics as
+   * {@link key}.
+   */
+  readonly password?: string | undefined
 }
 
 /** One session's device binding, kept host-side because execution routing needs it. */

@@ -14,14 +14,13 @@
  */
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
-import { remoteShellLine, sshArgv } from './runner.js'
+import { localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
 
 /** Session → device assignments, durable because routing must survive a restart. */
 class BindingStore {
@@ -141,9 +140,11 @@ export class SshRouter {
     if (device === undefined) throw new Error(`未知设备：${deviceId}`)
     const started = Date.now()
     const argv = sshArgv(device, 'printf "%s|%s|%s" "$(hostname)" "$(id -un)" "$(uname -sr)"')
+    const env = sshEnv(device)
     const spec = {
       argv,
-      cwd: homedir(),
+      cwd: localCwd(),
+      ...Object.keys(env).length === 0 ? {} : { env },
       stdio: {
         stdin: 'ignore' as const,
         stdout: { maxBytes: 8 * 1024 },
@@ -205,7 +206,7 @@ export function installShellRouting(ctx: Context, router: SshRouter): () => void
     return {
       ...spec,
       command: remoteShellLine(device, spec.command, spec.workdir),
-      workdir: homedir(),
+      workdir: localCwd(),
       // The session's access mode describes what may happen on THIS machine,
       // and the only thing running here now is the `ssh` client. Leaving the
       // policy in place would confine that client — a workspace-write sandbox

@@ -7,7 +7,7 @@
 
 import {
   createElement, useEffect, useState,
-  type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactElement,
+  type CSSProperties, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { newSessionDialog } from './dialog-store.js'
@@ -16,6 +16,55 @@ import {
   backdropStyle, cancelButtonStyle, createButtonStyle, dialogActionsStyle, dialogErrorStyle,
   dialogStyle, dialogTitleStyle, fieldInputStyle, fieldLabelStyle,
 } from './list-styles.js'
+
+/** Where a new session runs. */
+type SessionTarget = 'local' | 'ssh'
+
+/**
+ * Sliding segmented control for the run target. The two choices are mutually
+ * exclusive and the first one is safe (nothing remote is implied), so a picker
+ * reads better here than a checkbox: the device list only appears once SSH is
+ * chosen.
+ */
+function TargetSwitch(props: {
+  value: SessionTarget
+  disabled: boolean
+  onChange: (next: SessionTarget) => void
+}): ReactElement {
+  const options: readonly { id: SessionTarget; label: string }[] = [
+    { id: 'local', label: '本机' },
+    { id: 'ssh', label: 'SSH 设备' },
+  ]
+  return createElement('div', {
+    style: {
+      position: 'relative', display: 'grid', gridTemplateColumns: '1fr 1fr',
+      border: '0.5px solid #3a3a42', borderRadius: 999, padding: 2,
+      background: '#101013',
+    },
+  },
+    createElement('div', {
+      'aria-hidden': true,
+      style: {
+        position: 'absolute', top: 2, bottom: 2, left: 2, width: 'calc(50% - 2px)',
+        borderRadius: 999, background: '#1f1f25', border: '0.5px solid #3a3a42',
+        transition: 'transform .16s ease',
+        transform: props.value === 'ssh' ? 'translateX(100%)' : 'none',
+      } as CSSProperties,
+    }),
+    ...options.map(option => createElement('button', {
+      key: option.id,
+      type: 'button',
+      'aria-pressed': props.value === option.id,
+      disabled: props.disabled,
+      onClick: () => { props.onChange(option.id) },
+      style: {
+        position: 'relative', zIndex: 1, border: 'none', background: 'transparent',
+        color: 'inherit', cursor: 'pointer', font: 'inherit', fontSize: 13, padding: '6px 0',
+        opacity: props.value === option.id ? 1 : 0.7,
+      },
+    }, option.label)),
+  )
+}
 
 /** Props the flat list hands the dialog when it opens. */
 export interface NewSessionDialogProps {
@@ -36,6 +85,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const [name, setName] = useState('')
   const [dir, setDir] = useState(props.defaultCwd ?? '')
   const [preset, setPreset] = useState('')
+  const [target, setTarget] = useState<SessionTarget>('local')
   const [deviceId, setDeviceId] = useState('')
   const [presets, setPresets] = useState<PresetChoice[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
@@ -55,6 +105,16 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const devices = props.devices ?? []
   const selectedDevice = devices.find(candidate => candidate.id === deviceId)
 
+  /** Choosing SSH lands on the first device, so the picker never means "none". */
+  const pickTarget = (next: SessionTarget): void => {
+    setTarget(next)
+    if (next === 'local') return
+    const device = selectedDevice ?? devices[0]
+    if (device === undefined) return
+    setDeviceId(device.id)
+    if (device.remoteRoot.trim() !== '') setDir(device.remoteRoot)
+  }
+
   const submit = async (): Promise<void> => {
     if (busy) return
     setBusy(true)
@@ -67,7 +127,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       )
       // The assignment is what makes this session's commands run remotely, so
       // a failure here must surface rather than silently run them locally.
-      await props.bind?.(sessionId, deviceId === '' ? null : deviceId)
+      await props.bind?.(sessionId, target === 'ssh' && deviceId !== '' ? deviceId : null)
       newSessionDialog.set(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -100,6 +160,11 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       devices.length === 0
         ? null
         : createElement('div', null,
+          createElement('div', { style: fieldLabelStyle }, '运行位置'),
+          createElement(TargetSwitch, { value: target, disabled: busy, onChange: pickTarget })),
+      target !== 'ssh' || devices.length === 0
+        ? null
+        : createElement('div', null,
           createElement('div', { style: fieldLabelStyle }, 'SSH 设备'),
           createElement('select', {
             style: fieldInputStyle,
@@ -114,7 +179,6 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
               if (device !== undefined && device.remoteRoot.trim() !== '') setDir(device.remoteRoot)
             },
           },
-            createElement('option', { value: '' }, '本机'),
             ...devices.map(device => createElement('option', {
               key: device.id,
               value: device.id,
