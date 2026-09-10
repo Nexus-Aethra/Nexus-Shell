@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
 import { sshDeviceRoot } from './paths.js'
 import { mountFor, remoteDirFor } from './mount.js'
-import { localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
+import { interactiveShellArgv, localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
 
 /**
  * Service name under which the router is published.
@@ -58,6 +58,11 @@ interface Assignment {
   readonly remoteRoot?: string | undefined
   /** Local directory standing in for that tree; undefined on pre-mount bindings. */
   readonly mount?: string | undefined
+}
+
+/** One session's assignment as the host reports it. */
+export interface AssignmentView extends Assignment {
+  readonly sessionId: string
 }
 
 /** Session → device assignments, durable because routing must survive a restart. */
@@ -101,7 +106,7 @@ class BindingStore {
     return this.entries.get(sessionId)
   }
 
-  all(): readonly { sessionId: string; deviceId: string; remoteRoot?: string | undefined; mount?: string | undefined }[] {
+  all(): readonly AssignmentView[] {
     return [...this.entries].map(([sessionId, entry]) => ({ sessionId, ...entry }))
   }
 
@@ -156,7 +161,7 @@ export class SshRouter {
   }
 
   /** Every session→device assignment. */
-  async assignments(): Promise<readonly { sessionId: string; deviceId: string; remoteRoot?: string | undefined; mount?: string | undefined }[]> {
+  async assignments(): Promise<readonly AssignmentView[]> {
     await this.bindings.load()
     return this.bindings.all()
   }
@@ -222,6 +227,37 @@ export class SshRouter {
     return device === undefined
       ? undefined
       : { device, remoteRoot: assignment.remoteRoot ?? device.remoteRoot, mount: assignment.mount }
+  }
+
+  /**
+   * The spawn plan for one session's VISIBLE terminal, or undefined when the
+   * session runs locally.
+   *
+   * The terminal backend asks by directory rather than by session: the terminal
+   * seam's spawn spec carries the session's cwd and nothing that names a dsh
+   * session, and the mount directory is exactly the value that identifies a
+   * device tree. A plan rather than a bare device, because the ssh knowledge —
+   * which options, which auth arguments, which environment the askpass hook
+   * needs — lives in this package and should not be copied into the backend.
+   *
+   * @param sessionCwd - the session's own directory, i.e. its mount directory.
+   * @returns argv and environment for the local `ssh` process, or undefined.
+   */
+  interactiveShellPlan(sessionCwd: string): { argv: readonly string[]; env: Record<string, string> } | undefined {
+    const assignment = this.assignmentForMount(sessionCwd)
+    if (assignment === undefined) return undefined
+    const device = this.connections.get(assignment.deviceId)
+    if (device === undefined) return undefined
+    const remoteRoot = assignment.remoteRoot ?? device.remoteRoot
+    return { argv: interactiveShellArgv(device, remoteRoot), env: sshEnv(device) }
+  }
+
+  /** The assignment whose mount directory is exactly this path. */
+  private assignmentForMount(sessionCwd: string): Assignment | undefined {
+    for (const entry of this.bindings.all()) {
+      if (entry.mount === sessionCwd) return entry
+    }
+    return undefined
   }
 
   /**

@@ -158,7 +158,35 @@ class RawSendOperation implements TerminalSendOperation {
   }
 }
 
-/** One raw bash PTY session owned by the dshell backend. */
+/**
+ * What one PTY should run.
+ *
+ * The default is the local interactive bash. A device-bound session replaces it
+ * with `ssh … -t 'cd <dir> && exec bash -l'`, so the user's own terminal is the
+ * device's shell instead of a local one sitting in an empty mount directory.
+ * `env` is merged over the process environment — that is how the password-auth
+ * askpass hook reaches ssh.
+ */
+export interface PtySpawnPlan {
+  readonly argv: readonly string[]
+  readonly env?: Record<string, string> | undefined
+}
+
+/**
+ * How the backend asks whether a session's terminal should run somewhere else.
+ *
+ * Asked by cwd because that is what the terminal spawn spec carries: the
+ * session's own directory, which for a bound session IS its device mount. The
+ * bridge supplies this; keeping it a plain function here means this package
+ * does not depend on the SSH plugin, and a composition without it simply gets
+ * local shells.
+ */
+export type PtySpawnPlanResolver = (sessionCwd: string | undefined) => PtySpawnPlan | undefined
+
+/** The default local interactive shell, unchanged from before this seam existed. */
+const LOCAL_SHELL: PtySpawnPlan = { argv: ['/bin/bash', '--noprofile', '--norc', '-i'] }
+
+/** One raw PTY session owned by the dshell backend. */
 class LocalRawSession implements DshellPtySession {
   motd = ''
   readonly pid: number
@@ -182,13 +210,16 @@ class LocalRawSession implements DshellPtySession {
     cwd: string | undefined,
     cols: number,
     rows: number,
+    plan: PtySpawnPlan = LOCAL_SHELL,
   ) {
-    this.pty = nodePty.spawn('/bin/bash', ['--noprofile', '--norc', '-i'], {
+    const [file, ...args] = plan.argv
+    if (file === undefined) throw new Error('dshell PTY: spawn plan has no program')
+    this.pty = nodePty.spawn(file, args, {
       name: 'xterm-256color',
       cols,
       rows,
       ...(cwd === undefined || cwd === '' ? {} : { cwd }),
-      env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+      env: { ...process.env, TERM: 'xterm-256color', ...plan.env } as Record<string, string>,
     })
     this.pid = this.pty.pid
     this.pty.onData((data: string) => { this.onData(data) })
@@ -388,6 +419,8 @@ export class DshellPtyBackend implements TerminalBackend {
   constructor(
     private readonly cols: number,
     private readonly rows: number,
+    /** Optional redirect: a session whose cwd is a device mount gets that device's shell. */
+    private readonly planFor: PtySpawnPlanResolver | undefined = undefined,
   ) {}
 
   /** The rich handle for a session this backend spawned (bridge wiring). */
@@ -403,6 +436,7 @@ export class DshellPtyBackend implements TerminalBackend {
       spec.cwd,
       this.cols,
       this.rows,
+      this.planFor?.(spec.cwd) ?? LOCAL_SHELL,
     )
     this.sessions.set(spec.sessionId as TerminalSessionId, session)
     try {

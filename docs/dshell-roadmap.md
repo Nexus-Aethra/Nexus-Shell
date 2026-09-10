@@ -705,12 +705,29 @@ empty, a relative `write` lands in the device's tree, and `grep` over `.`
 returns the device's files (the mount is empty, so those results could only
 come from the device). An unbound session's `read` and `glob` are unchanged.
 
+The visible terminal, too:
+
+- The main PTY now runs the **device's** shell when the session is bound:
+  `DshellPtyBackend` takes a spawn plan per session cwd, and dshell-ssh hands
+  it `ssh … -t 'cd <dir> && exec bash -l'` (with the askpass environment for
+  password logins). The local pty is unchanged — the harness spawns `ssh`
+  inside it, so line discipline, resize and Ctrl+C stay local while the remote
+  shell gets a tty of its own. Interactive commands verified on the device
+  (`hostname` → `VM-0-6-ubuntu`, `pwd` → `/root`), and an unbound session's
+  terminal is still the local shell.
+- The bridge is asked by *directory*, not by session: the terminal spawn spec
+  carries the session's cwd and nothing naming a dsh session, and for a bound
+  session that cwd is exactly the mount. dshell-ssh exposes the plan rather
+  than the device, because the ssh knowledge (options, auth arguments, askpass
+  environment) belongs in one package.
+- Consequences worth knowing: PS1 and PROMPT_COMMAND are still rewritten by
+  the bridge right after startup, so a remote prompt looks identical to a local
+  one (that rewrite is also what drives the send settle); and an unreachable
+  device fails the terminal spawn instead of quietly falling back to a local
+  shell — a bound session's terminal is not local, by construction.
+
 Not routed yet:
 
-- `ctx.subprocess.spawnTerminal` / `ctx.terminals`: the visible dshell
-  terminal's PTY still spawns the local shell
-  (`DshellPtyBackend` → `nodePty.spawn('/bin/bash')`), so the user's own
-  prompt remains local even in a bound session.
 - The persona's prompt variable `{{cwd}}` still renders the session's own
   directory, which for a bound session is the mount path. Overriding it
   needs a per-agent registration (`ctx.agents.get` returns a bare agent and

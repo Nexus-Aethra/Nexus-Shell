@@ -36,8 +36,6 @@ const BASE_OPTIONS = [
   // a freshly added device unusable without a manual known_hosts edit.
   '-o', 'StrictHostKeyChecking=accept-new',
   '-o', 'ConnectTimeout=10',
-  // No pseudo-terminal on the piped paths: callers asked for byte streams.
-  '-T',
   // Connection reuse. One tool call is several `ssh` invocations — a file read
   // is a resolve, a stat and a cat — and each fresh connection costs a TCP
   // handshake plus authentication (about a second against a remote host,
@@ -102,6 +100,8 @@ export function sshArgv(device: DeviceConnection, remoteCommand: string): string
   return [
     'ssh',
     ...BASE_OPTIONS,
+    // No pseudo-terminal on the piped paths: callers asked for byte streams.
+    '-T',
     '-p', String(device.port),
     ...authArgs(device),
     destination(device),
@@ -129,6 +129,40 @@ export function remoteShellLine(device: DeviceConnection, command: string, remot
   // characters, and bash would read the assignment as a command name.
   const env = Object.entries(sshEnv(device)).map(([name, value]) => `${name}=${quote(value)}`)
   return [...env, ...sshArgv(device, payload).map(quote)].join(' ')
+}
+
+/**
+ * The `ssh` argv that puts an interactive login shell on the device.
+ *
+ * Distinct from {@link sshArgv} in exactly one way that matters: it asks for a
+ * remote pseudo-terminal (`-t`), because this backs the user's own visible
+ * terminal — resize, Ctrl+C, job control and full-screen programs all have to
+ * work there. Nothing about the *local* pty changes: the harness spawns `ssh`
+ * inside it, so the line discipline stays local and the remote shell gets a
+ * tty of its own.
+ *
+ * `bash -l` (not `--norc`) on purpose: the user's real login shell is what
+ * they expect to land in. The bridge overwrites PS1 and PROMPT_COMMAND right
+ * after startup for its own settle marker, so the prompt looks the same on
+ * every device regardless of the remote profile.
+ *
+ * @param device - device to connect to.
+ * @param remoteCwd - directory the shell starts in; empty means the login dir.
+ * @returns argv for the local `ssh` process.
+ */
+export function interactiveShellArgv(device: DeviceConnection, remoteCwd: string): string[] {
+  const cd = remoteCwd.trim() === '' ? '' : `cd ${quote(remoteCwd)} && `
+  return [
+    'ssh',
+    ...BASE_OPTIONS,
+    // Force a remote tty: this is the one path that needs one.
+    '-t',
+    '-p', String(device.port),
+    ...authArgs(device),
+    destination(device),
+    '--',
+    `${cd}exec bash -l`,
+  ]
 }
 
 /** A device's connection parameters, resolved for display. */

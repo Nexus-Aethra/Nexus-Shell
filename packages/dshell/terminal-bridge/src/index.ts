@@ -166,7 +166,18 @@ export class DshellTerminalBridge extends Service {
   readonly promptHost = safeShellWord(hostname())
 
   /** The backend's rich handle (raw push, exit push, resize) for its sessions. */
-  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS)
+  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, (cwd) => {
+    // A session bound to a device runs that device's shell, so the user's own
+    // terminal is not a local shell stranded in an empty mount directory. The
+    // router is reached through the service the SSH plugin publishes, asked
+    // lazily because that plugin may load after this one; a composition
+    // without it returns undefined and the local shell is used as before.
+    if (cwd === undefined || cwd === '') return undefined
+    const routing = this.ctx.get('dshellSshRouting') as
+      | { interactiveShellPlan(sessionCwd: string): { argv: readonly string[]; env: Record<string, string> } | undefined }
+      | undefined
+    return routing?.interactiveShellPlan(cwd)
+  })
 
   constructor(ctx: Context) {
     super(ctx, 'dshellTerminalBridge')
