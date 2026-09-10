@@ -85,25 +85,38 @@ Acceptance check:
 
 ## Phase 1.6 — New-session dialog
 
-Goal: session naming and start directory are chosen at creation time.
+Goal: session naming, start directory, and agent preset are chosen at
+creation time.
 
 Covers decision: 4.7 (naming paragraph).
 
 Plugins touched:
 
 - `dshell-workspace` (browser face) — the flat list gains a new-session
-  dialog (optional name + starting directory); `uiWorkspace.startSession`
-  (the shell's stock New-Session button) opens the same dialog instead of
-  creating silently; the stock hero workspace chip is hidden by an
-  interim stylesheet until the Phase 4 scaffold takeover removes the
-  whole hero row.
+  dialog (optional name + starting directory + agent-preset picker);
+  `uiWorkspace.startSession` (the shell's stock New-Session button)
+  opens the same dialog instead of creating silently; the stock hero
+  workspace chip is hidden by an interim stylesheet until the Phase 4
+  scaffold takeover removes the whole hero row. The preset roster comes
+  from `ctx.remote.agentPresets.list()` (injected as
+  `remote.agentPresets`), broken compositions are dropped from the
+  picker, and the choice is applied with `select(sessionId, presetId)`
+  while the session is still blank — a started session refuses the
+  switch. The name falls back to the start directory's basename, so an
+  empty name still pins a title and the first message's automatic
+  title cannot rename the session.
 
-Acceptance check:
+Acceptance check (verified in the browser):
 
 - `＋ 新会话` (list header) and the shell's `新会话` button both open the
   dialog.
+- The preset picker lists `跟随默认` + the shipped roster
+  (`标准模式（默认）` / `PTC 模式` / `极简模式` / `创造模式`); picking
+  `极简模式` shows that mode in the session header.
 - Creating with a name lands in the sidebar under that name; creating
-  with a custom directory creates the session in it.
+  with a custom directory creates the session in it; creating with no
+  name lands under the directory's basename and keeps it after the
+  first agent turn.
 - The hero workspace chip no longer renders.
 
 ## Phase 2 — Main shell lifecycle

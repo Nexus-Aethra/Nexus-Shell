@@ -33,6 +33,7 @@
   ],
   "dependencies": {
     "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-agent-presets": "link:../../../dsh/packages/preset/agent-presets",
     "@deepseek-ai/dsh-api-remotes": "link:../../../dsh/packages/api/remotes",
     "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
     "@deepseek-ai/dsh-api-workspace-controller": "link:../../../dsh/packages/api/workspace-controller",

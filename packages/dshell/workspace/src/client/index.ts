@@ -21,12 +21,14 @@
  * client bundle preset.
  */
 
-import { createElement, useSyncExternalStore, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
+import { createElement, useEffect, useSyncExternalStore, useState, type ChangeEvent, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Type-only: `ctx.remote` plus the mounted `agentPresets` namespace merge.
 import type { DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
+import type { AgentPresetRow } from '@deepseek-ai/dsh-agent-presets/types'
 import type {
   ISessions,
   SessionListState,
@@ -47,7 +49,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export const name = '@deepseek-ai/dsh-dshell-workspace/client'
 
-export const inject = ['slots', 'sessions'] as const
+export const inject = ['slots', 'sessions', 'remote', 'remote.agentPresets'] as const
 
 /**
  * New-session dialog signal. The `uiWorkspace.startSession` stand-in is
@@ -130,6 +132,42 @@ function ordinaryRows(state: SessionListState): SessionRow[] {
   return rows.sort((left, right) => right.updatedAt - left.updatedAt)
 }
 
+/** One agent preset the new-session dialog offers. */
+interface PresetChoice {
+  id: string
+  label: string
+  description?: string
+}
+
+/**
+ * Filter roster rows down to the ones a session can actually be composed
+ * from — a broken composition is dropped here, not deferred to a failed
+ * session start.
+ * @param rows - roster rows as the host reported them.
+ * @returns the selectable presets, in roster order.
+ */
+function presetChoices(rows: readonly AgentPresetRow[]): PresetChoice[] {
+  return rows
+    .filter(row => row.broken === undefined)
+    .map(row => ({
+      id: row.id,
+      label: row.isDefault ? `${row.name ?? row.id}（默认）` : row.name ?? row.id,
+      ...(row.description === undefined ? {} : { description: row.description }),
+    }))
+}
+
+/**
+ * Last path segment, so an empty name can fall back to the directory name
+ * the dialog's placeholder promises.
+ * @param path - absolute directory the session starts in.
+ * @returns the final segment, or undefined for a root path.
+ */
+function directoryName(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined
+  const parts = path.split(/[\\/]/).filter(part => part.length > 0)
+  return parts.at(-1)
+}
+
 /** `uiWorkspace` stand-in: cwd-based session flows and boot navigation. */
 class DshellUiWorkspace extends Service implements UiWorkspace {
   constructor(ctx: Context, private readonly sessions: ISessions) {
@@ -186,11 +224,28 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
     throw new Error('dshell: directory picking is removed (dshell design 4.7)')
   }
 
+  /** The cwd a new session lands in: the requested one, else the most recent session's. */
+  private resolveCwd(cwd: string | undefined): string | undefined {
+    if (cwd !== undefined && cwd !== '') return cwd
+    return ordinaryRows(this.sessions.list.getSnapshot()).find(row => !row.blank)?.cwd
+  }
+
   /** Create a session bound to `cwd`; absent cwd falls back to the most recent session's directory, then the server default. */
   private async createCwdSession(cwd: string | undefined): Promise<SessionId> {
-    if (cwd !== undefined) return await this.sessions.create({ cwd })
-    const fallback = ordinaryRows(this.sessions.list.getSnapshot()).find(row => !row.blank)?.cwd
-    return await this.sessions.create({ ...(fallback === undefined ? {} : { cwd: fallback }) })
+    const target = this.resolveCwd(cwd)
+    return await this.sessions.create({ ...(target === undefined ? {} : { cwd: target }) })
+  }
+
+  /**
+   * The new-session dialog's roster. A deployment without the preset service
+   * reports `gateway/invocation-unavailable`, which is not an error here:
+   * every session then composes from the host default.
+   * @returns the selectable presets, empty when none are available.
+   */
+  async listPresets(): Promise<PresetChoice[]> {
+    const result = await this.ctx.remote.agentPresets.list()
+    if (!result.ok) return []
+    return presetChoices(result.value.presets)
   }
 
   /**
@@ -211,16 +266,24 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
 
   /**
    * Create a named session through the new-session dialog (design 4.7
-   * naming paragraph): `sessions.create({ cwd })` then one durable rename
-   * through the session face. Auto-titling may overwrite the name on the
-   * first message — same lifetime as a stock sidebar rename.
+   * naming paragraph): pick the agent preset while the session is still
+   * blank (a started session refuses the switch), then one durable rename
+   * through the session face. An empty name falls back to the directory
+   * name the placeholder promises; pinning that title is what stops the
+   * first message's automatic title from renaming the session.
    */
-  async createNamedSession(name: string | undefined, cwd: string | undefined): Promise<SessionId> {
-    const sessionId = await this.createCwdSession(cwd)
-    if (name !== undefined && name !== '') {
+  async createNamedSession(name: string | undefined, cwd: string | undefined, presetId?: string): Promise<SessionId> {
+    const target = this.resolveCwd(cwd)
+    const sessionId = await this.createCwdSession(target)
+    if (presetId !== undefined && presetId !== '') {
+      const selected = await this.ctx.remote.agentPresets.select(sessionId, presetId)
+      if (!selected.ok) console.warn('dshell: agent preset select failed:', selected.error.message)
+    }
+    const title = name === undefined || name === '' ? directoryName(target) : name
+    if (title !== undefined && title !== '') {
       const binding = this.sessions.binding(sessionId)
       if (binding !== undefined) {
-        const result = await binding.session.rename(name)
+        const result = await binding.session.rename(title)
         if (!result.ok) console.warn('dshell: session rename failed:', result.error.message)
       }
     }
@@ -258,7 +321,8 @@ interface FlatSessionListProps {
     getSnapshot: () => SessionListState
     subscribe: (listener: () => void) => () => void
   }
-  createSession(name: string | undefined, cwd: string | undefined): Promise<void>
+  createSession(name: string | undefined, cwd: string | undefined, presetId: string | undefined): Promise<void>
+  listPresets: () => Promise<PresetChoice[]>
   open(sessionId: SessionId): void
 }
 
@@ -364,12 +428,27 @@ const createButtonStyle: CSSProperties = {
  */
 function NewSessionDialog(props: {
   defaultCwd: string | undefined
-  createSession(name: string | undefined, cwd: string | undefined): Promise<void>
+  listPresets: () => Promise<PresetChoice[]>
+  createSession(name: string | undefined, cwd: string | undefined, presetId: string | undefined): Promise<void>
 }): ReactElement {
   const [name, setName] = useState('')
   const [dir, setDir] = useState(props.defaultCwd ?? '')
+  const [preset, setPreset] = useState('')
+  const [presets, setPresets] = useState<PresetChoice[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The roster is read once per dialog open; a failure just hides the field
+  // (the host default still applies). The dialog is mounted fresh each open,
+  // so the loader identity in deps is deliberately ignored.
+  useEffect(() => {
+    let alive = true
+    void props.listPresets().then(
+      (rows) => { if (alive) setPresets(rows) },
+      () => { if (alive) setPresets([]) },
+    )
+    return () => { alive = false }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+  }, [])
   const submit = async (): Promise<void> => {
     if (busy) return
     setBusy(true)
@@ -378,6 +457,7 @@ function NewSessionDialog(props: {
       await props.createSession(
         name.trim() === '' ? undefined : name.trim(),
         dir.trim() === '' ? undefined : dir.trim(),
+        preset === '' ? undefined : preset,
       )
       newSessionDialog.set(false)
     } catch (reason) {
@@ -386,6 +466,20 @@ function NewSessionDialog(props: {
       setBusy(false)
     }
   }
+  const presetOptions = presets ?? []
+  const presetField = presetOptions.length === 0
+    ? null
+    : createElement('div', null,
+      createElement('div', { style: fieldLabelStyle }, 'Agent 预设'),
+      createElement('select', {
+        style: fieldInputStyle,
+        value: preset,
+        disabled: busy,
+        onChange: (event: ChangeEvent<HTMLSelectElement>) => { setPreset(event.target.value) },
+      },
+        createElement('option', { value: '' }, '跟随默认'),
+        ...presetOptions.map(choice => createElement('option', { key: choice.id, value: choice.id, title: choice.description ?? '' }, choice.label)),
+      ))
   return createElement('div', {
     style: backdropStyle,
     onClick: (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -413,6 +507,7 @@ function NewSessionDialog(props: {
           onChange: (event) => { setDir(event.target.value) },
           onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
         })),
+      presetField,
       error !== null ? createElement('div', { style: dialogErrorStyle }, error) : null,
       createElement('div', { style: dialogActionsStyle },
         createElement('button', {
@@ -464,7 +559,12 @@ function FlatSessionList(props: FlatSessionListProps): ReactElement {
   }
   return createElement('div', { style: listStyle }, children,
     dialogOpen
-      ? createElement(NewSessionDialog, { key: 'dialog', defaultCwd, createSession: props.createSession })
+      ? createElement(NewSessionDialog, {
+        key: 'dialog',
+        defaultCwd,
+        createSession: props.createSession,
+        listPresets: props.listPresets,
+      })
       : null)
 }
 
@@ -538,8 +638,9 @@ export function apply(ctx: Context): void {
       name: 'sidebar.workspaces',
       inject: (): FlatSessionListProps => ({
         sessions: sessions.list,
-        createSession: (name, cwd) =>
-          uiWorkspace.createNamedSession(name, cwd).then((sessionId) => { sessions.open(sessionId) }),
+        createSession: (name, cwd, presetId) =>
+          uiWorkspace.createNamedSession(name, cwd, presetId).then((sessionId) => { sessions.open(sessionId) }),
+        listPresets: () => uiWorkspace.listPresets(),
         open: (sessionId) => { sessions.open(sessionId) },
       }),
     },

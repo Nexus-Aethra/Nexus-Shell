@@ -256,6 +256,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent-presets':
+        specifier: link:../../../dsh/packages/preset/agent-presets
+        version: link:../../../dsh/packages/preset/agent-presets
       '@deepseek-ai/dsh-api-remotes':
         specifier: link:../../../dsh/packages/api/remotes
         version: link:../../../dsh/packages/api/remotes
