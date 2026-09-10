@@ -410,7 +410,17 @@ Plugins touched:
   duplicate blocks. A pty replay chunk schedules one coalesced redraw
   (~150ms) and suppresses block appends meanwhile, so a command's rows
   never interleave with the prompts its wipe just printed. Reload
-  replays the persisted window the same way.
+  replays the persisted window the same way. The pty side of that merge
+  is timed by arrival frames, not by the replayed chunk: a bind replay
+  is a single frame, so timing it by the chunk would drag the whole
+  scrollback to the bind moment and bunch every shell record after
+  every block. Each live frame's `(time, length)` is persisted per
+  session in localStorage, and the replayed text is sliced back into
+  timed segments from the end (`segments()`); a resync trims the
+  timeline to what the replayed text still covers, and a session this
+  browser never watched falls back to its raw chunks. Verified in
+  `block-test`: shell output injected between two turns keeps its place
+  across a reload.
 
 Notes:
 
