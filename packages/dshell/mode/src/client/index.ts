@@ -290,123 +290,239 @@ function xtermTheme(theme: Theme): ITheme {
   }
 }
 
-/** A durable session event worth drawing into the canvas (4.4 merge). */
+/** A durable session event expands into one or more canvas rows (4.4 merge). */
+type SessionRowRole = 'user' | 'assistant' | 'reasoning' | 'call' | 'tool' | 'command'
+
 interface SessionRow {
-  readonly role: 'user' | 'assistant' | 'tool' | 'command'
-  /** Identity within the session log (type + seq), for collapse state. */
+  readonly role: SessionRowRole
+  /** Identity within the session log (type + seq + section), for collapse state. */
   readonly key: string
   /** Full display text; may span lines. */
   readonly text: string
-  /** Whether the row offers a collapse toggle (long agent/tool records). */
+  /** Whether the row offers a collapse toggle. */
   readonly collapsible: boolean
+  /** Starts collapsed unless the user has explicitly expanded it. */
+  readonly defaultCollapsed: boolean
+  /** Header label override (a tool's own name). */
+  readonly label?: string
+  /** `tool-call` correlation id, so a later result can name its tool. */
+  readonly callId?: string
 }
 
 /** Line count above which a row starts collapsed in the merged timeline. */
-const COLLAPSE_THRESHOLD: Record<SessionRow['role'], number> = {
+const COLLAPSE_THRESHOLD: Record<SessionRowRole, number> = {
   user: Number.POSITIVE_INFINITY,
   assistant: 10,
+  // Reasoning is always a collapsed "think" fold, however short.
+  reasoning: 0,
+  call: Number.POSITIVE_INFINITY,
   tool: 3,
   command: Number.POSITIVE_INFINITY,
 }
 
-function messageText(content: readonly unknown[] | undefined): string {
-  return (content ?? [])
-    .map((block) => typeof block === 'object' && block !== null && 'text' in block
-      ? String((block as { text: unknown }).text)
-      : '')
+/** Content blocks of a message, typed loosely (the wire is JSON). */
+function contentBlocks(content: readonly unknown[] | undefined): readonly Record<string, unknown>[] {
+  return (content ?? []).filter(
+    (block): block is Record<string, unknown> => typeof block === 'object' && block !== null,
+  )
+}
+
+/** Join the visible `text` blocks only — reasoning is rendered separately. */
+function textOfBlocks(content: readonly unknown[] | undefined): string {
+  return contentBlocks(content)
+    .filter(block => block.type === 'text')
+    .map(block => String(block.text ?? ''))
     .join('')
 }
 
+/** Join the `reasoning` blocks (the model's chain of thought). */
+function reasoningOfBlocks(content: readonly unknown[] | undefined): string {
+  return contentBlocks(content)
+    .filter(block => block.type === 'reasoning')
+    .map(block => String(block.text ?? ''))
+    .join('')
+}
+
+/** Extract the model's tool invocations from one assistant message. */
+function toolCallsOfBlocks(content: readonly unknown[] | undefined): readonly { id: string; name: string; args: string }[] {
+  return contentBlocks(content)
+    .filter(block => block.type === 'tool-call')
+    .map(block => ({
+      id: String(block.id ?? ''),
+      name: String(block.name ?? '工具'),
+      args: typeof block.arguments === 'string' ? block.arguments : '',
+    }))
+}
+
+/**
+ * Text of a tool result. A `tool-result` block nests its payload under
+ * `content`, so a flat scan would render tool output as an empty row — walk
+ * the nesting and fall back to a marker for non-text payloads.
+ */
+function resultText(content: readonly unknown[] | undefined): string {
+  const parts: string[] = []
+  for (const block of contentBlocks(content)) {
+    if (block.type === 'text') {
+      parts.push(String(block.text ?? ''))
+      continue
+    }
+    if (Array.isArray(block.content)) {
+      const nested = resultText(block.content as unknown[])
+      if (nested.length > 0) parts.push(nested)
+      continue
+    }
+    if (block.type === 'image') parts.push('[图片]')
+  }
+  return parts.join('\n').trim()
+}
+
+/** One-line argument preview for a tool call. */
+function compactArguments(raw: string): string {
+  if (raw.trim().length === 0) return ''
+  let text = raw
+  try { text = JSON.stringify(JSON.parse(raw)) } catch { /* not JSON: keep raw */ }
+  text = text.replace(/\s+/g, ' ').trim()
+  return text.length > 140 ? `${text.slice(0, 137)}…` : text
+}
+
+/** Build one row, or null when it would be blank. */
 function rowOf(
-  role: SessionRow['role'],
-  type: string,
-  seq: number,
+  role: SessionRowRole,
+  key: string,
   text: string,
+  extra: { label?: string; callId?: string } = {},
 ): SessionRow | null {
   const body = text.replace(/\n+$/, '')
   if (body.trim().length === 0) return null
   const lines = body.split('\n').length
+  // Reasoning folds whenever it is more than a one-liner or a wall of prose;
+  // other roles fold on line count alone.
+  const collapsible = role === 'reasoning'
+    ? lines > 1 || body.length > 200
+    : lines > COLLAPSE_THRESHOLD[role]
   return {
     role,
-    key: `${type}:${seq}`,
+    key,
     text: body,
-    collapsible: lines > COLLAPSE_THRESHOLD[role],
+    collapsible,
+    defaultCollapsed: collapsible,
+    ...extra,
   }
 }
 
-/** Extract one displayable row from a durable Session event. */
-function sessionRowOf(event: SessionEventLike): SessionRow | null {
+/**
+ * Extract the displayable rows of one durable Session event. A single
+ * assistant message may yield three kinds of row — its thinking, its answer,
+ * and one line per tool call — in stream order.
+ * @param event - the durable event.
+ * @param toolNames - call-id → tool-name directory, populated by assistant
+ *   messages and read by their results (which carry only the call id).
+ * @returns the rows, in display order.
+ */
+function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, string>): readonly SessionRow[] {
   if (event.type === 'user/message') {
     // Plugin-sourced user messages (host-side terminal context, guard
     // notices) are model input, not the user's words — keeping them out
     // stops the canvas from painting fake `┃ 你` rows.
-    if (event.data.source.kind !== 'user') return null
-    const text = messageText(event.data.content)
+    if (event.data.source.kind !== 'user') return []
+    const text = textOfBlocks(event.data.content)
     // Legacy sessions carry the Phase 7 client-side context fence inside
     // the user's own message; show only the words beneath it.
     const stripped = /^\[dshell 终端上下文\][\s\S]*?```\n([\s\S]*)$/.exec(text)
-    return rowOf('user', event.type, event.seq, stripped === null ? text : (stripped[1] ?? ''))
+    const row = rowOf('user', `${event.type}:${event.seq}`, stripped === null ? text : (stripped[1] ?? ''))
+    return row === null ? [] : [row]
   }
   if (event.type === 'assistant/message') {
-    return rowOf('assistant', event.type, event.seq, messageText(event.data.message.content))
+    const content = event.data.message.content
+    const rows: SessionRow[] = []
+    const base = `${event.type}:${event.seq}`
+    const reasoning = rowOf('reasoning', `${base}:r`, reasoningOfBlocks(content), { label: '⎿ 思考过程' })
+    if (reasoning !== null) rows.push(reasoning)
+    const answer = rowOf('assistant', `${base}:t`, textOfBlocks(content))
+    if (answer !== null) rows.push(answer)
+    toolCallsOfBlocks(content).forEach((call, index) => {
+      toolNames.set(call.id, call.name)
+      const preview = compactArguments(call.args)
+      const row = rowOf('call', `${base}:c${String(index)}`, preview, {
+        label: `→ ${call.name}`,
+        callId: call.id,
+      })
+      if (row !== null) rows.push(row)
+    })
+    return rows
   }
   if (event.type === 'tool/result') {
-    return rowOf('tool', event.type, event.seq, messageText(event.data.message.content))
+    const callId = event.data.message.source.callId
+    const name = toolNames.get(callId) ?? event.data.error?.name ?? '工具'
+    const body = resultText(event.data.message.content)
+    const failed = event.data.error !== undefined
+    const text = body.length > 0 ? body : (failed ? '（失败，无输出）' : '（无文本输出）')
+    const row = rowOf('tool', `${event.type}:${event.seq}`, text, { label: `← ${name}${failed ? ' ✗' : ''}` })
+    return row === null ? [] : [row]
   }
   if (event.type === 'command/done') {
     const outcome = event.data.kind === 'error' ? `失败:${event.data.text ?? ''}` : (event.data.text ?? '')
-    return rowOf('command', event.type, event.seq, outcome.trim().length === 0 ? '完成' : outcome)
+    const row = rowOf('command', `${event.type}:${event.seq}`, outcome.trim().length === 0 ? '完成' : outcome)
+    return row === null ? [] : [row]
   }
   if (event.type === 'command/run') {
     const args = event.data.args
     const text = args === undefined || args === '' ? event.data.name : `${event.data.name} ${args}`
-    return rowOf('command', event.type, event.seq, text)
+    const row = rowOf('command', `${event.type}:${event.seq}`, text)
+    return row === null ? [] : [row]
   }
-  return null
+  return []
 }
 
-const SESSION_ROW_COLOR: Record<SessionRow['role'], string> = {
-  user: '\u001b[36m',
-  assistant: '\u001b[90m',
-  tool: '\u001b[90m',
-  command: '\u001b[33m',
+const SESSION_ROW_COLOR: Record<SessionRowRole, string> = {
+  user: '\u001b[36m', // cyan
+  assistant: '\u001b[32m', // green
+  reasoning: '\u001b[2;90m', // dim grey
+  call: '\u001b[35m', // magenta
+  tool: '\u001b[34m', // blue
+  command: '\u001b[33m', // yellow
 }
 
-const SESSION_ROW_LABEL: Record<SessionRow['role'], string> = {
+const SESSION_ROW_LABEL: Record<SessionRowRole, string> = {
   user: '┃ 你',
   assistant: '┃ AI',
-  tool: '┃✦ 工具',
+  reasoning: '┃ 思考过程',
+  call: '┃ 调用',
+  tool: '┃ 工具',
   command: '┃⚡ 命令',
 }
 
 /**
- * Draw one session row as `┃`-margined lines (design 4.4). Long records
- * render collapsed to their first line plus a toggle hint; the caller
- * records the header's buffer line so a click can flip the state.
- * @param term - target terminal.
+ * Render one session row (design 4.4). A collapsible row renders collapsed to
+ * one line plus a toggle hint. Returned as a string because the caller needs
+ * xterm's post-wrap cursor line for click mapping, which is only observable
+ * after an ordered write callback.
  * @param row - the row to draw.
  * @param collapsed - whether the body is hidden.
- * @returns the absolute buffer line of the header, or null when skipped.
+ * @returns the ANSI text for the row (header plus body, newline-terminated).
  */
-function writeSessionRow(term: XtermTerminal, row: SessionRow, collapsed: boolean): number | null {
+function renderSessionRow(row: SessionRow, collapsed: boolean): string {
   const color = SESSION_ROW_COLOR[row.role]
   const reset = '\u001b[0m'
   const dim = '\u001b[2m'
   const lines = row.text.split('\n')
-  const summary = lines[0] ?? ''
+  const first = lines[0] ?? ''
+  // A folded row is one compact line: keep it short even when the record's
+  // first line is a whole paragraph.
+  const summary = collapsed && first.length > 160 ? `${first.slice(0, 157)}…` : first
   const rest = lines.slice(1)
-  const buffer = term.buffer.active
-  const headerLine = buffer.baseY + buffer.cursorY
+  const folded = rest.length > 0 ? `+${String(rest.length)} 行 ▸ 点击展开` : '点击展开'
   const hint = row.collapsible
     ? collapsed
-      ? ` ${dim}[+${String(rest.length)} 行 ▸ 点击展开]${reset}`
+      ? ` ${dim}[${folded}]${reset}`
       : ` ${dim}[▾ 点击收起]${reset}`
     : ''
-  term.write(`${color}${SESSION_ROW_LABEL[row.role]}${reset} ${summary}${hint}\r\n`)
+  const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : `┃ ${row.label}`
+  let out = `${color}${label}${reset} ${summary}${hint}\r\n`
   if (!collapsed) {
-    for (const line of rest) term.write(`${color}┃${reset} ${line}\r\n`)
+    for (const line of rest) out += `${color}┃${reset} ${line}\r\n`
   }
-  return headerLine
+  return out
 }
 
 /** The xterm.js canvas: raw ANSI stream + session events merged (4.4). */
@@ -517,7 +633,6 @@ function PtyCanvas(props: {
       // "This API only accepts integers" on non-finite input, so guard.
       if (!Number.isFinite(charWidth) || charWidth <= 0) return
       if (!Number.isFinite(lineHeight) || lineHeight <= 0) return
-      lineHeightRef.current = lineHeight
       if (el.clientWidth <= 0 || el.clientHeight <= 0) return
       // Clamp hard: a layout feedback loop (container growing with the
       // rendered screen) would otherwise runaway to hundreds of thousands
@@ -623,37 +738,60 @@ function PtyCanvas(props: {
   const mergedReplayRef = useRef<(() => void) | undefined>(undefined)
   const replayPendingRef = useRef(false)
   const replayTimerRef = useRef<number | undefined>(undefined)
-  /** Rows the user collapsed, keyed by session + row key. */
-  const collapsedRef = useRef<Set<string>>(new Set())
+  /** Explicit collapse overrides, keyed by session + row key (absent = default). */
+  const collapsedRef = useRef<Map<string, boolean>>(new Map())
   /** Absolute buffer line of each row header → its collapse identity. */
-  const rowLinesRef = useRef<Map<number, { key: string; collapsible: boolean }>>(new Map())
-  const lineHeightRef = useRef(18)
+  const rowLinesRef = useRef<Map<number, { key: string; collapsible: boolean; defaultCollapsed: boolean }>>(new Map())
+  /** call-id → tool name, rebuilt on every replay so results can name their tool. */
+  const toolNamesRef = useRef(new Map<string, string>())
+  /** Bumped per replay so late write callbacks cannot repopulate a cleared map. */
+  const replayGenRef = useRef(0)
   useEffect(() => {
     const term = termRef.current
     if (term === null || eventSource === undefined) return
     let watermark = 0
+    const collapsedFor = (key: string, row: SessionRow): boolean =>
+      collapsedRef.current.get(key) ?? row.defaultCollapsed
+    // A row's buffer line is only knowable after xterm has processed every
+    // earlier write. Queue a zero-length write first: its callback runs once
+    // all pending data is consumed, so the cursor then sits on this row's
+    // header line.
     const drawRow = (id: string, row: SessionRow): void => {
       const key = `${id}:${row.key}`
-      const line = writeSessionRow(term, row, collapsedRef.current.has(key))
-      if (line !== null) rowLinesRef.current.set(line, { key, collapsible: row.collapsible })
+      const gen = replayGenRef.current
+      term.write('', () => {
+        if (replayGenRef.current !== gen) return
+        const buffer = term.buffer.active
+        rowLinesRef.current.set(buffer.baseY + buffer.cursorY, {
+          key,
+          collapsible: row.collapsible,
+          defaultCollapsed: row.defaultCollapsed,
+        })
+      })
+      term.write(renderSessionRow(row, collapsedFor(key, row)))
     }
     const mergedReplay = (entries: readonly SessionEventLikeEntry[]): void => {
       const id = sessionIdRef.current
       if (id === undefined) return
+      replayGenRef.current += 1
       term.reset()
       rowLinesRef.current.clear()
-      const rows: { time: number; kind: 'pty' | 'session'; payload: string | SessionRow }[] = []
+      toolNamesRef.current.clear()
+      const rows: { time: number; order: number; kind: 'pty' | 'session'; payload: string | SessionRow }[] = []
+      let order = 0
       for (const chunk of props.pty.chunks(id)) {
         if (chunk.text.length === 0) continue
-        rows.push({ time: chunk.time, kind: 'pty', payload: chunk.text })
+        rows.push({ time: chunk.time, order: order++, kind: 'pty', payload: chunk.text })
       }
       for (const entry of entries) {
         if (entry.type !== 'event') continue
-        const row = sessionRowOf(entry.event)
-        if (row === null) continue
-        rows.push({ time: entry.event.time, kind: 'session', payload: row })
+        for (const row of sessionRowsOf(entry.event, toolNamesRef.current)) {
+          rows.push({ time: entry.event.time, order: order++, kind: 'session', payload: row })
+        }
       }
-      rows.sort((a, b) => a.time - b.time || (a.kind === 'pty' ? -1 : 1))
+      // Absolute insertion order breaks ties, so a single assistant message's
+      // thinking / answer / call rows always draw in that order.
+      rows.sort((a, b) => a.time - b.time || a.order - b.order)
       for (const item of rows) {
         if (item.kind === 'pty') term.write(item.payload as string)
         else drawRow(id, item.payload as SessionRow)
@@ -673,17 +811,19 @@ function PtyCanvas(props: {
           if (seq <= watermark) continue
           watermark = seq
           if (entry.type !== 'event') continue
-          const row = sessionRowOf(entry.event)
-          if (row !== null) {
-            // While a replay redraw is pending the row belongs to the same
-            // transaction as the wipe — the redraw draws it in time order.
+          const rows = sessionRowsOf(entry.event, toolNamesRef.current)
+          if (rows.length > 0) {
+            // While a replay redraw is pending the rows belong to the same
+            // transaction as the wipe — the redraw draws them in time order.
             if (replayPendingRef.current) continue
             const id = sessionIdRef.current
             if (id === undefined) continue
-            // The cursor usually sits mid-line (after a live prompt); rows
-            // are log entries and always start on their own line.
-            if (term.buffer.active.cursorX > 0) term.write('\r\n')
-            drawRow(id, row)
+            for (const row of rows) {
+              // The cursor usually sits mid-line (after a live prompt); rows
+              // are log entries and always start on their own line.
+              if (term.buffer.active.cursorX > 0) term.write('\r\n')
+              drawRow(id, row)
+            }
           }
         }
       }
@@ -703,12 +843,17 @@ function PtyCanvas(props: {
       if (screen === null) return
       const box = screen.getBoundingClientRect()
       if (event.clientY < box.top || event.clientY > box.bottom) return
-      const viewportRow = Math.floor((event.clientY - box.top) / lineHeightRef.current)
+      // Derive the row from the rendered screen itself: the probe's font
+      // metrics are close to, but not exactly, xterm's cell height, and a
+      // half-pixel error lands on the neighbouring row.
+      const cellHeight = box.height / term.rows
+      if (!Number.isFinite(cellHeight) || cellHeight <= 0) return
+      const viewportRow = Math.floor((event.clientY - box.top) / cellHeight)
       const absolute = term.buffer.active.viewportY + viewportRow
       const hit = rowLinesRef.current.get(absolute)
       if (hit === undefined || !hit.collapsible) return
-      if (collapsedRef.current.has(hit.key)) collapsedRef.current.delete(hit.key)
-      else collapsedRef.current.add(hit.key)
+      const collapsed = collapsedRef.current.get(hit.key) ?? hit.defaultCollapsed
+      collapsedRef.current.set(hit.key, !collapsed)
       mergedReplayRef.current?.()
     }
     el.addEventListener('click', onClick)
