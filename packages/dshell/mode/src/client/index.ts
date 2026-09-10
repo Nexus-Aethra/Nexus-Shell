@@ -240,39 +240,20 @@ export function apply(ctx: Context): void {
     { name: 'settings.plugin.item', key: DSHELL_SETTINGS_NAMESPACE },
     DshellThemeCard,
   ))
-  // The terminal IS the conversation surface, so this entry takes over the
-  // stock `chat` view cell (same id, lower priority shadows it) instead of
-  // registering a sibling tab. That keeps the app at one surface: the view
-  // preference falls back to `chat`, and our entry is what renders there —
-  // no tab strip, no second view, no dependence on a store write. The
-  // shadowed stock entry stays registered, so the child slots it declares
-  // (`conversation.chat.node` rows) remain available to other plugins.
+  // The block view owns the stock `chat` cell (same id, lower priority
+  // shadows it). `chat` is dsh's DEFAULT_VIEW_ID, so taking that cell — not a
+  // sibling tab — is what makes it the surface every session opens with; a
+  // sibling is only reachable through a stored view selection, and dshell
+  // hides the tab strip, so a fresh session would silently fall back to
+  // whatever else holds `chat`. The shadowed stock entry stays registered, so
+  // the child slots it declares (`conversation.chat.node` rows) remain
+  // available to other plugins.
   ctx.slots.inject('conversation.view', () => ctx.slots.register(
     {
       id: 'chat',
       name: 'conversation.view',
       priority: -1,
       label: () => '对话',
-      inject: (sessionId: SessionId | undefined) => ({
-        sessionId,
-        pty,
-        sessions,
-        mode: sessionId === undefined ? undefined : modeFor(sessionId),
-      }),
-    },
-    DshellTerminalView,
-  ))
-  // The block view renders the same merged timeline through DOM blocks: a
-  // shell command run and an agent task are peer cards, and shell fidelity
-  // comes from a real terminal per block (see `block-terminal`). Registered as
-  // a sibling tab rather than a replacement while it grows input parity with
-  // the canvas — the tab strip is dsh's, so switching needs no extra chrome.
-  ctx.slots.inject('conversation.view', () => ctx.slots.register(
-    {
-      id: 'blocks',
-      name: 'conversation.view',
-      order: 10,
-      label: () => '块视图',
       inject: (sessionId: SessionId | undefined) => ({
         sessionId,
         pty,
@@ -285,6 +266,25 @@ export function apply(ctx: Context): void {
       }),
     },
     BlockView,
+  ))
+  // The original single-canvas surface, kept as a sibling for the one thing it
+  // still does better: raw keyboard ownership (`onData` for Tab, arrows,
+  // Ctrl+C) and full-screen programs. Nothing shows the tab strip, so it is
+  // reachable only by a stored view id — it is a fallback, not a peer.
+  ctx.slots.inject('conversation.view', () => ctx.slots.register(
+    {
+      id: 'canvas',
+      name: 'conversation.view',
+      order: 10,
+      label: () => '终端画布',
+      inject: (sessionId: SessionId | undefined) => ({
+        sessionId,
+        pty,
+        sessions,
+        mode: sessionId === undefined ? undefined : modeFor(sessionId),
+      }),
+    },
+    DshellTerminalView,
   ))
 }
 
