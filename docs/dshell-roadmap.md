@@ -373,13 +373,21 @@ Plugins touched:
   buffer row (`paintGutter`, repainted from `onRender`), not the `┃`
   glyph: a stacked glyph inks ~14px of the 16px cell and reads as a
   dashed line, while the band fills the row box and stays unbroken
-  across blank lines, soft-wrapped continuation rows, and column
-  re-wraps. Window `replace`/`prepend` replays the merged timeline
-  (pty chunks + rows, stable sort by time, pty first on ties); appends
-  draw at arrival, on their own line. A pty replay chunk schedules one
-  coalesced redraw (~150ms) and suppresses row appends meanwhile, so a
-  command's rows never interleave with the prompts its wipe just
-  printed. Reload replays the persisted window the same way.
+  across blank lines and column re-wraps. The gutter only reads as a
+  separator when no glyph ever reaches it, which takes three rules:
+  every logical line is hard-wrapped to `cols - 2` and indented, so
+  xterm's soft wrap never restarts a continuation at column 0 under
+  the rule; a row starts on its own line whenever the pty did not end
+  its last line with `\n` (a bare `\r` means readline still owns that
+  line and will erase it); and row text is sanitized — captured
+  terminal output carries real `\r`s that otherwise rewind to column 0
+  and overwrite the row's own indent and fold hint. Window
+  `replace`/`prepend` replays the merged timeline (pty chunks + rows,
+  stable sort by time, pty first on ties); appends draw at arrival, on
+  their own line. A pty replay chunk schedules one coalesced redraw
+  (~150ms) and suppresses row appends meanwhile, so a command's rows
+  never interleave with the prompts its wipe just printed. Reload
+  replays the persisted window the same way.
 
 Notes:
 

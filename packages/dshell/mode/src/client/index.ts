@@ -517,30 +517,160 @@ function paintGutter(term: XtermTerminal, lines: ReadonlyMap<number, SessionRowR
   }
 }
 
-/** Two-column gutter the rule occupies; labels start past it. */
+/** Row labels; {@link wrapBlockLine} supplies the leading gutter indent. */
 const SESSION_ROW_LABEL: Record<SessionRowRole, string> = {
-  user: '  你',
-  assistant: '  AI',
-  reasoning: '  思考过程',
-  call: '  调用',
-  tool: '  工具',
-  command: ' ⚡ 命令',
+  user: '你',
+  assistant: 'AI',
+  reasoning: '思考过程',
+  call: '调用',
+  tool: '工具',
+  command: '⚡ 命令',
+}
+
+/** Columns the block's rule owns; text never reaches into them. */
+const GUTTER_COLUMNS = 2
+
+/** Display width of one code point in terminal cells. */
+function cellWidth(code: number): number {
+  if (code < 0x20 || (code >= 0x7f && code < 0xa0)) return 0
+  if (code >= 0x0300 && code <= 0x036f) return 0 // combining marks
+  if (code === 0x200b || code === 0x200c || code === 0x200d || code === 0xfeff) return 0
+  if (
+    (code >= 0x1100 && code <= 0x115f) // Hangul Jamo
+    || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) // CJK … Yi
+    || (code >= 0xac00 && code <= 0xd7a3) // Hangul syllables
+    || (code >= 0xf900 && code <= 0xfaff) // CJK compatibility ideographs
+    || (code >= 0xfe30 && code <= 0xfe6f) // CJK compatibility forms
+    || (code >= 0xff00 && code <= 0xff60) // fullwidth forms
+    || (code >= 0xffe0 && code <= 0xffe6)
+    || (code >= 0x1f300 && code <= 0x1f9ff) // emoji
+    || (code >= 0x1fa70 && code <= 0x1faff)
+    || (code >= 0x20000 && code <= 0x3fffd) // CJK extension
+  ) return 2
+  return 1
+}
+
+/** Escape sequences and control characters a captured terminal may carry. */
+const ROW_ESCAPE = /\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/gu
+const ROW_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/gu
+
+/**
+ * Make captured terminal text safe to lay out inside a block. Tool results are
+ * screen captures: they carry carriage returns that rewind to column 0 and
+ * overwrite whatever is on the line — including this renderer's own indent and
+ * fold hint — plus escapes that can move the cursor or clear the screen. Tabs
+ * and newlines survive, because the renderer lays those out itself.
+ * @param text - raw row text from the session log.
+ * @returns the same text with every cursor-moving effect removed.
+ */
+function sanitizeRowText(text: string): string {
+  return text.replace(ROW_ESCAPE, '').replace(ROW_CONTROL, '')
+}
+
+/**
+ * Hard-wrap one logical line to `width` cells, indenting every produced row
+ * with the gutter. xterm's own soft wrap restarts at column 0, which would put
+ * the continuation under the block's rule; wrapping here keeps the gutter
+ * blank on every row of the block.
+ *
+ * ANSI sequences are copied through without counting toward the width, so a
+ * color run survives a wrap.
+ * @param text - the logical line, possibly containing escape sequences.
+ * @param width - usable cells, gutter excluded.
+ * @returns newline-terminated rows, each starting with the gutter.
+ */
+function wrapBlockLine(text: string, width: number): string {
+  const indent = ' '.repeat(GUTTER_COLUMNS)
+  let out = indent
+  let used = 0
+  let index = 0
+  while (index < text.length) {
+    const code = text.codePointAt(index) ?? 0
+    if (code === 0x1b) {
+      // Copy the escape sequence verbatim: CSI ends on a final byte 0x40–0x7e,
+      // OSC on BEL or ST, anything else is a two-character escape.
+      let end = index + 1
+      const kind = text[end]
+      if (kind === '[') {
+        end += 1
+        while (end < text.length) {
+          const at = text.charCodeAt(end)
+          end += 1
+          if (at >= 0x40 && at <= 0x7e) break
+        }
+      } else if (kind === ']') {
+        end += 1
+        while (end < text.length) {
+          if (text[end] === '\u0007') { end += 1; break }
+          if (text[end] === '\u001b' && text[end + 1] === '\\') { end += 2; break }
+          end += 1
+        }
+      } else {
+        end = Math.min(text.length, index + 2)
+      }
+      out += text.slice(index, end)
+      index = end
+      continue
+    }
+    const character = String.fromCodePoint(code)
+    if (code === 0x09) {
+      // Tab stops are absolute columns, so the gutter counts toward them.
+      const stop = 8 - ((GUTTER_COLUMNS + used) % 8)
+      if (used + stop > width) {
+        out += `\r\n${indent}`
+        used = 0
+      } else {
+        out += ' '.repeat(stop)
+        used += stop
+      }
+      index += character.length
+      continue
+    }
+    const size = cellWidth(code)
+    if (size > 0 && used + size > width) {
+      out += `\r\n${indent}`
+      used = 0
+    }
+    out += character
+    used += size
+    index += character.length
+  }
+  return `${out}\r\n`
+}
+
+/** Trailing escape sequences a chunk may end with after its text. */
+const TRAILING_ESCAPES = /(?:\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_])+$/u
+
+/**
+ * Whether a chunk closes its last line. Only a newline does: a carriage return
+ * means the PTY is still on that line — readline redraws it with `\r` + erase,
+ * so a block row written there would be erased by the shell's next repaint.
+ * Trailing escape sequences do not move the cursor, so they are ignored.
+ * @param text - the chunk just written.
+ * @returns true/false, or undefined when the chunk has no visible character.
+ */
+function endsAtLineStart(text: string): boolean | undefined {
+  const stripped = text.replace(TRAILING_ESCAPES, '')
+  if (stripped.length === 0) return undefined
+  return stripped[stripped.length - 1] === '\n'
 }
 
 /**
  * Render one session row (design 4.4). A collapsible row renders collapsed to
- * one line plus a toggle hint. Returned as a string because the caller needs
- * xterm's post-wrap cursor line for click mapping, which is only observable
- * after an ordered write callback.
+ * one line plus a toggle hint. Every line is hard-wrapped to the terminal width
+ * minus the gutter, so no row of the block ever reaches column 0 — the gutter
+ * column stays empty and the rule painted over it never covers text.
  * @param row - the row to draw.
  * @param collapsed - whether the body is hidden.
+ * @param cols - current terminal width in cells.
  * @returns the ANSI text for the row (header plus body, newline-terminated).
  */
-function renderSessionRow(row: SessionRow, collapsed: boolean): string {
+function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number): string {
+  const width = Math.max(16, cols - GUTTER_COLUMNS)
   const color = SESSION_ROW_COLOR[row.role]
   const reset = '\u001b[0m'
   const dim = '\u001b[2m'
-  const lines = row.text.split('\n')
+  const lines = sanitizeRowText(row.text).split('\n')
   const first = lines[0] ?? ''
   // A folded row is one compact line: keep it short even when the record's
   // first line is a whole paragraph.
@@ -552,12 +682,12 @@ function renderSessionRow(row: SessionRow, collapsed: boolean): string {
       ? ` ${dim}[${folded}]${reset}`
       : ` ${dim}[▾ 点击收起]${reset}`
     : ''
-  const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : `  ${row.label}`
-  let out = `${color}${label}${reset} ${summary}${hint}\r\n`
+  const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : sanitizeRowText(row.label)
+  // The gutter column stays blank in the text; paintGutter() draws the block's
+  // rule over it as a continuous CSS band.
+  let out = wrapBlockLine(`${color}${label}${reset} ${summary}${hint}`, width)
   if (!collapsed) {
-    // The gutter column stays blank in the text; paintGutter() draws the
-    // block's rule over it as a continuous CSS band.
-    for (const line of rest) out += `  ${line}\r\n`
+    for (const line of rest) out += wrapBlockLine(line, width)
   }
   return out
 }
@@ -576,6 +706,13 @@ function PtyCanvas(props: {
   const probeRef = useRef<HTMLSpanElement | null>(null)
   const sizeRef = useRef<{ cols: number; rows: number } | undefined>(undefined)
   const sessionIdRef = useRef<string | undefined>(undefined)
+  /**
+   * Whether the next write starts at column 0. Writes are queued in order, so
+   * this mirrors the buffer strictly: a block row is prefixed with a newline
+   * when the PTY left an unterminated prompt line (otherwise the row — and the
+   * rule drawn over it — lands on top of the prompt's own text).
+   */
+  const lineStartRef = useRef(true)
   const theme = props.theme
   // Read inside the once-created xterm callbacks: only shell mode feeds the
   // PTY, so a focus that lingers on the canvas in agent mode stays inert.
@@ -724,10 +861,14 @@ function PtyCanvas(props: {
           else {
             term.reset()
             gutterLinesRef.current.clear()
+            const next = endsAtLineStart(chunk.text)
+            if (next !== undefined) lineStartRef.current = next
             term.write(chunk.text)
           }
         }, 150)
       } else {
+        const next = endsAtLineStart(chunk.text)
+        if (next !== undefined) lineStartRef.current = next
         term.write(chunk.text)
       }
     })
@@ -757,7 +898,13 @@ function PtyCanvas(props: {
     rowLinesRef.current.clear()
     gutterLinesRef.current.clear()
     term.reset()
-    if (key !== undefined) term.write(props.pty.read(key))
+    lineStartRef.current = true
+    if (key !== undefined) {
+      const text = props.pty.read(key)
+      const next = endsAtLineStart(text)
+      if (next !== undefined) lineStartRef.current = next
+      term.write(text)
+    }
   }, [props.sessionId, props.pty])
 
   // Theme follows the dock's palette.
@@ -817,13 +964,20 @@ function PtyCanvas(props: {
       collapsedRef.current.get(key) ?? row.defaultCollapsed
     // A row's buffer line is only knowable after xterm has processed every
     // earlier write. Queue a zero-length write first: its callback runs once
-    // all pending data is consumed, so the cursor then sits on this row's
-    // header line.
+    // all pending data is consumed, so the cursor then sits on the line where
+    // this row's header will be written.
     const drawRow = (id: string, row: SessionRow): void => {
       const key = `${id}:${row.key}`
       const gen = replayGenRef.current
+      // An unterminated PTY line (a live prompt) would otherwise swallow the
+      // row's first line, putting its label — and the rule over it — on top of
+      // the prompt's own text.
+      const prefix = lineStartRef.current ? '' : '\r\n'
+      lineStartRef.current = true
       let start = -1
-      term.write('', () => {
+      // The prefix is its own write so the row's first line is read after any
+      // scroll it caused, in the same coordinate space as the end line below.
+      term.write(prefix, () => {
         if (replayGenRef.current !== gen) return
         const buffer = term.buffer.active
         start = buffer.baseY + buffer.cursorY
@@ -835,7 +989,7 @@ function PtyCanvas(props: {
       })
       // The row ends with a newline, so the cursor lands on the line after
       // the block: every line in [start, end) carries this role's rule.
-      term.write(renderSessionRow(row, collapsedFor(key, row)), () => {
+      term.write(renderSessionRow(row, collapsedFor(key, row), term.cols), () => {
         if (replayGenRef.current !== gen || start < 0) return
         const buffer = term.buffer.active
         const end = buffer.baseY + buffer.cursorY
@@ -848,6 +1002,7 @@ function PtyCanvas(props: {
       if (id === undefined) return
       replayGenRef.current += 1
       term.reset()
+      lineStartRef.current = true
       rowLinesRef.current.clear()
       gutterLinesRef.current.clear()
       toolNamesRef.current.clear()
@@ -867,8 +1022,14 @@ function PtyCanvas(props: {
       // thinking / answer / call rows always draw in that order.
       rows.sort((a, b) => a.time - b.time || a.order - b.order)
       for (const item of rows) {
-        if (item.kind === 'pty') term.write(item.payload as string)
-        else drawRow(id, item.payload as SessionRow)
+        if (item.kind === 'pty') {
+          const text = item.payload as string
+          const next = endsAtLineStart(text)
+          if (next !== undefined) lineStartRef.current = next
+          term.write(text)
+        } else {
+          drawRow(id, item.payload as SessionRow)
+        }
       }
     }
     mergedReplayRef.current = () => {
