@@ -21,8 +21,9 @@ import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
 import { sshDeviceRoot } from './paths.js'
-import { mountFor, remoteDirFor } from './mount.js'
-import { interactiveShellArgv, localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
+import { isUnder, mountFor, remoteDirFor } from './mount.js'
+import { mountBase } from './paths.js'
+import { interactiveShellArgv, localCwd, quote, remoteShellLine, sshArgv, sshEnv } from './runner.js'
 
 /**
  * Service name under which the router is published.
@@ -33,6 +34,15 @@ import { interactiveShellArgv, localCwd, remoteShellLine, sshArgv, sshEnv } from
  * without either reaching into the other's instance.
  */
 export const SSH_ROUTING_SERVICE = 'dshellSshRouting'
+
+/**
+ * How long a terminal will wait for a device session's assignment to appear.
+ * The dialog records the assignment one round trip after creating the session,
+ * so the wait only has to cover that gap; it ends as soon as the assignment
+ * lands, and an unbound session in a mount directory pays it once at spawn.
+ */
+const PENDING_BIND_ATTEMPTS = 20
+const PENDING_BIND_WAIT_MS = 50
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -174,16 +184,26 @@ export class SshRouter {
    *   device's own `remoteRoot`.
    * @param mount - local mount directory for that tree, from {@link mountPath};
    *   null keeps the session's file operations local-only.
+   * @param ctx - host context used to create the remote directory; when given,
+   *   the directory is made to exist BEFORE the assignment becomes visible, so
+   *   a terminal that spawns the instant the binding lands has somewhere to
+   *   `cd` into. Without this the binding is briefly routable while the remote
+   *   directory is still missing, and the shell silently falls back to the
+   *   login directory.
    */
   async bind(
     sessionId: string,
     deviceId: string | null,
     remoteRoot: string | null = null,
     mount: string | null = null,
+    ctx?: Context,
   ): Promise<void> {
-    if (deviceId !== null && this.connections.get(deviceId) === undefined) {
-      await this.refreshDevices()
-      if (this.connections.get(deviceId) === undefined) throw new Error(`未知设备：${deviceId}`)
+    if (deviceId !== null) {
+      if (this.connections.get(deviceId) === undefined) {
+        await this.refreshDevices()
+        if (this.connections.get(deviceId) === undefined) throw new Error(`未知设备：${deviceId}`)
+      }
+      if (ctx !== undefined) await this.ensureRemoteRoot(ctx, deviceId, remoteRoot)
     }
     await this.bindings.set(sessionId, deviceId, remoteRoot, mount)
   }
@@ -233,31 +253,41 @@ export class SshRouter {
    * The spawn plan for one session's VISIBLE terminal, or undefined when the
    * session runs locally.
    *
-   * The terminal backend asks by directory rather than by session: the terminal
-   * seam's spawn spec carries the session's cwd and nothing that names a dsh
-   * session, and the mount directory is exactly the value that identifies a
-   * device tree. A plan rather than a bare device, because the ssh knowledge —
-   * which options, which auth arguments, which environment the askpass hook
-   * needs — lives in this package and should not be copied into the backend.
+   * Keyed by session identity, never by directory. A device tree's mount
+   * directory is shared by every session bound to that device and root, so a
+   * directory match cannot tell a bound session from an unbound one whose cwd
+   * merely happens to be a mount path — and handing the latter a device shell
+   * would run the user's terminal on a machine the session has no binding for.
    *
-   * @param sessionCwd - the session's own directory, i.e. its mount directory.
+   * `sessionCwd` is unused for the decision and kept only so the signature
+   * mirrors the shell/fs seams; a plan rather than a bare device, because the
+   * ssh knowledge — which options, which auth arguments, which environment the
+   * askpass hook needs — lives in this package and is not copied to the bridge.
+   *
+   * @param sessionId - session-backed agent id, the key bindings are written under.
    * @returns argv and environment for the local `ssh` process, or undefined.
    */
-  interactiveShellPlan(sessionCwd: string): { argv: readonly string[]; env: Record<string, string> } | undefined {
-    const assignment = this.assignmentForMount(sessionCwd)
+  async interactiveShellPlan(
+    sessionId: string,
+    sessionCwd?: string,
+  ): Promise<{ argv: readonly string[]; env: Record<string, string> } | undefined> {
+    let assignment = this.bindings.get(sessionId)
+    // Creating a device session and recording its assignment are two round
+    // trips, and the visible terminal can attach between them. A session whose
+    // cwd is already a mount directory is therefore mid-bind rather than local,
+    // so wait briefly for the assignment instead of handing it a local shell it
+    // would keep for the rest of the session's life.
+    if (assignment === undefined && sessionCwd !== undefined && isUnder(mountBase(), sessionCwd)) {
+      for (let attempt = 0; attempt < PENDING_BIND_ATTEMPTS && assignment === undefined; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, PENDING_BIND_WAIT_MS))
+        assignment = this.bindings.get(sessionId)
+      }
+    }
     if (assignment === undefined) return undefined
     const device = this.connections.get(assignment.deviceId)
     if (device === undefined) return undefined
     const remoteRoot = assignment.remoteRoot ?? device.remoteRoot
     return { argv: interactiveShellArgv(device, remoteRoot), env: sshEnv(device) }
-  }
-
-  /** The assignment whose mount directory is exactly this path. */
-  private assignmentForMount(sessionCwd: string): Assignment | undefined {
-    for (const entry of this.bindings.all()) {
-      if (entry.mount === sessionCwd) return entry
-    }
-    return undefined
   }
 
   /**
@@ -305,6 +335,39 @@ export class SshRouter {
     }
     const [host, user, system] = stdout.split('|')
     return `已连接 ${user ?? ''}@${host ?? device.host}（${system ?? '未知系统'}） · ${String(Date.now() - started)}ms`
+  }
+
+  /**
+   * Create a session's remote directory, best effort.
+   *
+   * The local side already creates the session's own directory when the
+   * session is created; this is its remote counterpart, so a directory the
+   * user named actually exists on the device and the shell can start in it.
+   * Failure is not fatal — the interactive shell falls back to the login
+   * directory and says so — but a permissions problem still surfaces in the
+   * route's error field when it happens here.
+   *
+   * @param ctx - context holding the subprocess seam.
+   * @param deviceId - device to create the directory on.
+   * @param remoteRoot - directory to create; null uses the device's own.
+   */
+  async ensureRemoteRoot(ctx: Context, deviceId: string, remoteRoot: string | null): Promise<void> {
+    const device = this.connections.get(deviceId) ?? (await this.refreshDevices(), this.connections.get(deviceId))
+    if (device === undefined) throw new Error(`未知设备：${deviceId}`)
+    const root = remoteRoot === null || remoteRoot.trim() === '' ? device.remoteRoot : remoteRoot.trim()
+    if (root.trim() === '' || root.trim() === '~') return
+    const handle = ctx.subprocess.spawn({
+      argv: sshArgv(device, `mkdir -p -- ${quote(root)}`),
+      cwd: localCwd(),
+      stdio: { stdin: 'ignore', stdout: { maxBytes: 4096 }, stderr: { maxBytes: 4096 } },
+      graceMs: 5_000,
+      env: sshEnv(device),
+    })
+    const outcome = await handle.done
+    if (outcome.exitCode !== 0) {
+      const stderr = handle.collected.stderr?.readFrom(0).text.trim() ?? ''
+      throw new Error(stderr === '' ? `无法在设备上创建 ${root}` : stderr)
+    }
   }
 
   /** Reload the device cache from disk. */

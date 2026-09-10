@@ -68,6 +68,18 @@ export class BlockLog {
   }
 
   /**
+   * Sequence number of the newest block, or undefined when there is none.
+   *
+   * A cheap way for the owner to notice that an append OPENED a block rather
+   * than extended one: the client can only merge a `block-text` frame into a
+   * block it already knows, so the frame that starts a block has to be
+   * preceded by a fresh snapshot.
+   */
+  get tailSeq(): number | undefined {
+    return this.blocks.at(-1)?.seq
+  }
+
+  /**
    * Append terminal output to the open block, opening a shell block if the
    * list is empty or the previous one has closed.
    * @param text - the bytes as they arrived.

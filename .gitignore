@@ -22,6 +22,9 @@ packages/*/src/*.d.ts.map
 # GUI test artifacts (screenshots saved during browser-based verification)
 gui-test-screenshots/
 
+# Agent harness scratch (plan files and other per-session tool state)
+.zcode/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

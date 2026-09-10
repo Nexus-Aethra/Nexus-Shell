@@ -172,16 +172,28 @@ export interface PtySpawnPlan {
   readonly env?: Record<string, string> | undefined
 }
 
+/** What the backend knows about the session whose terminal it is about to spawn. */
+export interface PtySpawnQuery {
+  /** Session-backed agent identity: the key a binding is written under. */
+  readonly sessionId: string | undefined
+  /** The session's own directory, which for a bound session IS its device mount. */
+  readonly cwd: string | undefined
+}
+
 /**
  * How the backend asks whether a session's terminal should run somewhere else.
  *
- * Asked by cwd because that is what the terminal spawn spec carries: the
- * session's own directory, which for a bound session IS its device mount. The
- * bridge supplies this; keeping it a plain function here means this package
- * does not depend on the SSH plugin, and a composition without it simply gets
- * local shells.
+ * Answered by session identity, with the directory as context. Directory alone
+ * cannot identify the caller: one device tree's mount directory is shared by
+ * every session bound to that device and root, and a session that merely
+ * inherited a mount path as its cwd (an unbound session) would then borrow a
+ * device shell it has no binding for. The bridge supplies this; keeping it a
+ * plain function here means this package does not depend on the SSH plugin, and
+ * a composition without it simply gets local shells.
  */
-export type PtySpawnPlanResolver = (sessionCwd: string | undefined) => PtySpawnPlan | undefined
+export type PtySpawnPlanResolver = (
+  query: PtySpawnQuery,
+) => PtySpawnPlan | undefined | Promise<PtySpawnPlan | undefined>
 
 /** The default local interactive shell, unchanged from before this seam existed. */
 const LOCAL_SHELL: PtySpawnPlan = { argv: ['/bin/bash', '--noprofile', '--norc', '-i'] }
@@ -431,12 +443,18 @@ export class DshellPtyBackend implements TerminalBackend {
   async spawn(spec: TerminalBackendSpawnSpec): Promise<TerminalBackendSession> {
     if (this.disposed) throw new TerminalError('dshell PTY backend is disposing', 'NO_SESSION')
     spec.signal?.throwIfAborted()
+    // Awaited: a device session's assignment can still be in flight while the
+    // terminal attaches, and the resolver is allowed to wait for it.
+    const plan = await this.planFor?.({
+      sessionId: spec.owner?.id === undefined ? undefined : String(spec.owner.id),
+      cwd: spec.cwd,
+    })
     const session = new LocalRawSession(
       spec.sessionId as TerminalSessionId,
       spec.cwd,
       this.cols,
       this.rows,
-      this.planFor?.(spec.cwd) ?? LOCAL_SHELL,
+      plan ?? LOCAL_SHELL,
     )
     this.sessions.set(spec.sessionId as TerminalSessionId, session)
     try {

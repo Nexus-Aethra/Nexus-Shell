@@ -47,6 +47,8 @@ export interface DeviceSeat {
   ) => Promise<void>
   /** Local mount directory for one device tree; undefined when the host refused. */
   mountFor: (deviceId: string, remoteRoot: string | null) => Promise<string | undefined>
+  /** Whether a directory is a device mount, which a local session must not adopt. */
+  isMountPath: (path: string) => boolean
   /**
    * Take the user to the SSH plugin's settings card. Used when the picker has
    * nothing to offer; returns false when the settings entry could not be found,
@@ -325,6 +327,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           devices: deviceSeat.devices(),
           bind: deviceSeat.bind,
           mountFor: deviceSeat.mountFor,
+          isMountPath: deviceSeat.isMountPath,
           revealSettings: deviceSeat.revealSettings,
         },
       })

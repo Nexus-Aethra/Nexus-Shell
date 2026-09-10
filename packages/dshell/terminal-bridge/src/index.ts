@@ -166,17 +166,25 @@ export class DshellTerminalBridge extends Service {
   readonly promptHost = safeShellWord(hostname())
 
   /** The backend's rich handle (raw push, exit push, resize) for its sessions. */
-  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, (cwd) => {
+  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, ({ sessionId, cwd }) => {
     // A session bound to a device runs that device's shell, so the user's own
     // terminal is not a local shell stranded in an empty mount directory. The
     // router is reached through the service the SSH plugin publishes, asked
     // lazily because that plugin may load after this one; a composition
     // without it returns undefined and the local shell is used as before.
-    if (cwd === undefined || cwd === '') return undefined
+    // Answered by session identity: the mount directory is shared by every
+    // session bound to that device tree, so directory alone cannot tell a
+    // bound session from an unbound one that inherited the path.
+    if (sessionId === undefined) return undefined
     const routing = this.ctx.get('dshellSshRouting') as
-      | { interactiveShellPlan(sessionCwd: string): { argv: readonly string[]; env: Record<string, string> } | undefined }
+      | {
+        interactiveShellPlan(
+          sessionId: string,
+          sessionCwd: string | undefined,
+        ): Promise<{ argv: readonly string[]; env: Record<string, string> } | undefined>
+      }
       | undefined
-    return routing?.interactiveShellPlan(cwd)
+    return routing?.interactiveShellPlan(sessionId, cwd)
   })
 
   constructor(ctx: Context) {
@@ -319,8 +327,17 @@ export class DshellTerminalBridge extends Service {
     record.stopOutput = session.onOutput((chunk) => {
       if (record.initializing) return
       record.buffer.append(chunk)
+      const opened = record.blocks.tailSeq
       const block = record.blocks.append(chunk)
-      this.broadcast(record.dshSessionId, { kind: 'block-text', seq: block.seq, text: chunk })
+      if (block.seq === opened) {
+        this.broadcast(record.dshSessionId, { kind: 'block-text', seq: block.seq, text: chunk })
+      } else {
+        // This chunk started a block. The client merges `block-text` into a
+        // block it already has, so a new one must be announced with a full
+        // snapshot — otherwise output that arrives before the session's first
+        // turn is dropped from the timeline and the view stays empty.
+        this.broadcast(record.dshSessionId, { kind: 'blocks', blocks: record.blocks.snapshot() })
+      }
       record.absOffset += Buffer.byteLength(chunk, 'utf8')
       const closed = splitOutput(record.splitter, chunk, Date.now())
       if (closed.length > 0) {

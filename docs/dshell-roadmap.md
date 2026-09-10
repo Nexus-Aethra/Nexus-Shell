@@ -708,23 +708,33 @@ come from the device). An unbound session's `read` and `glob` are unchanged.
 The visible terminal, too:
 
 - The main PTY now runs the **device's** shell when the session is bound:
-  `DshellPtyBackend` takes a spawn plan per session cwd, and dshell-ssh hands
-  it `ssh … -t 'cd <dir> && exec bash -l'` (with the askpass environment for
-  password logins). The local pty is unchanged — the harness spawns `ssh`
-  inside it, so line discipline, resize and Ctrl+C stay local while the remote
-  shell gets a tty of its own. Interactive commands verified on the device
-  (`hostname` → `VM-0-6-ubuntu`, `pwd` → `/root`), and an unbound session's
-  terminal is still the local shell.
-- The bridge is asked by *directory*, not by session: the terminal spawn spec
-  carries the session's cwd and nothing naming a dsh session, and for a bound
-  session that cwd is exactly the mount. dshell-ssh exposes the plan rather
-  than the device, because the ssh knowledge (options, auth arguments, askpass
-  environment) belongs in one package.
+  `DshellPtyBackend` asks for a spawn plan per session, and dshell-ssh hands
+  it `ssh … -t 'cd <dir> 2>/dev/null || echo …; exec bash -l'` (with the
+  askpass environment for password logins). The local pty is unchanged — the
+  harness spawns `ssh` inside it, so line discipline, resize and Ctrl+C stay
+  local while the remote shell gets a tty of its own. Interactive commands
+  verified on the device (`pwd`, `hostname` → `VM-0-6-ubuntu`, `whoami` →
+  `root`), and an unbound session's terminal is still the local shell.
+- The plan is resolved by **session identity** (`spec.owner.id`), not by
+  directory: one device tree's mount directory is shared by every session
+  bound to that device and root, so a directory match cannot tell a bound
+  session from an unbound one whose cwd merely looks like a mount — and the
+  latter would get a device shell it has no binding for. The resolver may also
+  *wait* briefly (≤1s) when the session's cwd is already a mount path but its
+  assignment has not landed yet, because creating a session and recording its
+  binding are two round trips and the terminal can attach in between.
+- The `cd` is tolerant and the remote root is created **before** the binding
+  is recorded: the assignment is what makes a session routable, so a binding
+  that exists must imply the directory exists. Without that ordering the shell
+  spawned in the window between the two, failed to `cd`, and silently landed
+  in the login directory.
 - Consequences worth knowing: PS1 and PROMPT_COMMAND are still rewritten by
   the bridge right after startup, so a remote prompt looks identical to a local
-  one (that rewrite is also what drives the send settle); and an unreachable
-  device fails the terminal spawn instead of quietly falling back to a local
-  shell — a bound session's terminal is not local, by construction.
+  one (that rewrite is also what drives the send settle); an unreachable device
+  fails the terminal spawn instead of quietly falling back to a local shell;
+  and a terminal's first prompt is pushed as a snapshot when it opens a block,
+  so a brand-new session renders immediately instead of staying blank until
+  the next reload.
 
 Not routed yet:
 

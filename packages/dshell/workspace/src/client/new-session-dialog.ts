@@ -100,11 +100,24 @@ export interface NewSessionDialogProps {
    * plugin is not composed, in which case the SSH target is not offered.
    */
   revealSettings?: (() => boolean) | undefined
+  /**
+   * Whether a directory is a device mount. A local session must never adopt
+   * one: the execution seams resolve a mount back to its device, so a session
+   * created "local" in a mount directory would run on the device while the
+   * sidebar shows no device at all.
+   */
+  isMountPath?: ((path: string) => boolean) | undefined
 }
 
 export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const [name, setName] = useState('')
-  const [dir, setDir] = useState(props.defaultCwd ?? '')
+  // Terminal continuity, with one exclusion: the previous session's directory
+  // is only a sensible default when it is a real working directory. An SSH
+  // session's directory is a mount standing in for a device tree, and adopting
+  // it here is what made a new "local" session run on that device.
+  const [dir, setDir] = useState(
+    props.defaultCwd !== undefined && props.isMountPath?.(props.defaultCwd) === true ? '' : props.defaultCwd ?? '',
+  )
   const [preset, setPreset] = useState('')
   const [target, setTarget] = useState<SessionTarget>('local')
   const [deviceId, setDeviceId] = useState('')
@@ -155,6 +168,11 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       // A chosen target with nothing to run on must not fall back to local:
       // the session would silently be a local one under an SSH label.
       if (target === 'ssh' && deviceId === '') throw new Error('请先添加并选择一台 SSH 设备')
+      // The mirror of that mistake: a local session created in a mount
+      // directory is routed to the device by every execution seam.
+      if (target === 'local' && dir.trim() !== '' && props.isMountPath?.(dir.trim()) === true) {
+        throw new Error('该目录是设备的挂载目录，本机会话不能使用；请换一个目录或改选 SSH')
+      }
       const remote = target === 'ssh' && deviceId !== ''
       const remoteRoot = remote ? remoteDir.trim() === '' ? null : remoteDir.trim() : null
       // The mount is the session's directory here, so the session cannot be

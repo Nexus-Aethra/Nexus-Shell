@@ -65,6 +65,23 @@ export class SshClientService extends Service {
   }
 
   /**
+   * Whether a directory is one of this plugin's mount directories.
+   *
+   * A mount directory stands in for a device tree and every execution seam
+   * resolves it back to the device, so it must never become the working
+   * directory of a session that is NOT bound to that device. The new-session
+   * dialog asks before it reuses a previous session's directory as the local
+   * continuity default — that directory can be a mount, and inheriting one is
+   * exactly how a "local" session ends up with a remote terminal.
+   *
+   * @param path - absolute directory to test.
+   * @returns whether the path is a mount directory of a current assignment.
+   */
+  isMountPath(path: string): boolean {
+    return this.snapshot.bindings.some(entry => entry.mount === path)
+  }
+
+  /**
    * Take the user to this plugin's card in the settings panel.
    *
    * There is no service for opening settings: the panel's open state and its

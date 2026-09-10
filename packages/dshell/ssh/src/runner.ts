@@ -151,7 +151,14 @@ export function remoteShellLine(device: DeviceConnection, command: string, remot
  * @returns argv for the local `ssh` process.
  */
 export function interactiveShellArgv(device: DeviceConnection, remoteCwd: string): string[] {
-  const cd = remoteCwd.trim() === '' ? '' : `cd ${quote(remoteCwd)} && `
+  // A missing directory must not cost the user their terminal. Chaining with
+  // `&&` would short-circuit `exec bash` and end the session on a typo, with
+  // nothing on screen to explain it; the shell lands in the login directory
+  // instead and says why.
+  const root = remoteCwd.trim()
+  const cd = root === ''
+    ? ''
+    : `cd ${quote(root)} 2>/dev/null || echo ${quote(`dshell: 远端目录 ${root} 不存在，已回到登录目录`)} >&2; `
   return [
     'ssh',
     ...BASE_OPTIONS,

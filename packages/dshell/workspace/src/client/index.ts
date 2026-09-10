@@ -303,6 +303,7 @@ export function apply(ctx: Context): void {
         ssh.bind(String(sessionId), deviceId, remoteRoot ?? null, mount ?? null),
       mountFor: (deviceId, remoteRoot) => ssh.mountFor(deviceId, remoteRoot),
       revealSettings: () => ssh.revealInSettings(),
+      isMountPath: (path) => ssh.isMountPath(path),
     }
   })
   const workspaces = new DshellWorkspaces(ctx, panel)

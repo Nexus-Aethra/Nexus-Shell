@@ -53,7 +53,16 @@ export function createSshRoute(deps: SshRouteDeps): ConnectionFetchRoute {
       case 'mount':
         return { ...await state(), mountPath: await deps.router.mountPath(input.deviceId, input.remoteRoot ?? null) }
       case 'bind':
-        await deps.router.bind(input.sessionId, input.deviceId, input.remoteRoot ?? null, input.mount ?? null)
+        // The remote directory is created inside `bind`, before the assignment
+        // is recorded: the assignment is what makes a session routable, and the
+        // shell it starts must not find the directory still missing.
+        await deps.router.bind(
+          input.sessionId,
+          input.deviceId,
+          input.remoteRoot ?? null,
+          input.mount ?? null,
+          deps.ctx,
+        )
         return await state()
       default:
         return { ...await state(), error: '未知操作' }
