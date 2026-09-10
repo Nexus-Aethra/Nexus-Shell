@@ -20,11 +20,16 @@
 import { homedir } from 'node:os'
 import type { DeviceConnection } from './devices.js'
 
-/** Options every harness-spawned `ssh` carries. */
+/**
+ * Options every harness-spawned `ssh` carries, apart from authentication.
+ *
+ * BatchMode is deliberately NOT here: it disables prompting wholesale, which
+ * includes the askpass hook, so a password device would send no password at
+ * all and fail with a bare "Permission denied". Key devices add it back (they
+ * have nothing to be prompted for), and password devices cap the attempts
+ * instead, so a refused password fails the command rather than looping.
+ */
 const BASE_OPTIONS = [
-  // Prompting is never allowed: a missing secret must fail the command rather
-  // than hang a turn. Password auth reads its secret from askpass, not a tty.
-  '-o', 'BatchMode=yes',
   // Trust on first use. The alternative — refusing unknown hosts — would make
   // a freshly added device unusable without a manual known_hosts edit.
   '-o', 'StrictHostKeyChecking=accept-new',
@@ -60,11 +65,20 @@ export function sshEnv(device: DeviceConnection): Record<string, string> {
 /** Authentication arguments for one device. */
 function authArgs(device: DeviceConnection): string[] {
   if (device.auth === 'password') {
-    // Without this, a reachable key or agent would silently be preferred and
-    // the device would connect as someone else.
-    return ['-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no']
+    return [
+      // One attempt: the secret comes from askpass, so a second prompt would
+      // only replay the same rejected password and turn a refusal into a wait.
+      '-o', 'NumberOfPasswordPrompts=1',
+      // Without this, a reachable key or agent would silently be preferred and
+      // the device would connect as someone else.
+      '-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no',
+    ]
   }
-  return device.secretFile === undefined ? [] : ['-i', device.secretFile]
+  return [
+    // Nothing to prompt for on a key device: fail instead of waiting.
+    '-o', 'BatchMode=yes',
+    ...device.secretFile === undefined ? [] : ['-i', device.secretFile],
+  ]
 }
 
 /**
@@ -99,8 +113,11 @@ export function sshArgv(device: DeviceConnection, remoteCommand: string): string
 export function remoteShellLine(device: DeviceConnection, command: string, remoteCwd: string): string {
   const cd = remoteCwd.trim() === '' ? '' : `cd ${quote(remoteCwd)} && `
   const payload = `${cd}exec bash -lc ${quote(command)}`
+  // An assignment word carries its value quoted exactly once. Quoting the
+  // whole `NAME='value'` word again would turn those quotes into literal
+  // characters, and bash would read the assignment as a command name.
   const env = Object.entries(sshEnv(device)).map(([name, value]) => `${name}=${quote(value)}`)
-  return [...env, ...sshArgv(device, payload)].map(quote).join(' ')
+  return [...env, ...sshArgv(device, payload).map(quote)].join(' ')
 }
 
 /** A device's connection parameters, resolved for display. */

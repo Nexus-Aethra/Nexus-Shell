@@ -105,14 +105,20 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const devices = props.devices ?? []
   const selectedDevice = devices.find(candidate => candidate.id === deviceId)
 
+  // The directory stays local: it is what the harness itself reads (git root,
+  // instructions files). The device's own directory is what the commands run
+  // in, and routing applies it on the remote side.
+  const targetHint = selectedDevice === undefined
+    ? null
+    : createElement('div', { style: fieldLabelStyle },
+      `该设备上的命令在 ${selectedDevice.remoteRoot} 下执行`)
+
   /** Choosing SSH lands on the first device, so the picker never means "none". */
   const pickTarget = (next: SessionTarget): void => {
     setTarget(next)
     if (next === 'local') return
     const device = selectedDevice ?? devices[0]
-    if (device === undefined) return
-    setDeviceId(device.id)
-    if (device.remoteRoot.trim() !== '') setDir(device.remoteRoot)
+    if (device !== undefined) setDeviceId(device.id)
   }
 
   const submit = async (): Promise<void> => {
@@ -171,12 +177,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
             value: deviceId,
             disabled: busy,
             onChange: (event: ChangeEvent<HTMLSelectElement>) => {
-              const next = event.target.value
-              setDeviceId(next)
-              // A device's own directory is the only one that exists on it, so
-              // picking one replaces the local continuity default.
-              const device = devices.find(candidate => candidate.id === next)
-              if (device !== undefined && device.remoteRoot.trim() !== '') setDir(device.remoteRoot)
+              setDeviceId(event.target.value)
             },
           },
             ...devices.map(device => createElement('option', {
@@ -184,6 +185,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
               value: device.id,
             }, `${device.name}（${device.remoteRoot}）`)),
           )),
+      targetHint,
       createElement('div', null,
         createElement('div', { style: fieldLabelStyle }, '名称'),
         createElement('input', {
@@ -199,9 +201,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
         createElement('input', {
           style: fieldInputStyle,
           value: dir,
-          placeholder: selectedDevice === undefined
-            ? (props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录')
-            : `远端目录（${selectedDevice.name}）`,
+          placeholder: props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录',
           onChange: (event) => { setDir(event.target.value) },
           onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
         })),

@@ -22,6 +22,16 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
 import { localCwd, remoteShellLine, sshArgv, sshEnv } from './runner.js'
 
+/**
+ * The one method this module replaces, typed structurally: the concrete
+ * executor's own `resolve` signature is all that matters here, and taking the
+ * shape rather than an exported class keeps the seam working for any
+ * `ctx.shell` provider (`bash-local`, `bash-sandbox`, the win32 rows).
+ */
+interface ShellExecutorShape {
+  resolve(this: unknown, request: ShellExecRequest): ShellExecSpec
+}
+
 /** Session → device assignments, durable because routing must survive a restart. */
 class BindingStore {
   private loaded = false
@@ -187,6 +197,13 @@ export class SshRouter {
  * through before `run`/`start`, and it already carries the executor's own
  * defaults, so the rewrite cannot drift from the stock behaviour.
  *
+ * The wrap is installed on the prototype that OWNS `resolve`, not on the
+ * service object. A service is reachable through several access paths —
+ * `ctx.shell` and `ctx.get('shell')` are not the same object once a preset
+ * realm is involved — while the prototype holding the method is shared by all
+ * of them, so one write there is what actually covers every caller. An
+ * own-property wrap on one access path silently routes nothing.
+ *
  * @param ctx - host context holding the shell service.
  * @param router - device assignments.
  * @returns disposer restoring the original method.
@@ -194,18 +211,33 @@ export class SshRouter {
 export function installShellRouting(ctx: Context, router: SshRouter): () => void {
   const shell = ctx.get('shell')
   if (shell === undefined) return () => {}
-  const original = shell.resolve.bind(shell)
-  shell.resolve = (request: ShellExecRequest): ShellExecSpec => {
-    const spec = original(request)
+  // The seam goes on the PROTOTYPE, not on the service object. A service is
+  // reached through more than one access path — `ctx.shell` and `ctx.get`
+  // hand back different objects in a preset realm — and `resolve` is an
+  // inherited method, so an own-property wrapper would only cover whichever
+  // path happened to be used at install time. The prototype that owns
+  // `resolve` is shared by every path, which makes it the one place where a
+  // single write is guaranteed to be the funnel all callers pass through.
+  let owner = Object.getPrototypeOf(shell) as Record<string, unknown> | null
+  while (owner !== null && !Object.prototype.hasOwnProperty.call(owner, 'resolve')) {
+    owner = Object.getPrototypeOf(owner) as Record<string, unknown> | null
+  }
+  if (owner === null) return () => {}
+  const target = owner as unknown as ShellExecutorShape
+  const original = target.resolve
+  target.resolve = function resolve(this: unknown, request: ShellExecRequest): ShellExecSpec {
+    const spec = original.call(this, request)
     const agent = ctx.agents.currentInitiator()
     const device = agent === undefined ? undefined : router.deviceForSession(String(agent.id))
     if (device === undefined) return spec
     ctx.logger.info(`dshell-ssh: session "${String(agent?.id)}" runs on device "${device.name}"`)
-    // The local directory only has to be a real one the local `bash` can enter;
-    // the remote side does the meaningful `cd` with the session's own path.
+    // The remote directory comes from the DEVICE, not from the session's cwd:
+    // the session keeps a path that is meaningful (and readable) on this
+    // machine, because the harness itself reads it — instructions files, git
+    // root, file references — and a remote-only path would fail those locally.
     return {
       ...spec,
-      command: remoteShellLine(device, spec.command, spec.workdir),
+      command: remoteShellLine(device, spec.command, device.remoteRoot),
       workdir: localCwd(),
       // The session's access mode describes what may happen on THIS machine,
       // and the only thing running here now is the `ssh` client. Leaving the
@@ -217,5 +249,5 @@ export function installShellRouting(ctx: Context, router: SshRouter): () => void
         : { sandboxPolicy: { ...spec.sandboxPolicy, mode: 'danger-full-access' } },
     }
   }
-  return () => { shell.resolve = original }
+  return () => { target.resolve = original }
 }
