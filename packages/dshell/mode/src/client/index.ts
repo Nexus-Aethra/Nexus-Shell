@@ -58,6 +58,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the renderer-owned slots service (ctx.slots) and the
 // generic SlotMap interface that constrains the `inject` name string.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Type-only: pulls the settings SlotMap (`settings.general.item`).
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: pulls the `ctx.inputTriggers` service merge; the named types are
+// the frozen source contract (`CommandClaim`/`PickOutcome` re-exported there).
+import type {
+  ClientSessionContext,
+  CommandClaim,
+  InputTriggerSource,
+} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { Terminal as XtermTerminal, type ITheme } from '@xterm/xterm'
 import { XTERM_CSS } from './xterm-css.js'
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
@@ -220,33 +229,16 @@ function setTheme(id: string): void {
   }
 }
 
-/** Public setter used by dshell-settings; kept here so the theme registry
- * stays the single source of truth (the host bridge also reads it to
- * re-issue the bash PS1 after a palette change). */
+/** Public setter used by the settings row below; kept here so the theme
+ * registry stays the single source of truth for the dock's palette. */
 export { setTheme }
 
-/** Read the current theme id (used by dshell-settings + host). */
-export function currentThemeId(): string {
-  return themeStore.getSnapshot()
+/** React binding for the module-level theme store. */
+function useDshellTheme(): Theme {
+  const id = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
+  return getTheme(id)
 }
 
-/** Subscribe to theme changes (used by dshell-settings + host). */
-export function subscribeTheme(listener: () => void): () => void {
-  return themeStore.subscribe(listener)
-}
-
-const modeChipStyle: CSSProperties = {
-  border: '1px solid var(--dshell-border-strong)',
-  background: 'transparent',
-  color: 'var(--dshell-muted)',
-  cursor: 'pointer',
-  borderRadius: 999,
-  padding: '3px 10px',
-  fontSize: 11,
-  whiteSpace: 'nowrap',
-  fontFamily: 'inherit',
-  transition: 'color 120ms, border-color 120ms',
-}
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 
 let xtermCssInjected = false
@@ -324,9 +316,13 @@ function rowOf(
 /** Extract one displayable row from a durable Session event. */
 function sessionRowOf(event: SessionEventLike): SessionRow | null {
   if (event.type === 'user/message') {
+    // Plugin-sourced user messages (host-side terminal context, guard
+    // notices) are model input, not the user's words — keeping them out
+    // stops the canvas from painting fake `┃ 你` rows.
+    if (event.data.source.kind !== 'user') return null
     const text = messageText(event.data.content)
-    // The Phase 7 context block rides inside the user message; show only
-    // the user's own words beneath it.
+    // Legacy sessions carry the Phase 7 client-side context fence inside
+    // the user's own message; show only the words beneath it.
     const stripped = /^\[dshell 终端上下文\][\s\S]*?```\n([\s\S]*)$/.exec(text)
     return rowOf('user', event.type, event.seq, stripped === null ? text : (stripped[1] ?? ''))
   }
@@ -681,6 +677,7 @@ function DshellLeftControls(props: {
   setMode(next: SessionMode): void
   submitShell(text: string): void
 } & DshellInputStandardProps): ReactElement | null {
+  const theme = useDshellTheme()
   const mode = useSyncExternalStore(
     props.mode?.subscribe ?? (() => () => {}),
     props.mode?.getSnapshot ?? (() => 'shell' as SessionMode),
@@ -738,14 +735,25 @@ function DshellLeftControls(props: {
   const next: SessionMode = mode === 'shell' ? 'agent' : 'shell'
   const glyph = mode === 'shell' ? '$' : '✦'
   const label = mode === 'shell' ? 'shell' : 'agent'
+  const chipStyle: CSSProperties = {
+    border: `1px solid ${mode === 'shell' ? theme.accentBorder : theme.borderStrong}`,
+    background: mode === 'shell' ? theme.accentFaint : 'transparent',
+    color: mode === 'shell' ? theme.accentText : theme.muted,
+    cursor: 'pointer',
+    borderRadius: 999,
+    padding: '3px 10px',
+    fontSize: 11,
+    whiteSpace: 'nowrap',
+    fontFamily: 'inherit',
+    transition: 'color 120ms, border-color 120ms',
+  }
   return createElement('div', { style: chipSeatStyle },
     createElement('button', {
-      style: modeChipStyle,
-      title: mode === 'shell' ? '当前:shell 模式,Enter 直接执行命令' : '当前:对话模式,Enter 发送给 AI',
+      style: chipStyle,
       onClick: () => { props.setMode(next) },
     }, `${glyph} ${label}`),
-    createElement('div', { style: { color: 'var(--dshell-muted, #9d9da6)', fontSize: 12, marginLeft: 8 } },
-      mode === 'shell' ? 'Enter 执行命令 · / 看指令' : 'Enter 发送对话 · / 看指令'),
+    createElement('div', { style: { color: theme.muted, fontSize: 12, marginLeft: 8 } },
+      mode === 'shell' ? 'Enter 执行命令 · /shell 切对话' : 'Enter 发送对话 · /agent 切终端'),
   )
 }
 
@@ -783,8 +791,10 @@ function DshellTerminalView(props: {
   sessionId: SessionId | undefined
   pty: PtyStreamService
   sessions: ISessions
-  theme: Theme
 }): ReactElement {
+  // Palette changes re-render the canvas in place (PtyCanvas re-themes xterm
+  // from props.theme without recreating the terminal).
+  const theme = useDshellTheme()
   return createElement('div', {
     'data-dshell-terminal-view': '',
     style: {
@@ -795,7 +805,7 @@ function DshellTerminalView(props: {
       minHeight: 0,
       minWidth: 0,
       overflow: 'hidden',
-      background: props.theme.bg,
+      background: theme.bg,
     },
   },
     createElement(DshellViewBoundary, null,
@@ -803,8 +813,159 @@ function DshellTerminalView(props: {
         pty: props.pty,
         sessions: props.sessions,
         sessionId: props.sessionId,
-        theme: props.theme,
+        theme,
       }),
+    ),
+  )
+}
+
+/** `/` menu rows for the terminal-mode toggle, in display order. */
+const MODE_MENU_ROWS: readonly { name: 'shell' | 'agent'; description: string }[] = [
+  { name: 'shell', description: '切换到 shell 模式：Enter 直接执行命令' },
+  { name: 'agent', description: '切换到 agent 模式：Enter 发送给 AI' },
+]
+
+/** Typed aliases → canonical mode. `/terminal` stays an accepted alias. */
+const MODE_ALIASES = new Map<string, SessionMode>([
+  ['shell', 'shell'],
+  ['agent', 'agent'],
+  ['terminal', 'shell'],
+])
+
+/**
+ * `/shell` and `/agent` as first-class client commands. They are NOT host
+ * commands: the per-session mode store lives in this browser module, so the
+ * handler has to run here. The input-trigger pipeline is the supported
+ * client-side entry — a source on `/` contributes menu rows and claims
+ * `matchEnter` with a local `CommandClaim` whose `submit` flips the store
+ * (no RPC, no durable command lifecycle to pollute the log). Typed args
+ * after a shell switch run immediately (`/shell ls -la`). Plain draft text
+ * still routes through the capture-phase composer listener; this source
+ * owns the slash forms only.
+ * @param deps - per-session mode store and the main-shell sender.
+ * @returns the trigger source for `ctx.inputTriggers.registerSource`.
+ */
+function modeSwitchSource(deps: {
+  modeFor(sessionId: SessionId): SnapshotStore<SessionMode>
+  sendShell(text: string): void
+}): InputTriggerSource {
+  /** Resolve a typed/picked name to its canonical mode (`/terminal` → shell). */
+  const canonicalOf = (rawName: string): SessionMode | undefined => {
+    const canonical = rawName === 'terminal' ? 'shell' : rawName
+    return MODE_ALIASES.has(canonical) ? canonical as SessionMode : undefined
+  }
+  const claimFor = (name: string, session: ClientSessionContext): { claim: CommandClaim } => {
+    const next = canonicalOf(name) as SessionMode
+    return {
+      claim: {
+        token: `/${next}`,
+        hint: '切换模式',
+        submit: async (args) => {
+          deps.modeFor(session.sessionId).set(next)
+          const rest = args.trim()
+          if (next === 'shell' && rest.length > 0) deps.sendShell(rest)
+          return {
+            kind: 'success',
+            text: next === 'shell'
+              ? '已切换到 shell 模式 · Enter 直接执行命令'
+              : '已切换到 agent 模式 · Enter 发送给 AI',
+          }
+        },
+      },
+    }
+  }
+  return {
+    trigger: '/',
+    name: 'dshell',
+    order: 50,
+    showGroupTitle: true,
+    candidates: async (_session, req) => {
+      if (req.position !== 'leading') return []
+      const query = req.query.trim().toLowerCase()
+      return MODE_MENU_ROWS
+        .filter(row => row.name.startsWith(query))
+        .map(row => ({ name: row.name, description: row.description, value: row.name }))
+    },
+    // A menu pick is the common path (typing `/agent` opens the menu, Enter
+    // picks the highlighted row). Switching in `onPick` and replacing the
+    // token with empty text makes that ONE keystroke with no leftover draft,
+    // instead of the stock two-step "insert token, then submit" claim.
+    onPick: (pick) => {
+      const next = canonicalOf((pick.candidate.value ?? pick.candidate.name).toLowerCase())
+      if (next === undefined) return undefined
+      deps.modeFor(pick.session.sessionId).set(next)
+      return { text: '' }
+    },
+    // The no-menu path (pasted line, or menu already closed): claim and
+    // submit so the composer clears through the normal settlement and the
+    // switch reports a notice.
+    matchEnter: async (session, line, _signal, envelope) => {
+      const trimmed = line.trim()
+      const ws = trimmed.search(/\s/)
+      const token = ws === -1 ? trimmed : trimmed.slice(0, ws)
+      const name = token.slice(1).toLowerCase()
+      if (canonicalOf(name) === undefined) return undefined
+      if (envelope.attachments > 0) throw new Error(`/${name} 不支持附件`)
+      return claimFor(name, session)
+    },
+  }
+}
+
+/**
+ * Terminal-palette picker for the Settings General section. It lives beside
+ * the registry it writes (the module-level `themeStore`), so the palette has
+ * one owner and no cross-plugin service is needed to reach it.
+ */
+function DshellThemeSettingsRow(): ReactElement {
+  const current = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
+  return createElement('div', {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+      padding: '16px 0',
+      borderBottom: '0.5px solid var(--dsw-alias-border-l2)',
+    },
+  },
+    createElement('div', {
+      style: { fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-primary)' },
+    }, '终端配色'),
+    createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
+      THEMES.map(theme => createElement('button', {
+        key: theme.id,
+        type: 'button',
+        'aria-pressed': current === theme.id,
+        onClick: () => { setTheme(theme.id) },
+        style: {
+          flex: '1 1 140px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 8,
+          padding: '14px 16px',
+          borderRadius: 16,
+          cursor: 'pointer',
+          font: 'inherit',
+          fontSize: 13,
+          color: 'var(--dsw-alias-label-primary)',
+          border: current === theme.id
+            ? '1px solid var(--dsw-alias-brand-primary)'
+            : '0.5px solid var(--dsw-alias-border-l4)',
+          background: current === theme.id ? 'var(--dsw-alias-bg-module-platform)' : 'transparent',
+        },
+      },
+        createElement('span', {
+          style: {
+            display: 'inline-block',
+            width: 10,
+            height: 10,
+            borderRadius: 999,
+            background: theme.accent,
+            border: `1px solid ${theme.borderStrong}`,
+          },
+        }),
+        theme.label,
+      )),
     ),
   )
 }
@@ -853,6 +1014,9 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /** Send one line (or a bare Enter) to the bridge-owned main shell. */
+  const sendShell = (text: string): void => { pty.send(text.length === 0 ? '\r' : `${text}\r`) }
+
   // dshell does not shadow the stock composer bar — the stock InputBar owns
   // the composer surface, so the user gets stock features out of the box:
   // the `/` | `@` trigger popup (commands / skills / files / sessions),
@@ -878,10 +1042,25 @@ export function apply(ctx: Context): void {
         setMode: (next: SessionMode) => {
           if (sessionId !== undefined) modeFor(sessionId).set(next)
         },
-        submitShell: (text: string) => { pty.send(text.length === 0 ? '\r' : `${text}\r`) },
+        submitShell: sendShell,
       }),
     },
     DshellLeftControls,
+  ))
+  // `/shell` and `/agent` live in the client-side slash pipeline, not on
+  // `ctx.commands`: they flip a browser store, which no host handler can
+  // reach. Registered once; each session controller polls it.
+  ctx.inject(['inputTriggers'], (scope) => {
+    scope.effect(
+      () => scope.inputTriggers.registerSource(modeSwitchSource({ modeFor, sendShell })),
+      'dshell-mode: /shell + /agent source',
+    )
+  })
+  // The terminal palette is a preference with no page of its own, so it
+  // belongs in the General section's item seat — out of the composer.
+  ctx.slots.inject('settings.general.item', () => ctx.slots.register(
+    { name: 'settings.general.item', id: 'dshell-theme', order: 200 },
+    DshellThemeSettingsRow,
   ))
   // The terminal IS the conversation surface, so this entry takes over the
   // stock `chat` view cell (same id, lower priority shadows it) instead of
@@ -900,7 +1079,6 @@ export function apply(ctx: Context): void {
         sessionId,
         pty,
         sessions,
-        theme: getTheme(DEFAULT_THEME_ID),
       }),
     },
     DshellTerminalView,

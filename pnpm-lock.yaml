@@ -140,6 +140,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
       '@deepseek-ai/dsh-api-session-controller':
         specifier: link:../../../dsh/packages/api/session-controller
         version: link:../../../dsh/packages/api/session-controller
@@ -149,15 +152,24 @@ importers:
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../dsh/packages/client/ui-conversation
         version: link:../../../dsh/packages/client/ui-conversation
+      '@deepseek-ai/dsh-client-ui-input-trigger':
+        specifier: link:../../../dsh/packages/client/ui-input-trigger
+        version: link:../../../dsh/packages/client/ui-input-trigger
       '@deepseek-ai/dsh-client-ui-model-selection':
         specifier: link:../../../dsh/packages/client/ui-model-selection
         version: link:../../../dsh/packages/client/ui-model-selection
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-settings':
+        specifier: link:../../../dsh/packages/client/ui-settings
+        version: link:../../../dsh/packages/client/ui-settings
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../dsh/packages/llm/llm
+        version: link:../../../dsh/packages/llm/llm
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session

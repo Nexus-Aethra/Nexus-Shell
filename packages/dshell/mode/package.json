@@ -33,12 +33,16 @@
   ],
   "dependencies": {
     "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
+    "@deepseek-ai/dsh-agent": "link:../../../dsh/packages/core/agent",
     "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
     "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
     "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "link:../../../dsh/packages/client/ui-input-trigger",
     "@deepseek-ai/dsh-client-ui-model-selection": "link:../../../dsh/packages/client/ui-model-selection",
     "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
+    "@deepseek-ai/dsh-client-ui-settings": "link:../../../dsh/packages/client/ui-settings",
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
+    "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
     "@xterm/xterm": "6.0.0"
   },

@@ -286,6 +286,24 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
+   * Bounded recent output of one session's main shell — the Phase 7
+   * context-injection snapshot. Never spawns: a session the browser has
+   * not opened (or one whose shell exited) has no snapshot, so agent
+   * turns that carry no visible terminal stay context-free.
+   * @param dshSessionId - the dsh session whose main record to read.
+   * @param maxLines - newest-lines cap.
+   * @param maxBytes - UTF-8 byte cap, cut on a boundary when it binds.
+   * @returns the tail text, or undefined when there is no live main shell.
+   */
+  recentOutput(dshSessionId: string, maxLines: number, maxBytes: number): string | undefined {
+    const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
+    if (agent === undefined) return undefined
+    const record = this.mains.get(agent)
+    if (record === undefined || record.dead !== undefined) return undefined
+    return record.buffer.tail(maxLines, maxBytes)
+  }
+
+  /**
    * Reset the buffer and client histories, then queue an empty line so
    * bash renders a fresh `user@host:path$ ` cue (the `/clear` path).
    */

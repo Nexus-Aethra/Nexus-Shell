@@ -480,6 +480,24 @@ export function apply(ctx: Context): void {
       // a stable stock attribute on the conversation root.
       '[data-phase="hero"] [class*="scrollBody"] { justify-content: flex-end !important; }',
       '[class*="composerHero"] { padding-bottom: 14px !important; }',
+      // The composer is an input line, not a floating dialog card (design
+      // 4.8): strip the stock elevation (22px radius, surface fill, soft
+      // shadow, hairline stroke) and mark the boundary with one bottom rule
+      // that spans the terminal's content width. `data-phase` rides the
+      // conversation root, whose inherited geometry variables we retune to
+      // the canvas' own 10px inset.
+      '[data-phase] { --dsh-composer-side-clearance: 10px !important; --dsh-composer-card-max-width: 100% !important; }',
+      '[data-composer-card] {',
+      '  border-radius: 0 !important;',
+      '  background: transparent !important;',
+      '  box-shadow: none !important;',
+      '  --dsw-elevation-stroke-color: transparent !important;',
+      '  border-bottom: 1px solid var(--dsw-alias-border-l4) !important;',
+      '  padding: 6px 0 4px !important;',
+      '  gap: 8px !important;',
+      '}',
+      // The dashed pick-a-workspace ring only makes sense on a rounded card.
+      '[data-composer-card]::after { display: none !important; }',
     ].join('\n')
     document.head.appendChild(style)
     return () => { style.remove() }

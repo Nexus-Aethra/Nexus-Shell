@@ -189,40 +189,60 @@ Covers decisions: 4.1 (terminal-first surface), 4.5 (mode state),
 
 Plugins touched:
 
-- `dshell-mode` (browser face) — registers the mode chip and the
-  `terminal` view. The per-session mode store (`shell` | `agent`,
-  default `shell`) drives both rendering and input: in `shell` mode a
-  capture-phase listener routes the composer's Enter (and its primary
-  send button) to the bridge PTY and clears the stock draft through
+- `dshell-mode` (browser face) — registers the mode chip, the canvas
+  view, the `/shell` `/agent` slash source, and the Settings palette
+  row. The per-session mode store (`shell` | `agent`, default `shell`)
+  drives both rendering and input: in `shell` mode a capture-phase
+  listener routes the composer's Enter (and its primary send button) to
+  the bridge PTY and clears the stock draft through
   `inputActions.setDraft`; a leading `/` is always left to the stock
-  command pipeline so `/clear`, `/new`, and skills keep working. In
-  `agent` mode the stock submit path runs untouched.
+  trigger pipeline so `/clear`, `/new`, skills, *and* dshell's own
+  `/shell` `/agent` keep working. In `agent` mode the stock submit path
+  runs untouched.
+  - `/shell` and `/agent` are **client-side** commands, not host
+    `ctx.commands` rows: they flip a browser store, which no host
+    handler can reach. Registered through `ctx.inputTriggers` as a `/`
+    source (`name: 'dshell'`): menu rows in the `/` popup plus a
+    `matchEnter` claim whose local `CommandClaim.submit` sets the mode
+    and returns a notice — no RPC and no durable `command/run`/`done`
+    pollution. `/terminal` stays a typed alias for shell; typed args
+    (`/shell ls`) run immediately after the switch.
+  - The palette picker is a `settings.general.item` row (Settings ›
+    General), not a composer chip: four palettes write the module-level
+    theme store, and the canvas view + mode chip read it through a
+    `useSyncExternalStore` hook, so a palette change re-themes xterm in
+    place.
 - `dshell-conversation` (browser face) — registers the no-renderer
   `ConversationViewDefinition` on target `terminal` (`isActive` →
-  `true`) and auto-activates `terminal` per session. Activation is
-  retried until the session binding accepts it — a failed attempt is
-  not recorded, because an un-activated target leaves the shell in
-  `blank` phase and the view area collapsed.
-- `dshell-workspace` (browser face) — keeps only the hero chrome
-  hiding (`heroWorkspaceRow`, `headline`) and the hero composer
-  bottom-pin. The old `[data-phase="active"]` overrides (including
-  `viewArea { display: none }`) are gone: the stock active layout is
-  where the canvas and composer belong.
+  `true`) and re-asserts `terminal` activation on every sessions-list
+  and view-slot change. The shell hides the view-tab strip, so there is
+  no user view choice to preserve and activation must not race the
+  stock `chat` fallback.
+- `dshell-workspace` (browser face) — hero chrome hiding
+  (`heroWorkspaceRow`, `headline`), the hero composer bottom-pin, and
+  the composer's input-line restyle: the stock card's 22px radius,
+  surface fill, elevation shadow, and hairline stroke are stripped and
+  replaced with a single bottom rule spanning the column (design 4.8).
+  The old `[data-phase="active"]` overrides (including `viewArea
+  { display: none }`) are gone: the stock active layout is where the
+  canvas and composer belong.
 
 Acceptance check (current state — see screenshot in conversation):
 
 - New session creation opens straight into a full-column fused
-  terminal: PTY scrollback fills the column above a fixed input line
-  pinned to the bottom. The hero banner ("探索未至之境") and centered
-  composer are gone.
-- Shell input roundtrips: typing `echo hi` in the dock and pressing
-  Enter sends to the main PTY; the next prompt appears in the
-  scrollback above.
-- Mode toggles: clicking the `⌨ shell` / `✳ agent` chip flips mode
-  and the input placeholder. `/agent` and `/shell` prefixes from
-  the dock dispatch immediately and flip mode in one keystroke.
+  terminal: PTY scrollback fills the column above an input line pinned
+  to the bottom, separated by one rule rather than a dialog card. The
+  hero banner ("探索未至之境") and centered composer are gone.
+- Shell input roundtrips: typing `echo hi` and pressing Enter sends to
+  the main PTY; the next prompt appears in the scrollback above.
+- Mode toggles: clicking the `$ shell` / `✦ agent` chip flips mode;
+  typing `/shell` and `/agent` in the composer flips mode with a
+  notice; the two commands also appear in the `/` popup under a
+  "dshell" group.
 - Model chip lists the shared directory and updates selection in
   sync with `/model`.
+- Settings › General carries the "终端配色" row; picking a palette
+  re-themes the canvas and the mode chip.
 
 ### 4.x Shell-interaction mechanics (hard-won constraints)
 
@@ -320,11 +340,12 @@ Plugins touched:
 
 Notes:
 
-- Phase 7 deviation: the design's plugin-source injection
-  (`agent.inject(createUserMessage({source: {kind: 'plugin'}}))`) is
-  host-only — the client wire always stamps `user`. Implemented
-  client-side as a fenced `[dshell 终端上下文]` block prepended to the
-  user message (verified in the captured request body).
+- Terminal-context injection was originally client-side (a fenced block
+  prepended to the user message by the dock's own submit path). Phase 7
+  moved it host-side (`agent/pre-step` + a plugin-sourced user message),
+  which is where the message source is durable; the canvas filters
+  non-`user`-sourced `user/message` rows so the block never renders as a
+  fake user bubble.
 - The `terminal` view builder from Phase 1/4 stays: it renders
   nothing and only marks the session as active activity.
 - Composer-targeting note for browser automation: the dock input is
@@ -379,11 +400,25 @@ Covers decision: 4.6 (injection).
 
 Plugins touched:
 
-- `dshell-mode` (host face) — when the composer submits in `agent`
-  mode, inject the truncated recent-output block before the user
-  message.
-- `dshell-mode` (browser face) — none; the cap and the prompt-anchor
-  detection are host-side.
+- `dshell-terminal-bridge` (host face) — `recentOutput(sessionId,
+  maxLines, maxBytes)` returns the PtyBuffer tail for a session's live
+  main shell, or `undefined` when there is none. It never spawns a
+  shell, so subagent sessions and never-opened sessions stay
+  context-free.
+- `dshell-mode` (host face) — on `agent/pre-step`, when the step's
+  message batch carries a genuine `source.kind === 'user'` message,
+  prepend a single plugin-sourced `createUserMessage` (`kind:
+  'plugin'`, `form: 'notice'`, summary "主终端最近输出") holding the
+  fenced snapshot. Bounds live in the host: 100 lines / 4 KiB, cut on a
+  UTF-8 boundary by `PtyBuffer.tail`.
+- `dshell-mode` (browser face) — filters `user/message` events whose
+  source is not `user` out of the canvas row extractor, so injected
+  context and guard notices never paint as fake `┃ 你` rows.
+
+The Phase 7 client-side deviation (a `[dshell 终端上下文]` fence
+prepended to the user's own message) is gone: agent submits now travel
+the stock pipeline, so injection happens host-side at the step, where
+the message source is durable and correct.
 
 Acceptance check:
 
@@ -392,6 +427,7 @@ Acceptance check:
 - The model's reply references the captured output verbatim.
 - The injection respects the 100-line / 4 KiB cap; a runaway command's
   output is truncated at a UTF-8 boundary.
+- The injected block does not appear as a user row in the canvas.
 
 ## Phase 8 — `dshell_get_main_terminal` tool
 
