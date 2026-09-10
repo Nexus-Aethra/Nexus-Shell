@@ -145,6 +145,13 @@ export interface BookmarkRailProps {
   scrollContainer: HTMLDivElement | null
   /** Called when the user jumps to a bookmark — unsticks the tail-pin. */
   onJump: () => void
+  /**
+   * Called once after a successful jump, in addition to `onJump`. Used by
+   * the block view to dismiss the sidebar so the new content lands in a
+   * fully open reading surface; the user reopens the sidebar from the
+   * toolbar when they want to switch sessions.
+   */
+  onAfterJump?: () => void
 }
 
 /**
@@ -340,6 +347,11 @@ export function BookmarkRail(props: BookmarkRailProps): ReactElement | null {
               clickedAt.current = Date.now()
               setActiveKey(bookmark.key)
               props.onJump()
+              // Optional: a host-specific side effect (collapse the
+              // sidebar, for instance) that runs once per successful jump.
+              // Kept on the rail so the bookmark row remains a single
+              // self-contained widget.
+              props.onAfterJump?.()
             }
           },
         }, bookmark.label)
