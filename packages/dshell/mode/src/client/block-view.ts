@@ -25,8 +25,9 @@ import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/c
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createFold, foldEvent } from './blocks.js'
 import { AgentBlock } from './agent-block.js'
-import { assembleTimeline, type ViewItem } from './block-model.js'
+import { assembleTimeline, todosOf, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
+import { TodoCard, injectTodoCardCss, setTodoPanelSuppressed } from './todo-card.js'
 import { useDshellTheme } from './theme.js'
 
 /** A shell region: a plain terminal, no header and no frame of its own. */
@@ -115,6 +116,14 @@ export function BlockView(props: {
     return () => { observer.disconnect() }
   }, [props.pty, id])
 
+  // The docked task panel lies across the transcript; the floating card takes
+  // over while this view is on screen, and hands it back on unmount.
+  useEffect(() => {
+    injectTodoCardCss()
+    setTodoPanelSuppressed(true)
+    return () => { setTodoPanelSuppressed(false) }
+  }, [])
+
   const items = useMemo(() => {
     if (id === undefined) return []
     const fold = createFold()
@@ -158,6 +167,7 @@ export function BlockView(props: {
         font: `${String(SPAN_FONT_SIZE)}px ${SPAN_FONT}`,
       },
     }, 'W'.repeat(40)),
+    createElement(TodoCard, { todos: todosOf(entries), theme }),
     createElement('div', {
       ref: scroll,
       'data-dshell-block-view': '',
@@ -168,9 +178,21 @@ export function BlockView(props: {
       },
       style: { position: 'absolute', inset: 0, overflowY: 'auto', padding: '6px 10px 2px' },
     },
-      ...items.map(item => (item.kind === 'shell'
-        ? createElement(ShellRegion, { key: `${item.key}:${String(version)}`, item, theme })
-        : createElement(AgentBlock, { key: item.key, block: item.block, theme }))),
+      ...items.flatMap((item, index) => {
+        const previous = items[index - 1]
+        // A hairline only where the kind changes: enough to see where a shell
+        // stretch ends and a task begins, without boxing either of them in.
+        const divider = previous !== undefined && previous.kind !== item.kind
+          ? [createElement('div', {
+              key: `${item.key}:sep`,
+              style: { height: 1, background: theme.border, margin: '12px 0' },
+            })]
+          : []
+        const node = item.kind === 'shell'
+          ? createElement(ShellRegion, { key: `${item.key}:${String(version)}`, item, theme })
+          : createElement(AgentBlock, { key: item.key, block: item.block, theme })
+        return [...divider, node]
+      }),
     ),
   )
 }

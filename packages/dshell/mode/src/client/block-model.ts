@@ -13,8 +13,10 @@
  * region.
  */
 
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import { sanitizeRowText } from './session-rows.js'
 import type { TurnBlock } from './blocks.js'
+import type { TodoItem } from './todo-card.js'
 
 /** One rendered element of the view. */
 export type ViewItem =
@@ -57,4 +59,23 @@ export function assembleTimeline(
     })
   }
   return items
+}
+
+/**
+ * The session's current task list, from its own `todo/write` events. A new
+ * turn clears it, matching the lifetime of dsh's `todos` projection.
+ * @param entries - the session event window.
+ * @returns the items, or an empty list when no plan is active.
+ */
+export function todosOf(entries: readonly SessionEventLikeEntry[]): TodoItem[] {
+  let todos: TodoItem[] = []
+  for (const entry of entries) {
+    if (entry.type !== 'event') continue
+    if (entry.event.type === 'turn/start') { todos = []; continue }
+    if (entry.event.type === 'todo/write') {
+      const data = entry.event.data as { todos?: readonly TodoItem[] }
+      todos = [...(data.todos ?? [])]
+    }
+  }
+  return todos
 }

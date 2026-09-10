@@ -10,6 +10,7 @@ import { createElement, useEffect, useMemo, useState, type ReactElement } from '
 import type { TurnBlock } from './blocks.js'
 import { SESSION_ROW_LABEL, sanitizeRowText, type SessionRow } from './session-rows.js'
 import { SPAN_FONT, SPAN_FONT_SIZE } from './block-terminal.js'
+import { renderMarkdown } from './markdown.js'
 import type { Theme } from './theme.js'
 
 /**
@@ -310,7 +311,9 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
   const failed = block.status === 'failed' || block.status === 'aborted'
   return createElement('div', {
     'data-dshell-block': 'agent',
-    style: { margin: '14px 0 18px', overflow: 'hidden' },
+    // The same 13px the terminal regions render at, so an answer and the
+    // stream it came from read at one size.
+    style: { margin: '14px 0 18px', overflow: 'hidden', fontSize: SPAN_FONT_SIZE, lineHeight: 1.6 },
   },
     ...asked.map(row => createElement('div', {
       key: row.key,
@@ -351,10 +354,9 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
             ? createElement(ToolGroup, { key: step.key, step, theme })
             : createElement(TextStep, { key: step.key, step, theme })))
       : []),
-    ...answers.map(row => createElement('div', {
-      key: row.key,
-      style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6, color: theme.text, margin: '4px 0' },
-    }, sanitizeRowText(row.text))),
+    // An answer is written to be read: render its markdown rather than the
+    // raw syntax it arrived in.
+    ...answers.flatMap(row => renderMarkdown(sanitizeRowText(row.text), theme, row.key)),
     block.notice === undefined || !failed ? null : createElement('div', {
       style: { color: FAIL_COLOR, fontSize: 12, marginTop: '4px' },
     }, block.notice.text),
