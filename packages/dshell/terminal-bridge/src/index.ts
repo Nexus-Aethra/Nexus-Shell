@@ -413,6 +413,20 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
+   * Drop one session's main shell: kill the PTY and release its scrollback
+   * window, timeline and block log. Used when the session is deleted while
+   * still loaded — dsh keeps the session object alive, but everything dshell
+   * allocated for it can go now instead of at the next start.
+   *
+   * Never spawns: a session without a shell is already in the requested state.
+   */
+  releaseSession(dshSessionId: string): void {
+    const record = this.recordFor(dshSessionId)
+    if (record === undefined) return
+    this.markDead(record, 'session deleted')
+  }
+
+  /**
    * The main PTY's addressable `TerminalSessionId`, spawning the shell on
    * first need — what `dshell_get_main_terminal` hands the agent so
    * `terminal_send` lands in the user's visible shell.

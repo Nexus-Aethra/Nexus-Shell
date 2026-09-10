@@ -256,6 +256,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
       '@deepseek-ai/dsh-agent-presets':
         specifier: link:../../../dsh/packages/preset/agent-presets
         version: link:../../../dsh/packages/preset/agent-presets
@@ -268,6 +271,9 @@ importers:
       '@deepseek-ai/dsh-api-workspace-controller':
         specifier: link:../../../dsh/packages/api/workspace-controller
         version: link:../../../dsh/packages/api/workspace-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
@@ -284,6 +290,9 @@ importers:
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
     devDependencies:
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
@@ -562,9 +571,6 @@ packages:
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
-
-  '@types/node@26.5.0':
-    resolution: {integrity: sha512-dVSGpriSoCgz8WnDNTuSSuSv1PC/ALXihO4ulRZt7Md8k9mlbdin3lGOcDE8SnWOgf513ByWlXd7BK4azmyg/A==}
 
   '@types/prop-types@15.7.15':
     resolution: {integrity: sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==}
@@ -894,9 +900,6 @@ packages:
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
-  undici-types@8.9.0:
-    resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
-
   verkit@0.3.2:
     resolution: {integrity: sha512-zj/ob3UsvJGN0whEAKFp53REA5X66hvffVqoCtVQAakJKnKlH+/PcOfMoFwIG/o4rElqLv/ycAFlx8ZlXUorCg==}
     engines: {node: '>=18.12.0'}
@@ -1059,10 +1062,6 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
-  '@types/node@26.5.0':
-    dependencies:
-      undici-types: 8.9.0
-
   '@types/prop-types@15.7.15': {}
 
   '@types/react-dom@18.3.7(@types/react@18.3.31)':
@@ -1076,7 +1075,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 26.5.0
+      '@types/node': 24.13.3
 
   '@xterm/xterm@6.0.0': {}
 
@@ -1322,8 +1321,6 @@ snapshots:
       quansync: 1.0.0
 
   undici-types@7.18.2: {}
-
-  undici-types@8.9.0: {}
 
   verkit@0.3.2: {}
 

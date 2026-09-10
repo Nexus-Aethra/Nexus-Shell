@@ -1,0 +1,163 @@
+/**
+ * Inline styles for the sidebar session list and its dialogs. Kept apart from
+ * the components so the list file stays about behaviour; the values are the
+ * ones dshell's flat list has always used, plus the row-action and archived
+ * group geometry, which follow the same density.
+ */
+
+import type { CSSProperties } from 'react'
+
+export const listStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+  flex: 1,
+  overflow: 'hidden',
+}
+export const scrollStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+  flex: 1,
+  overflowY: 'auto',
+}
+export const headerStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '4px 8px',
+  fontSize: 12,
+  opacity: 0.75,
+}
+export const newButtonStyle: CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  fontSize: 12,
+  padding: '2px 6px',
+}
+export const rowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '6px 10px',
+  cursor: 'pointer',
+  fontSize: 13,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+}
+export const rowTitleStyle: CSSProperties = {
+  flex: '1 1 auto',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+}
+/** Row actions stay invisible until the row is hovered (CSS drives it). */
+export const rowActionsStyle: CSSProperties = {
+  display: 'flex',
+  gap: 4,
+  flex: '0 0 auto',
+}
+export const rowActionStyle: CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  fontSize: 11,
+  opacity: 0.65,
+  padding: '1px 4px',
+  borderRadius: 4,
+}
+export const emptyStyle: CSSProperties = {
+  padding: '8px 10px',
+  fontSize: 12,
+  opacity: 0.5,
+}
+/** The collapsible archive header: one quiet line above the archived rows. */
+export const groupHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '6px 10px 4px',
+  marginTop: 4,
+  borderTop: '1px solid var(--dsw-alias-border-l4, rgba(127,127,127,.25))',
+  fontSize: 12,
+  cursor: 'pointer',
+  opacity: 0.7,
+}
+export const groupCountStyle: CSSProperties = {
+  marginLeft: 'auto',
+  fontSize: 11,
+  opacity: 0.7,
+}
+export const archivedRowStyle: CSSProperties = {
+  ...rowStyle,
+  opacity: 0.6,
+}
+export const noticeStyle: CSSProperties = {
+  padding: '4px 10px 6px',
+  fontSize: 11,
+  color: '#f87171',
+}
+export const backdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0, 0, 0, 0.55)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+}
+export const dialogStyle: CSSProperties = {
+  background: '#1b1b1f',
+  border: '1px solid #33333a',
+  borderRadius: 10,
+  padding: 18,
+  width: 400,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  color: '#e8e8ec',
+}
+export const dialogTitleStyle: CSSProperties = { fontSize: 15, fontWeight: 600 }
+export const dialogBodyStyle: CSSProperties = { fontSize: 13, opacity: 0.8, lineHeight: 1.5 }
+export const fieldLabelStyle: CSSProperties = { fontSize: 12, opacity: 0.7, marginBottom: 4 }
+export const fieldInputStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  background: '#101013',
+  border: '1px solid #3a3a42',
+  borderRadius: 6,
+  color: 'inherit',
+  padding: '7px 9px',
+  fontSize: 13,
+  outline: 'none',
+}
+export const dialogErrorStyle: CSSProperties = { color: '#f87171', fontSize: 12 }
+export const dialogActionsStyle: CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  justifyContent: 'flex-end',
+}
+export const cancelButtonStyle: CSSProperties = {
+  border: '1px solid #3a3a42',
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  borderRadius: 6,
+  padding: '6px 14px',
+  fontSize: 13,
+}
+export const createButtonStyle: CSSProperties = {
+  border: 'none',
+  background: '#4f6bed',
+  color: '#fff',
+  cursor: 'pointer',
+  borderRadius: 6,
+  padding: '6px 14px',
+  fontSize: 13,
+}
+export const dangerButtonStyle: CSSProperties = {
+  ...createButtonStyle,
+  background: '#b3261e',
+}

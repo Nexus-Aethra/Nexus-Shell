@@ -579,6 +579,34 @@ Acceptance check:
 - Closing a session in the sidebar: bridge closes ws and calls
   `ctx.terminals.kill(agent, mainId)` cleanly.
 
+## Phase 9.5 — Session panel (archive + purge)
+
+Goal: the sidebar can put a session away and remove one.
+
+Shipped:
+
+- Archive is a dshell-owned durable tag (`$DSH_HOME/dshell/tags.json`),
+  rendered as the collapsible `已归档` group; dsh's own archive lives on
+  the disabled workspace registry, so it is unusable here.
+- Purge removes the session directory, its projection-cache entry and
+  the dshell PTY log plus sidecars (`dshell-workspace/src/purge.ts`),
+  and frees the session's shell via
+  `DshellTerminalBridge.releaseSession`.
+- Both travel over one exact `/api/dshell/sessions` route behind dsh's
+  own trust fence, not the Typert Remote table (whose client artifacts
+  are generated from dsh's packages).
+
+Hard-won constraint — a *loaded* session cannot be deleted immediately:
+dsh discards the only teardown capability at
+`packages/api/session-controller/src/agent.ts` (`(await
+ctx.agents.resume(...)).agent` throws the `AgentHandle` away), and
+`SessionStore` exposes no per-session detach. So while a session is in
+`ctx.sessions`, its log writer stays open and would recreate a deleted
+directory on the next event. The delete branch therefore has three
+outcomes: running → refused; loaded-and-idle → terminal released now,
+log removal scheduled and executed at the next start (before any client
+can resume); cold → purged immediately.
+
 ## Phase 10 — Packaging
 
 Goal: `dshell-*` packages install with `pnpm add` and dsh loads them
