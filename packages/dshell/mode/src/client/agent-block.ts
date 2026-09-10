@@ -12,15 +12,12 @@ import { SESSION_ROW_LABEL, sanitizeRowText, type SessionRow } from './session-r
 import { SPAN_FONT, SPAN_FONT_SIZE } from './block-terminal.js'
 import type { Theme } from './theme.js'
 
-/** Role colours, matching the ANSI palette the canvas painted each role with. */
-const ROW_COLOR: Record<SessionRow['role'], string> = {
-  user: '#06989a',
-  assistant: '#4e9a06',
-  reasoning: '#6b7280',
-  call: '#75507b',
-  tool: '#3465a4',
-  command: '#c4a000',
-}
+/**
+ * The transcript is monochrome by design: steps are told apart by their glyph,
+ * label and weight, not by colour, and everything sits directly on the page
+ * background. Only a failure earns a colour.
+ */
+const FAIL_COLOR = '#cc0000'
 
 type ToolStepModel = { key: string; label: string; command: string | undefined; output: string | undefined }
 type Step =
@@ -137,7 +134,7 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme }
         fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE,
       },
     },
-      createElement('span', { style: { color: ROW_COLOR.tool } }, '▤'),
+      createElement('span', { style: { color: theme.muted, flex: '0 0 auto' } }, '▤'),
       createElement('span', { style: { color: theme.muted, flex: '0 0 auto' } }, step.label),
       createElement('span', {
         style: { color: theme.text, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -146,10 +143,9 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme }
     ),
     !open || clipped === undefined ? null : createElement('div', {
       style: {
-        border: `1px solid ${theme.border}`,
         borderRadius: '6px',
-        background: theme.bg,
-        margin: '4px 0 4px 20px',
+        background: theme.inputBar,
+        margin: '4px 0 4px 22px',
         padding: '6px 8px',
         fontFamily: SPAN_FONT,
         fontSize: SPAN_FONT_SIZE,
@@ -158,7 +154,7 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme }
         color: theme.text,
       },
     },
-      step.command === undefined ? null : createElement('div', { style: { color: ROW_COLOR.command } }, `$ ${step.command}`),
+      step.command === undefined ? null : createElement('div', { style: { color: theme.muted } }, `$ ${step.command}`),
       clipped.text,
       clipped.hidden > 0 ? createElement('div', { style: { color: theme.muted } }, `… 还有 ${String(clipped.hidden)} 行`) : null,
     ),
@@ -177,7 +173,7 @@ function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme
         color: theme.muted, fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE,
       },
     },
-      createElement('span', { style: { color: ROW_COLOR.tool } }, '▤'),
+      createElement('span', null, '▤'),
       createElement('span', null, `${step.label} · ${String(step.items.length)} 个命令`),
       createElement('span', { style: { fontSize: 11 } }, open ? '⌃' : '⌄'),
     ),
@@ -214,10 +210,9 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme }
   if (row.role === 'user') {
     return createElement('div', {
       style: {
-        border: `1px solid ${theme.border}`,
         borderRadius: '10px',
         background: theme.inputBar,
-        padding: '6px 10px',
+        padding: '7px 11px',
         margin: '6px 0',
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
@@ -250,24 +245,16 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
   const endedAt = block.notice?.time ?? now
   const steps = useMemo(() => buildSteps(block.rows, block.startedAt), [block.rows, block.startedAt])
   const body = expanded ? steps : steps.slice(-2)
-  const statusColor = running ? ROW_COLOR.user : block.status === 'done' ? ROW_COLOR.assistant : '#cc0000'
+  const failed = block.status === 'failed' || block.status === 'aborted'
   return createElement('div', {
     'data-dshell-block': 'agent',
-    style: {
-      border: `1px solid ${theme.border}`,
-      borderLeft: `3px solid ${statusColor}`,
-      borderRadius: '8px',
-      background: theme.inputBar,
-      margin: '8px 0',
-      padding: '8px 10px',
-      overflow: 'hidden',
-    },
+    style: { margin: '14px 0 18px', overflow: 'hidden' },
   },
     createElement('div', {
       onClick: () => { setExpanded(value => !value) },
       style: { display: 'flex', alignItems: 'baseline', gap: '8px', cursor: 'pointer', lineHeight: '20px' },
     },
-      createElement('span', { style: { color: statusColor } }, running ? '◐' : block.status === 'done' ? '●' : '◼'),
+      createElement('span', { style: { color: failed ? FAIL_COLOR : theme.muted, fontSize: 11 } }, running ? '◐' : '●'),
       createElement('span', {
         style: { color: theme.text, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       }, block.title.length === 0 ? '（无标题）' : block.title),
@@ -275,15 +262,18 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
         style: { color: theme.muted, fontSize: 12, flex: '0 0 auto' },
       }, running ? `工作中 ${formatDuration(endedAt - block.startedAt)}` : formatDuration(endedAt - block.startedAt)),
     ),
-    createElement('div', { style: { marginTop: '4px' } },
+    createElement('div', { style: { height: 1, background: theme.border, margin: '8px 0 6px' } }),
+    createElement('div', null,
       ...body.map(step => {
         if (step.kind === 'tool') return createElement(ToolStep, { key: step.key, step, theme })
         if (step.kind === 'group') return createElement(ToolGroup, { key: step.key, step, theme })
         return createElement(TextStep, { key: step.key, step, theme })
       }),
     ),
-    block.notice === undefined ? null : createElement('div', {
-      style: { color: theme.muted, fontSize: 11, marginTop: '4px' },
+    // A finished task says everything in its header; only a failure has more
+    // to tell (the reason), so the footer appears for those alone.
+    block.notice === undefined || !failed ? null : createElement('div', {
+      style: { color: FAIL_COLOR, fontSize: 12, marginTop: '4px' },
     }, block.notice.text),
   )
 }
