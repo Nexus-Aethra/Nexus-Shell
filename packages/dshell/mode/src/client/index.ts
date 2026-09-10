@@ -483,13 +483,48 @@ const SESSION_ROW_COLOR: Record<SessionRowRole, string> = {
   command: '\u001b[33m', // yellow
 }
 
+/**
+ * CSS colors matching the ANSI codes the labels use (xterm.js' built-in
+ * palette). The block's left rule is painted by {@link paintGutter} rather
+ * than by the `┃` glyph, so these must track the roles' text colors.
+ */
+const SESSION_ROW_GUTTER: Record<SessionRowRole, string> = {
+  user: '#06989a', // ANSI 36
+  assistant: '#4e9a06', // ANSI 32
+  reasoning: '#353737', // ANSI 2;90, the dimmed rendering
+  call: '#75507b', // ANSI 35
+  tool: '#3465a4', // ANSI 34
+  command: '#c4a000', // ANSI 33
+}
+
+/**
+ * Paint each block's left rule as one CSS band per buffer row. A stacked `┃`
+ * glyph inks only ~14px of the 16px cell, so it reads as a dashed line; an
+ * inset box-shadow fills the whole row box, staying unbroken across rows and
+ * across soft-wrapped continuation rows. Called after every xterm render, so
+ * scrolling and re-layout repaint without extra bookkeeping.
+ */
+function paintGutter(term: XtermTerminal, lines: ReadonlyMap<number, SessionRowRole>): void {
+  const rows = term.element?.querySelector('.xterm-rows')
+  if (rows === undefined || rows === null) return
+  const top = term.buffer.active.viewportY
+  for (let index = 0; index < rows.children.length; index++) {
+    const row = rows.children[index]
+    if (!(row instanceof HTMLElement)) continue
+    const role = lines.get(top + index)
+    const shadow = role === undefined ? '' : `inset 3px 0 0 0 ${SESSION_ROW_GUTTER[role]}`
+    if (row.style.boxShadow !== shadow) row.style.boxShadow = shadow
+  }
+}
+
+/** Two-column gutter the rule occupies; labels start past it. */
 const SESSION_ROW_LABEL: Record<SessionRowRole, string> = {
-  user: '┃ 你',
-  assistant: '┃ AI',
-  reasoning: '┃ 思考过程',
-  call: '┃ 调用',
-  tool: '┃ 工具',
-  command: '┃⚡ 命令',
+  user: '  你',
+  assistant: '  AI',
+  reasoning: '  思考过程',
+  call: '  调用',
+  tool: '  工具',
+  command: ' ⚡ 命令',
 }
 
 /**
@@ -517,10 +552,12 @@ function renderSessionRow(row: SessionRow, collapsed: boolean): string {
       ? ` ${dim}[${folded}]${reset}`
       : ` ${dim}[▾ 点击收起]${reset}`
     : ''
-  const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : `┃ ${row.label}`
+  const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : `  ${row.label}`
   let out = `${color}${label}${reset} ${summary}${hint}\r\n`
   if (!collapsed) {
-    for (const line of rest) out += `${color}┃${reset} ${line}\r\n`
+    // The gutter column stays blank in the text; paintGutter() draws the
+    // block's rule over it as a continuous CSS band.
+    for (const line of rest) out += `  ${line}\r\n`
   }
   return out
 }
@@ -587,6 +624,10 @@ function PtyCanvas(props: {
     term.open(el)
     activeTerm = term
     window.__DSHELL_TERM__ = term
+    // Repaint the block rules after every refresh: xterm re-renders rows on
+    // scroll and resize, and row elements are recreated, so the bands cannot
+    // be applied once and left.
+    const gutterSub = term.onRender(() => { paintGutter(term, gutterLinesRef.current) })
     // Raw keystrokes → PTY, but only while shell mode owns focus (design
     // 4.8). Ctrl+C arrives as \x03 and interrupts the foreground job; Tab,
     // arrows, and every readline key pass through untouched — the reason the
@@ -642,9 +683,13 @@ function PtyCanvas(props: {
       if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
       const size = sizeRef.current
       if (size !== undefined && size.cols === cols && size.rows === rows) return
+      const rewrapped = size !== undefined && size.cols !== cols
       sizeRef.current = { cols, rows }
       term.resize(cols, rows)
       props.pty.resize(cols, rows)
+      // A width change re-wraps the buffer, so every recorded row line shifts.
+      // Redraw the merged timeline to re-anchor rows and their rules.
+      if (rewrapped) mergedReplayRef.current?.()
     }
     const observer = new ResizeObserver(fit)
     observer.observe(el)
@@ -665,6 +710,7 @@ function PtyCanvas(props: {
           if (replay !== undefined) replay()
           else {
             term.reset()
+            gutterLinesRef.current.clear()
             term.write(chunk.text)
           }
         }, 150)
@@ -674,6 +720,7 @@ function PtyCanvas(props: {
     })
     return () => {
       dataSub.dispose()
+      gutterSub.dispose()
       offChunk()
       observer.disconnect()
       if (replayTimerRef.current !== undefined) clearTimeout(replayTimerRef.current)
@@ -695,6 +742,7 @@ function PtyCanvas(props: {
     // Collapse state is per session log; drop it when the log changes.
     collapsedRef.current.clear()
     rowLinesRef.current.clear()
+    gutterLinesRef.current.clear()
     term.reset()
     if (key !== undefined) term.write(props.pty.read(key))
   }, [props.sessionId, props.pty])
@@ -729,7 +777,7 @@ function PtyCanvas(props: {
     return () => { clearInterval(timer) }
   }, [props.mode, props.sessionId])
 
-  // Design 4.4 merge: durable session events draw as dimmed ┃ rows. Window
+  // Design 4.4 merge: durable session events draw as left-ruled rows. Window
   // replace/prepend (page load, history load) replays the full merged
   // timeline — pty chunks and session rows stable-sorted by time, pty first
   // on ties; an appended event draws at its arrival position (live order).
@@ -742,6 +790,8 @@ function PtyCanvas(props: {
   const collapsedRef = useRef<Map<string, boolean>>(new Map())
   /** Absolute buffer line of each row header → its collapse identity. */
   const rowLinesRef = useRef<Map<number, { key: string; collapsible: boolean; defaultCollapsed: boolean }>>(new Map())
+  /** Absolute buffer line → row role, for the block's continuous left rule. */
+  const gutterLinesRef = useRef<Map<number, SessionRowRole>>(new Map())
   /** call-id → tool name, rebuilt on every replay so results can name their tool. */
   const toolNamesRef = useRef(new Map<string, string>())
   /** Bumped per replay so late write callbacks cannot repopulate a cleared map. */
@@ -759,16 +809,26 @@ function PtyCanvas(props: {
     const drawRow = (id: string, row: SessionRow): void => {
       const key = `${id}:${row.key}`
       const gen = replayGenRef.current
+      let start = -1
       term.write('', () => {
         if (replayGenRef.current !== gen) return
         const buffer = term.buffer.active
-        rowLinesRef.current.set(buffer.baseY + buffer.cursorY, {
+        start = buffer.baseY + buffer.cursorY
+        rowLinesRef.current.set(start, {
           key,
           collapsible: row.collapsible,
           defaultCollapsed: row.defaultCollapsed,
         })
       })
-      term.write(renderSessionRow(row, collapsedFor(key, row)))
+      // The row ends with a newline, so the cursor lands on the line after
+      // the block: every line in [start, end) carries this role's rule.
+      term.write(renderSessionRow(row, collapsedFor(key, row)), () => {
+        if (replayGenRef.current !== gen || start < 0) return
+        const buffer = term.buffer.active
+        const end = buffer.baseY + buffer.cursorY
+        for (let line = start; line < end; line++) gutterLinesRef.current.set(line, row.role)
+        paintGutter(term, gutterLinesRef.current)
+      })
     }
     const mergedReplay = (entries: readonly SessionEventLikeEntry[]): void => {
       const id = sessionIdRef.current
@@ -776,6 +836,7 @@ function PtyCanvas(props: {
       replayGenRef.current += 1
       term.reset()
       rowLinesRef.current.clear()
+      gutterLinesRef.current.clear()
       toolNamesRef.current.clear()
       const rows: { time: number; order: number; kind: 'pty' | 'session'; payload: string | SessionRow }[] = []
       let order = 0

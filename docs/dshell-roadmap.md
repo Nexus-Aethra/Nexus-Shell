@@ -318,7 +318,7 @@ Acceptance check (current state — see screenshot in conversation):
 
 Goal: the conversation column becomes a real terminal canvas — raw
 ANSI PTY bytes stream into a full-bleed xterm.js instance, and durable
-session events interleave as `┃` rows (design 4.4).
+session events interleave as rule-marked rows (design 4.4).
 
 Covers decisions: 4.4 (interleaved rendering), 4.8 (terminal layout).
 Retires the Phase 4 pull-model tail (see 4.x).
@@ -347,15 +347,20 @@ Plugins touched:
 - `dshell-mode` (browser face, 4.4 merge) — `PtyCanvas` subscribes to
   the session's event window (`sessions.binding(id).eventSource`,
   retried until the binding materializes — it is `undefined` for a
-  session neither listed nor scoped) and draws durable events as `┃`
-  rows: `┃ 你` (user), `┃ AI` (assistant), `┃✦ 工具` (tool results),
-  `┃⚡ 命令` (command run/done). Window `replace`/`prepend` replays
-  the merged timeline (pty chunks + rows, stable sort by time, pty
-  first on ties); appends draw at arrival, on their own line. A pty
-  replay chunk schedules one coalesced redraw (~150ms) and suppresses
-  row appends meanwhile, so a command's rows never interleave with
-  the prompts its wipe just printed. Reload replays the persisted
-  window the same way.
+  session neither listed nor scoped) and draws durable events as
+  left-ruled rows: `你` (user), `AI` (assistant), `⎿ 思考过程`
+  (reasoning), `→ <tool>` (call), `← <tool>` (result), `⚡ 命令`
+  (command run/done). Each block's rule is a CSS band painted per
+  buffer row (`paintGutter`, repainted from `onRender`), not the `┃`
+  glyph: a stacked glyph inks ~14px of the 16px cell and reads as a
+  dashed line, while the band fills the row box and stays unbroken
+  across blank lines, soft-wrapped continuation rows, and column
+  re-wraps. Window `replace`/`prepend` replays the merged timeline
+  (pty chunks + rows, stable sort by time, pty first on ties); appends
+  draw at arrival, on their own line. A pty replay chunk schedules one
+  coalesced redraw (~150ms) and suppresses row appends meanwhile, so a
+  command's rows never interleave with the prompts its wipe just
+  printed. Reload replays the persisted window the same way.
 
 Notes:
 
@@ -376,8 +381,8 @@ Acceptance check (verified in the browser):
 
 - Raw ANSI colors: `ls --color=auto /etc` renders blue dirs / cyan
   symlinks in the canvas (xterm.js, not sanitized plain text).
-- `/clear` from the dock: canvas shows `┃⚡ 命令 clear` +
-  `┃⚡ 命令 终端已清空。` above the fresh prompt; the notice confirms
+- `/clear` from the dock: canvas shows `⚡ 命令 clear` +
+  `⚡ 命令 终端已清空。` above the fresh prompt; the notice confirms
   admission; `command/run` + `command/done` land in the event window.
 - Page reload: the persisted session window replays merged — rows
   above, retained prompt below.
@@ -453,7 +458,7 @@ Plugins touched:
   model can continue from it.
 - `dshell-mode` (browser face) — filters `user/message` events whose
   source is not `user` out of the canvas row extractor, so injected
-  context and guard notices never paint as fake `┃ 你` rows.
+  context and guard notices never paint as fake `你` rows.
 
 The old whole-tail snapshot (re-sent every turn, escaping control codes
 and prompt markers into the prompt) is gone. The Phase 7 client-side
