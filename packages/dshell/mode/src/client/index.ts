@@ -483,18 +483,25 @@ const SESSION_ROW_COLOR: Record<SessionRowRole, string> = {
   command: '\u001b[33m', // yellow
 }
 
+/** Row roles plus the states a whole task block can be in. */
+type GutterStyle = SessionRowRole | 'busy' | 'done' | 'failed'
+
 /**
  * CSS colors matching the ANSI codes the labels use (xterm.js' built-in
  * palette). The block's left rule is painted by {@link paintGutter} rather
- * than by the `┃` glyph, so these must track the roles' text colors.
+ * than by the `┃` glyph, so these must track the roles' text colors. A task
+ * block's rule carries the block's own status, not a row role.
  */
-const SESSION_ROW_GUTTER: Record<SessionRowRole, string> = {
+const GUTTER_COLOR: Record<GutterStyle, string> = {
   user: '#06989a', // ANSI 36
   assistant: '#4e9a06', // ANSI 32
   reasoning: '#353737', // ANSI 2;90, the dimmed rendering
   call: '#75507b', // ANSI 35
   tool: '#3465a4', // ANSI 34
   command: '#c4a000', // ANSI 33
+  busy: '#06989a', // running block
+  done: '#4e9a06', // completed block
+  failed: '#cc0000', // aborted or failed block
 }
 
 /**
@@ -504,7 +511,7 @@ const SESSION_ROW_GUTTER: Record<SessionRowRole, string> = {
  * across soft-wrapped continuation rows. Called after every xterm render, so
  * scrolling and re-layout repaint without extra bookkeeping.
  */
-function paintGutter(term: XtermTerminal, lines: ReadonlyMap<number, SessionRowRole>): void {
+function paintGutter(term: XtermTerminal, lines: ReadonlyMap<number, GutterStyle>): void {
   const rows = term.element?.querySelector('.xterm-rows')
   if (rows === undefined || rows === null) return
   const top = term.buffer.active.viewportY
@@ -512,7 +519,7 @@ function paintGutter(term: XtermTerminal, lines: ReadonlyMap<number, SessionRowR
     const row = rows.children[index]
     if (!(row instanceof HTMLElement)) continue
     const role = lines.get(top + index)
-    const shadow = role === undefined ? '' : `inset 3px 0 0 0 ${SESSION_ROW_GUTTER[role]}`
+    const shadow = role === undefined ? '' : `inset 3px 0 0 0 ${GUTTER_COLOR[role]}`
     if (row.style.boxShadow !== shadow) row.style.boxShadow = shadow
   }
 }
@@ -665,7 +672,7 @@ function endsAtLineStart(text: string): boolean | undefined {
  * @param cols - current terminal width in cells.
  * @returns the ANSI text for the row (header plus body, newline-terminated).
  */
-function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number): string {
+function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number, hints = true): string {
   const width = Math.max(16, cols - GUTTER_COLUMNS)
   const color = SESSION_ROW_COLOR[row.role]
   const reset = '\u001b[0m'
@@ -677,11 +684,11 @@ function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number): st
   const summary = collapsed && first.length > 160 ? `${first.slice(0, 157)}…` : first
   const rest = lines.slice(1)
   const folded = rest.length > 0 ? `+${String(rest.length)} 行 ▸ 点击展开` : '点击展开'
-  const hint = row.collapsible
-    ? collapsed
+  const hint = !hints || !row.collapsible
+    ? ''
+    : collapsed
       ? ` ${dim}[${folded}]${reset}`
       : ` ${dim}[▾ 点击收起]${reset}`
-    : ''
   const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : sanitizeRowText(row.label)
   // The gutter column stays blank in the text; paintGutter() draws the block's
   // rule over it as a continuous CSS band.
@@ -690,6 +697,327 @@ function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number): st
     for (const line of rest) out += wrapBlockLine(line, width)
   }
   return out
+}
+
+/** Rows a collapsed task block occupies, header included. Fixed by design. */
+const BLOCK_LINES = 3
+
+/** One agent task or supervised phase, folded into a collapsible block. */
+interface TurnBlock {
+  /** Stable identity for collapse state and the clicked-line table. */
+  readonly key: string
+  /** Turn number, once `turn/start` names it. */
+  turn: number | undefined
+  /** Header title: the in-progress todo item, else the request's first line. */
+  title: string
+  status: 'running' | 'done' | 'aborted' | 'failed'
+  /** The block's rows, oldest first. */
+  readonly rows: SessionRow[]
+  /** Newest live-streamed row while the model writes; folded in until settle. */
+  stream: SessionRow | undefined
+  /** Timeline anchor: when the block opened. */
+  readonly startedAt: number
+  /** `step/start` count and summed tokens, for the closing notice. */
+  steps: number
+  tokens: number
+  /** `turn:step` pairs already counted, so any carrier can report a step. */
+  readonly seen: Set<string>
+}
+
+/** Record the (turn, step) an event belongs to, for the block's step count. */
+function noteStep(block: TurnBlock, event: SessionEventLike): void {
+  const data = event.data as { turn?: number; step?: number }
+  if (typeof data.turn !== 'number' || typeof data.step !== 'number') return
+  const key = `${String(data.turn)}:${String(data.step)}`
+  if (block.seen.has(key)) return
+  block.seen.add(key)
+  block.steps = block.seen.size
+}
+
+/** One item of the merged canvas timeline. */
+type TimelineItem =
+  | { readonly kind: 'pty'; readonly time: number; readonly order: number; readonly text: string }
+  | { readonly kind: 'block'; readonly time: number; readonly order: number; readonly block: TurnBlock }
+  | { readonly kind: 'notice'; readonly time: number; readonly order: number; readonly text: string }
+
+/** Incremental fold of the session window into task blocks. */
+interface BlockFold {
+  readonly toolNames: Map<string, string>
+  readonly blocks: TurnBlock[]
+  readonly notices: { readonly time: number; readonly text: string }[]
+  open: TurnBlock | undefined
+  /** Monotonic key suffix; two blocks may share a start time. */
+  seq: number
+  /** The todo item the open block is working on. */
+  phase: string | undefined
+}
+
+function createFold(): BlockFold {
+  return { toolNames: new Map(), blocks: [], notices: [], open: undefined, seq: 0, phase: undefined }
+}
+
+function emptyBlock(key: string, time: number, title: string): TurnBlock {
+  return {
+    key, turn: undefined, title, status: 'running', rows: [], stream: undefined,
+    startedAt: time, steps: 0, tokens: 0, seen: new Set(),
+  }
+}
+
+/** Open a new block, appending it to the fold. */
+function openBlock(fold: BlockFold, time: number, title: string): TurnBlock {
+  fold.seq += 1
+  const block = emptyBlock(`block:${String(time)}:${String(fold.seq)}`, time, title)
+  fold.blocks.push(block)
+  fold.open = block
+  return block
+}
+
+/** Highest durable seq a window holds, so appends never replay the window. */
+function maxSeq(entries: readonly SessionEventLikeEntry[]): number {
+  let max = 0
+  for (const entry of entries) if (entry.type === 'event' && entry.event.seq > max) max = entry.event.seq
+  return max
+}
+
+/** Last element satisfying the predicate, without ES2023's findLast. */
+function findLast<T>(items: readonly T[], match: (item: T) => boolean): T | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item !== undefined && match(item)) return item
+  }
+  return undefined
+}
+
+/** First line of a row's text, trimmed — the block title fallback. */
+function firstLineOf(text: string): string {
+  const line = sanitizeRowText(text).split('\n')[0] ?? ''
+  return line.trim().length > 0 ? line.trim() : text.trim()
+}
+
+/** Tokens one assistant message reported, if any. */
+function usageTokens(event: SessionEventLike): number {
+  if (event.type !== 'assistant/message') return 0
+  const usage = (event.data as { usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number } }).usage
+  if (usage === undefined) return 0
+  return usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+}
+
+/** Status a turn-end reason maps to. */
+function statusOfReason(reason: { kind: string }): TurnBlock['status'] {
+  if (reason.kind === 'completed') return 'done'
+  if (reason.kind === 'aborted' || reason.kind === 'interrupted') return 'aborted'
+  return 'failed'
+}
+
+/** One-line closing notice for a finished block. */
+function noticeOf(block: TurnBlock, reason: { kind: string; error?: { message?: string } }): string {
+  const at = new Date().toTimeString().slice(0, 5)
+  const facts = [`${String(block.steps)} 步`]
+  if (block.tokens > 0) facts.push(`${(block.tokens / 1000).toFixed(1)}k tok`)
+  facts.push(at)
+  if (block.status === 'done') return `✓ AI 回答完成 · ${facts.join(' · ')}`
+  if (block.status === 'aborted') return `◼ AI 回答已中断 · ${at}`
+  const detail = reason.error?.message ?? (reason.kind === 'max-tokens' ? '达到输出上限' : reason.kind)
+  return `✗ AI 回答出错 · ${detail} · ${at}`
+}
+
+/**
+ * Fold one durable event into the block model. Blocks open on a user request
+ * or a turn start, split on a supervised phase change (a new in-progress todo
+ * item), and close on `turn/end`. Every other event contributes rows.
+ * @param fold - the mutable fold state.
+ * @param event - the durable session event, in seq order.
+ */
+function foldEvent(fold: BlockFold, event: SessionEventLike): void {
+  const time = event.time
+  if (event.type === 'turn/start') {
+    const turn = event.data.turn
+    const block = fold.open
+    if (block === undefined) openBlock(fold, time, '').turn = turn
+    else if (block.turn === undefined) block.turn = turn
+    else if (block.turn !== turn) openBlock(fold, time, '').turn = turn
+    return
+  }
+  if (event.type === 'step/start') {
+    if (fold.open !== undefined) noteStep(fold.open, event)
+    return
+  }
+  if (event.type === 'todo/write') {
+    const todos = event.data.todos
+    const active = todos.find(todo => todo.status === 'in_progress')?.content
+      ?? todos.find(todo => todo.status === 'pending')?.content
+    if (active === undefined || active === fold.phase) return
+    fold.phase = active
+    // A supervised phase change closes the running block and pushes a new one;
+    // a first plan (nothing rendered yet) just titles the open block.
+    if (fold.open !== undefined && fold.open.rows.length > 0) {
+      fold.open.status = 'done'
+      fold.open = undefined
+    }
+    const block = fold.open ?? openBlock(fold, time, active)
+    block.title = active
+    return
+  }
+  if (event.type === 'turn/end') {
+    const turn = event.data.turn
+    // A second request can open a new block while an earlier turn is still
+    // running, so closers match on the turn they name, not on the open block.
+    const block = fold.open !== undefined && (fold.open.turn === undefined || fold.open.turn === turn)
+      ? fold.open
+      : findLast(fold.blocks, candidate => candidate.turn === turn && candidate.status === 'running')
+    if (block === undefined) return
+    block.status = statusOfReason(event.data.reason)
+    if (block === fold.open) {
+      fold.open = undefined
+      fold.phase = undefined
+    }
+    fold.notices.push({ time, text: noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }) })
+    return
+  }
+  const rows = sessionRowsOf(event, fold.toolNames)
+  if (rows.length === 0) return
+  if (event.type === 'user/message') {
+    const title = firstLineOf(rows[0]?.text ?? '')
+    // `turn/start` usually opens the block first; a request adopts that empty
+    // block instead of leaving a stray running one behind.
+    const open = fold.open
+    if (open !== undefined && open.rows.length === 0) {
+      open.title = title
+      open.rows.push(...rows)
+      noteStep(open, event)
+      return
+    }
+    fold.open = undefined
+    fold.phase = undefined
+    const block = openBlock(fold, time, title)
+    block.rows.push(...rows)
+    noteStep(block, event)
+    return
+  }
+  const block = fold.open ?? openBlock(fold, time, '')
+  block.rows.push(...rows)
+  noteStep(block, event)
+  block.tokens += usageTokens(event)
+}
+
+/** ANSI color of a block header, by status. */
+const BLOCK_COLOR: Record<TurnBlock['status'], string> = {
+  running: '\u001b[36m', // cyan
+  done: '\u001b[32m', // green
+  aborted: '\u001b[33m', // yellow
+  failed: '\u001b[31m', // red
+}
+
+/** Header text of a block, without color. */
+function blockLabel(block: TurnBlock): string {
+  const turn = block.turn === undefined ? '' : `#${String(block.turn)} · `
+  const status = block.status === 'running'
+    ? '运行中'
+    : block.status === 'done' ? '✓ 完成' : block.status === 'aborted' ? '◼ 已中断' : '✗ 出错'
+  const title = block.title.length > 60 ? `${block.title.slice(0, 57)}…` : block.title
+  return `${turn}${status}${title.length === 0 ? '' : ` · ${title}`}`
+}
+
+/** Gutter style a block's rule carries. */
+function blockGutter(block: TurnBlock): GutterStyle {
+  if (block.status === 'running') return 'busy'
+  return block.status === 'done' ? 'done' : 'failed'
+}
+
+/**
+ * The rendered content lines of a block, newest last. Lines keep the gutter
+ * indent, so they are already wrapped to the canvas width and can be stacked
+ * without re-wrapping. Rows are folded to summaries: a collapsed block is a
+ * window onto the newest content, not a second copy of the full rows.
+ */
+function blockBodyLines(block: TurnBlock, cols: number): string[] {
+  const lines: string[] = []
+  const push = (text: string): void => {
+    const parts = text.split('\r\n')
+    for (const line of parts) if (line.length > 0) lines.push(line)
+  }
+  for (const row of block.rows) push(renderSessionRow(row, true, cols, false))
+  if (block.stream !== undefined) push(renderSessionRow(block.stream, true, cols, false))
+  return lines
+}
+
+/**
+ * One drawn piece of a block plus the click/fold identity of its lines.
+ * Splitting the header from the rows is what lets a click fold the block on
+ * its header and an individual row inside an expanded block.
+ */
+interface BlockSegment {
+  readonly text: string
+  readonly key: string
+  readonly collapsible: boolean
+  readonly defaultCollapsed: boolean
+}
+
+/** Lines one rendered segment occupies (each line is newline-terminated). */
+function segmentLines(text: string): number {
+  return text.split('\r\n').length - 1
+}
+
+/**
+ * Segments of one block: the header, then either the fixed folded window or
+ * every row. A collapsed block is exactly {@link BLOCK_LINES} lines including
+ * its header — the fixed height is what lets the in-place repaint rewrite the
+ * same rows while the model is still writing, leaving the shell's rows below
+ * untouched.
+ * @param block - the block to draw.
+ * @param cols - canvas width in cells.
+ * @param expanded - whether the user unfolded it.
+ * @param folded - per-row fold state inside an expanded block.
+ * @returns the segments, in draw order.
+ */
+function blockSegments(
+  block: TurnBlock,
+  cols: number,
+  expanded: boolean,
+  folded: (row: SessionRow) => boolean,
+): BlockSegment[] {
+  const width = Math.max(16, cols - GUTTER_COLUMNS)
+  const reset = '\u001b[0m'
+  const dim = '\u001b[2m'
+  const header = (hint: string): string =>
+    wrapBlockLine(`${BLOCK_COLOR[block.status]}▸ ${blockLabel(block)}${reset}${hint}`, width)
+  const owner: BlockSegment = { text: '', key: block.key, collapsible: true, defaultCollapsed: true }
+  if (!expanded) {
+    const body = blockBodyLines(block, cols)
+    const tail = body.slice(-(BLOCK_LINES - 1))
+    while (tail.length < BLOCK_LINES - 1) tail.unshift('  ')
+    const hint = block.status === 'running' ? '' : ` ${dim}[点击展开]${reset}`
+    const text = `${header(hint)}${tail.join('\r\n')}${tail.length > 0 ? '\r\n' : ''}`
+    return [{ ...owner, text }]
+  }
+  const segments: BlockSegment[] = [{ ...owner, text: header(` ${dim}[▾ 点击收起]${reset}`) }]
+  for (const row of block.rows) {
+    segments.push({
+      text: renderSessionRow(row, folded(row), cols),
+      key: `${block.key}:${row.key}`,
+      collapsible: row.collapsible,
+      defaultCollapsed: row.defaultCollapsed,
+    })
+  }
+  if (block.stream !== undefined) {
+    segments.push({ text: renderSessionRow(block.stream, true, cols), key: `${block.key}:stream`, collapsible: false, defaultCollapsed: false })
+  }
+  return segments.map(segment => ({ ...segment, text: segment.text }))
+}
+
+/**
+ * Render a collapsed block exactly as the canvas draws it. Exposed for the
+ * in-place repaint, which must produce the identical line count.
+ */
+function renderBlockCollapsed(block: TurnBlock, cols: number): string {
+  return blockSegments(block, cols, false, () => true).map(segment => segment.text).join('')
+}
+
+/** One-line closing notice, drawn outside any block. */
+function renderNotice(text: string, cols: number): string {
+  const reset = '\u001b[0m'
+  const color = text.startsWith('✓') ? '\u001b[32m' : text.startsWith('◼') ? '\u001b[33m' : '\u001b[31m'
+  return wrapBlockLine(`${color}${text.slice(0, 1)}${reset}\u001b[2m${text.slice(1)}${reset}`, Math.max(16, cols - GUTTER_COLUMNS))
 }
 
 /** The xterm.js canvas: raw ANSI stream + session events merged (4.4). */
@@ -897,6 +1225,7 @@ function PtyCanvas(props: {
     collapsedRef.current.clear()
     rowLinesRef.current.clear()
     gutterLinesRef.current.clear()
+    blockSpanRef.current.clear()
     term.reset()
     lineStartRef.current = true
     if (key !== undefined) {
@@ -950,52 +1279,120 @@ function PtyCanvas(props: {
   const collapsedRef = useRef<Map<string, boolean>>(new Map())
   /** Absolute buffer line of each row header → its collapse identity. */
   const rowLinesRef = useRef<Map<number, { key: string; collapsible: boolean; defaultCollapsed: boolean }>>(new Map())
-  /** Absolute buffer line → row role, for the block's continuous left rule. */
-  const gutterLinesRef = useRef<Map<number, SessionRowRole>>(new Map())
-  /** call-id → tool name, rebuilt on every replay so results can name their tool. */
-  const toolNamesRef = useRef(new Map<string, string>())
+  /** Absolute buffer line → gutter style, for each block's continuous rule. */
+  const gutterLinesRef = useRef<Map<number, GutterStyle>>(new Map())
+  /** Block key → the buffer lines it occupies, for the in-place repaint. */
+  const blockSpanRef = useRef<Map<string, { start: number; end: number }>>(new Map())
   /** Bumped per replay so late write callbacks cannot repopulate a cleared map. */
   const replayGenRef = useRef(0)
   useEffect(() => {
     const term = termRef.current
     if (term === null || eventSource === undefined) return
     let watermark = 0
-    const collapsedFor = (key: string, row: SessionRow): boolean =>
-      collapsedRef.current.get(key) ?? row.defaultCollapsed
-    // A row's buffer line is only knowable after xterm has processed every
-    // earlier write. Queue a zero-length write first: its callback runs once
-    // all pending data is consumed, so the cursor then sits on the line where
-    // this row's header will be written.
-    const drawRow = (id: string, row: SessionRow): void => {
-      const key = `${id}:${row.key}`
+    /** The block fold, rebuilt on every full replay. */
+    let fold = createFold()
+    /** Coalesces live-chunk repaints so a fast stream does not rewrite per delta. */
+    let streamTimer: number | undefined
+    /** Per-row fold state inside an expanded block. */
+    const rowCollapsed = (blockKey: string, row: SessionRow): boolean =>
+      collapsedRef.current.get(`${blockKey}:${row.key}`) ?? row.defaultCollapsed
+    /** A block is folded by default; only an explicit false unfolds it. */
+    const blockExpanded = (blockKey: string): boolean => collapsedRef.current.get(blockKey) === false
+    /**
+     * Draw one block at the timeline tail. The block's rows, their rules, and
+     * their click identities are all recorded after the write lands, so a
+     * later click or repaint addresses the same buffer lines.
+     */
+    const drawBlock = (block: TurnBlock): void => {
       const gen = replayGenRef.current
       // An unterminated PTY line (a live prompt) would otherwise swallow the
-      // row's first line, putting its label — and the rule over it — on top of
-      // the prompt's own text.
+      // block's first line, putting its header — and the rule over it — on top
+      // of the prompt's own text.
       const prefix = lineStartRef.current ? '' : '\r\n'
       lineStartRef.current = true
+      const segments = blockSegments(block, term.cols, blockExpanded(block.key), row => rowCollapsed(block.key, row))
       let start = -1
-      // The prefix is its own write so the row's first line is read after any
-      // scroll it caused, in the same coordinate space as the end line below.
       term.write(prefix, () => {
         if (replayGenRef.current !== gen) return
         const buffer = term.buffer.active
         start = buffer.baseY + buffer.cursorY
-        rowLinesRef.current.set(start, {
-          key,
-          collapsible: row.collapsible,
-          defaultCollapsed: row.defaultCollapsed,
-        })
       })
-      // The row ends with a newline, so the cursor lands on the line after
-      // the block: every line in [start, end) carries this role's rule.
-      term.write(renderSessionRow(row, collapsedFor(key, row), term.cols), () => {
+      term.write(segments.map(segment => segment.text).join(''), () => {
         if (replayGenRef.current !== gen || start < 0) return
-        const buffer = term.buffer.active
-        const end = buffer.baseY + buffer.cursorY
-        for (let line = start; line < end; line++) gutterLinesRef.current.set(line, row.role)
+        let line = start
+        for (const segment of segments) {
+          for (let index = 0; index < segmentLines(segment.text); index++) {
+            rowLinesRef.current.set(line, {
+              key: segment.key,
+              collapsible: segment.collapsible,
+              defaultCollapsed: segment.defaultCollapsed,
+            })
+            gutterLinesRef.current.set(line, blockGutter(block))
+            line += 1
+          }
+        }
+        blockSpanRef.current.set(block.key, { start, end: line })
         paintGutter(term, gutterLinesRef.current)
       })
+    }
+    /** Draw one standalone notice line (a turn's completion reminder). */
+    const drawNotice = (text: string): void => {
+      const gen = replayGenRef.current
+      const prefix = lineStartRef.current ? '' : '\r\n'
+      lineStartRef.current = true
+      term.write(prefix + renderNotice(text, term.cols), () => {
+        if (replayGenRef.current !== gen) return
+        paintGutter(term, gutterLinesRef.current)
+      })
+    }
+    /**
+     * Rewrite a collapsed block in place. The block's rows are a fixed height
+     * and the shell's rows after it must not move, so the repaint saves the
+     * cursor, walks up to the block, rewrites exactly its rows, and restores —
+     * no reset, no full replay. Anything it cannot reach (scrolled off, or the
+     * view is not at the bottom) is left for the next full replay.
+     */
+    const repaintBlock = (block: TurnBlock): void => {
+      if (blockExpanded(block.key)) return
+      const span = blockSpanRef.current.get(block.key)
+      if (span === undefined) return
+      const buffer = term.buffer.active
+      if (buffer.viewportY !== buffer.baseY) return
+      // Walk up from the cursor to the block's FIRST row: the block's height
+      // when it is at the tail, more when shell output landed after it.
+      const up = buffer.baseY + buffer.cursorY - span.start
+      if (up < 0 || up >= term.rows) return
+      const lines = renderBlockCollapsed(block, term.cols).split('\r\n')
+      if (lines.at(-1) === '') lines.pop()
+      const body = `\r${lines.map(line => `${line}\u001b[K`).join('\r\n')}`
+      const move = up > 0 ? `\u001b[${String(up)}A` : ''
+      const gen = replayGenRef.current
+      term.write(`\u001b[s${move}${body}\u001b[u`, () => {
+        if (replayGenRef.current !== gen) return
+        for (let index = 0; index < lines.length; index++) {
+          rowLinesRef.current.set(span.start + index, { key: block.key, collapsible: true, defaultCollapsed: true })
+          gutterLinesRef.current.set(span.start + index, blockGutter(block))
+        }
+        blockSpanRef.current.set(block.key, { start: span.start, end: span.start + lines.length })
+        paintGutter(term, gutterLinesRef.current)
+      })
+    }
+    /** Write one PTY chunk, tracking whether it left the cursor mid-line. */
+    const writeChunk = (text: string): void => {
+      const next = endsAtLineStart(text)
+      if (next !== undefined) lineStartRef.current = next
+      term.write(text)
+    }
+    /**
+     * Coalesce live-chunk repaints: the model streams many deltas per second
+     * and each repaint rewrites the block's fixed rows.
+     */
+    const scheduleStreamRepaint = (block: TurnBlock): void => {
+      if (streamTimer !== undefined) return
+      streamTimer = window.setTimeout(() => {
+        streamTimer = undefined
+        repaintBlock(block)
+      }, 80)
     }
     const mergedReplay = (entries: readonly SessionEventLikeEntry[]): void => {
       const id = sessionIdRef.current
@@ -1005,31 +1402,27 @@ function PtyCanvas(props: {
       lineStartRef.current = true
       rowLinesRef.current.clear()
       gutterLinesRef.current.clear()
-      toolNamesRef.current.clear()
-      const rows: { time: number; order: number; kind: 'pty' | 'session'; payload: string | SessionRow }[] = []
+      blockSpanRef.current.clear()
+      fold = createFold()
+      for (const entry of entries) {
+        if (entry.type !== 'event') continue
+        foldEvent(fold, entry.event)
+      }
+      // Blocks anchor at the request that opened them, so shell output that
+      // arrives while the agent works lands after the block, never inside it.
+      const items: TimelineItem[] = []
       let order = 0
       for (const chunk of props.pty.chunks(id)) {
         if (chunk.text.length === 0) continue
-        rows.push({ time: chunk.time, order: order++, kind: 'pty', payload: chunk.text })
+        items.push({ kind: 'pty', time: chunk.time, order: order++, text: chunk.text })
       }
-      for (const entry of entries) {
-        if (entry.type !== 'event') continue
-        for (const row of sessionRowsOf(entry.event, toolNamesRef.current)) {
-          rows.push({ time: entry.event.time, order: order++, kind: 'session', payload: row })
-        }
-      }
-      // Absolute insertion order breaks ties, so a single assistant message's
-      // thinking / answer / call rows always draw in that order.
-      rows.sort((a, b) => a.time - b.time || a.order - b.order)
-      for (const item of rows) {
-        if (item.kind === 'pty') {
-          const text = item.payload as string
-          const next = endsAtLineStart(text)
-          if (next !== undefined) lineStartRef.current = next
-          term.write(text)
-        } else {
-          drawRow(id, item.payload as SessionRow)
-        }
+      for (const block of fold.blocks) items.push({ kind: 'block', time: block.startedAt, order: order++, block })
+      for (const notice of fold.notices) items.push({ kind: 'notice', time: notice.time, order: order++, text: notice.text })
+      items.sort((left, right) => left.time - right.time || left.order - right.order)
+      for (const item of items) {
+        if (item.kind === 'pty') writeChunk(item.text)
+        else if (item.kind === 'block') drawBlock(item.block)
+        else drawNotice(item.text)
       }
     }
     mergedReplayRef.current = () => {
@@ -1038,33 +1431,74 @@ function PtyCanvas(props: {
     }
     const render = (win: SessionEventWindow): void => {
       if (win.change.kind === 'replace' || win.change.kind === 'prepend') {
-        watermark = 0
         mergedReplay(win.entries)
-      } else {
-        for (const entry of win.entries) {
-          const seq = entry.event.seq
-          if (seq <= watermark) continue
-          watermark = seq
-          if (entry.type !== 'event') continue
-          const rows = sessionRowsOf(entry.event, toolNamesRef.current)
-          if (rows.length > 0) {
-            // While a replay redraw is pending the rows belong to the same
-            // transaction as the wipe — the redraw draws them in time order.
-            if (replayPendingRef.current) continue
-            const id = sessionIdRef.current
-            if (id === undefined) continue
-            for (const row of rows) {
-              // The cursor usually sits mid-line (after a live prompt); rows
-              // are log entries and always start on their own line.
-              if (term.buffer.active.cursorX > 0) term.write('\r\n')
-              drawRow(id, row)
-            }
-          }
+        // Anchor the watermark at the window's newest seq: appends then carry
+        // only events the replay has not folded, and a window-wide iteration
+        // can never re-fold history (which would duplicate blocks).
+        watermark = maxSeq(win.entries)
+        return
+      }
+      if (win.change.kind === 'settle-assistant') {
+        // The durable message replaces the live row; drop the stream so the
+        // block stops showing a half-written line.
+        const open = fold.open
+        if (open !== undefined && open.stream !== undefined) {
+          open.stream = undefined
+          repaintBlock(open)
         }
+        return
+      }
+      for (const entry of win.entries) {
+        if (entry.type === 'transient') {
+          // Live streaming: keep the newest partial line inside the running
+          // block so the user sees progress without waiting for the step.
+          const chunk = entry.event.data.chunk
+          if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta') continue
+          const open = fold.open
+          if (open === undefined) continue
+          const text = `${open.stream?.text ?? ''}${chunk.text}`
+          open.stream = {
+            role: chunk.type === 'reasoning-delta' ? 'reasoning' : 'assistant',
+            key: 'stream',
+            text,
+            collapsible: false,
+            defaultCollapsed: false,
+            ...(chunk.type === 'reasoning-delta' ? { label: '⎿ 思考过程' } : {}),
+          }
+          scheduleStreamRepaint(open)
+          continue
+        }
+        const seq = entry.event.seq
+        if (seq <= watermark) continue
+        watermark = seq
+        const before = fold.open
+        foldEvent(fold, entry.event)
+        if (replayPendingRef.current) continue
+        const id = sessionIdRef.current
+        if (id === undefined) continue
+        const after = fold.open
+        if (before !== undefined && before !== after) {
+          // The block closed: freeze it (its final status) and append the
+          // closing notice after the shell's newest line. An expanded block
+          // cannot be repainted in place — its height is not fixed — so the
+          // whole timeline is redrawn once instead.
+          if (blockExpanded(before.key)) mergedReplayRef.current?.()
+          else repaintBlock(before)
+          const notice = fold.notices.at(-1)
+          if (notice !== undefined && notice.time === entry.event.time && !blockExpanded(before.key)) drawNotice(notice.text)
+          continue
+        }
+        if (after === undefined) continue
+        if (after === before) repaintBlock(after)
+        else drawBlock(after)
       }
     }
     render(eventSource.getSnapshot())
-    return eventSource.subscribe(() => { render(eventSource.getSnapshot()) })
+    const dispose = eventSource.subscribe(() => { render(eventSource.getSnapshot()) })
+    return () => {
+      if (streamTimer !== undefined) clearTimeout(streamTimer)
+      dispose()
+    }
   }, [eventSource, props.pty])
 
   // Click-to-collapse: map the clicked buffer line back to the row header.

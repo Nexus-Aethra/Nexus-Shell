@@ -298,6 +298,11 @@ export class DshellTerminalBridge extends Service {
 
   /** Queue the prompt-rewrite init and wipe its setup echo from the scrollback. */
   private runInit(record: MainRecord): void {
+    // The scrollback a respawn owes the client: the window already holds the
+    // seeded log tail, so snapshot it before the init echo lands. Restoring
+    // the snapshot (below) is the whole point of the persisted log — seeding
+    // it and then truncating would erase the previous shell's output for good.
+    const seeded = record.buffer.text()
     // ONE line: the PROMPT_COMMAND re-asserts PS1 from a dedicated variable
     // on every prompt render, so the prompt survives any clobber and the
     // settle marker stays live. Real ESC bytes are safe on this backend.
@@ -311,13 +316,17 @@ export class DshellTerminalBridge extends Service {
     void operation.done.then(() => {
       record.activeSend = undefined
       record.initializing = false
-      // The init echo (export line + clear) never deserves screen space:
-      // reset the buffer and every client history, then re-issue a prompt
-      // with an empty line so the user opens on a fresh cue.
-      void record.buffer.truncate()
-      this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
-      record.inputQueue.push('\n')
-      this.pump(record)
+      // The init echo (export line + clear) never deserves screen space, but
+      // the seeded scrollback does: reset the log to the snapshot instead of
+      // to nothing, and hand that same text back to every client, which
+      // replaces its own history from a replay chunk.
+      void record.buffer.truncate().then(() => {
+        record.buffer.append(seeded)
+        record.absOffset = Buffer.byteLength(seeded, 'utf8')
+        this.broadcast(record.dshSessionId, { kind: 'output', chunk: seeded, time: Date.now(), replay: true })
+        record.inputQueue.push('\n')
+        this.pump(record)
+      })
     }, () => {
       record.activeSend = undefined
       record.initializing = false

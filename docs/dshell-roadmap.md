@@ -144,7 +144,10 @@ Acceptance check:
 - The bridge's per-session buffer accumulates bytes after `startSend`.
 - The buffer persists to `$DSH_HOME/dshell-pty/<session-id>.log`
   (design 4.9); memory holds only the fixed window; a fresh main shell
-  for the same session seeds from the file tail.
+  for the same session seeds from the file tail, and the prompt-rewrite
+  init restores that snapshot instead of emptying the log — truncating
+  it wholesale (the first cut) erased the previous shell's scrollback on
+  every harness restart, since the seed had already been loaded.
 
 Status: implemented together with Phase 3 (the ws transport is the
 first consumer of the buffer and the tail loop).
@@ -366,26 +369,46 @@ Plugins touched:
 - `dshell-mode` (browser face, 4.4 merge) — `PtyCanvas` subscribes to
   the session's event window (`sessions.binding(id).eventSource`,
   retried until the binding materializes — it is `undefined` for a
-  session neither listed nor scoped) and draws durable events as
-  left-ruled rows: `你` (user), `AI` (assistant), `⎿ 思考过程`
-  (reasoning), `→ <tool>` (call), `← <tool>` (result), `⚡ 命令`
-  (command run/done). Each block's rule is a CSS band painted per
-  buffer row (`paintGutter`, repainted from `onRender`), not the `┃`
-  glyph: a stacked glyph inks ~14px of the 16px cell and reads as a
-  dashed line, while the band fills the row box and stays unbroken
-  across blank lines and column re-wraps. The gutter only reads as a
-  separator when no glyph ever reaches it, which takes three rules:
-  every logical line is hard-wrapped to `cols - 2` and indented, so
-  xterm's soft wrap never restarts a continuation at column 0 under
-  the rule; a row starts on its own line whenever the pty did not end
-  its last line with `\n` (a bare `\r` means readline still owns that
-  line and will erase it); and row text is sanitized — captured
-  terminal output carries real `\r`s that otherwise rewind to column 0
-  and overwrite the row's own indent and fold hint. Window
-  `replace`/`prepend` replays the merged timeline (pty chunks + rows,
-  stable sort by time, pty first on ties); appends draw at arrival, on
-  their own line. A pty replay chunk schedules one coalesced redraw
-  (~150ms) and suppresses row appends meanwhile, so a command's rows
+  session neither listed nor scoped) and draws the agent's work as task
+  blocks. One block covers one turn: it opens on the request (or
+  `turn/start`, whichever comes first — a request adopts the empty
+  block), splits when `todo/write` moves the `in_progress` item (a
+  supervised phase), and closes on `turn/end` with a one-line notice at
+  the timeline's tail (`✓ AI 回答完成 · N 步 · M tok · HH:MM`; `◼` for
+  aborted, `✗` for failed). Rows inside a block keep their roles: `你`
+  (user), `AI` (assistant), `⎿ 思考过程` (reasoning), `→ <tool>`
+  (call), `← <tool>` (result), `⚡ 命令` (command run/done).
+  A collapsed block is **exactly three lines** — a status header plus
+  the newest two content lines — and that fixed height is the contract:
+  while the model is still writing, the block is repainted in place
+  (`ESC[s` → CUU → rewrite each row with `ESC[K` → `ESC[u`), so the
+  shell's rows below never move. The repaint is skipped when the view
+  is scrolled away or the block is off-screen; the next full replay
+  corrects it. Clicking a block unfolds it to every row (each row keeps
+  its own fold and click identity) through a full replay, and clicking
+  again folds it back. Live `assistant/live-chunk` transients
+  (`text-delta` / `reasoning-delta`) feed a streaming row at the block's
+  tail, coalesced to ~80ms and dropped on `settle-assistant` or the
+  durable `assistant/message`, so progress shows during a step instead
+  of only between steps.
+  Each block's rule is a CSS band painted per buffer row
+  (`paintGutter`, repainted from `onRender`), not the `┃` glyph: a
+  stacked glyph inks ~14px of the 16px cell and reads as a dashed line,
+  while the band fills the row box and stays unbroken across blank
+  lines and column re-wraps. The gutter only reads as a separator when
+  no glyph ever reaches it, which takes three rules: every logical line
+  is hard-wrapped to `cols - 2` and indented, so xterm's soft wrap
+  never restarts a continuation at column 0 under the rule; a block
+  starts on its own line whenever the pty did not end its last line
+  with `\n` (a bare `\r` means readline still owns that line and will
+  erase it); and row text is sanitized — captured terminal output
+  carries real `\r`s that otherwise rewind to column 0 and overwrite
+  the row's own indent and fold hint. Window `replace`/`prepend`
+  replays the merged timeline (pty chunks + blocks, stable sort by
+  time, pty first on ties) and anchors the event watermark at the
+  window's newest seq, so an append can never re-fold history into
+  duplicate blocks. A pty replay chunk schedules one coalesced redraw
+  (~150ms) and suppresses block appends meanwhile, so a command's rows
   never interleave with the prompts its wipe just printed. Reload
   replays the persisted window the same way.
 
