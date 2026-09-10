@@ -231,7 +231,20 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme }
   }, sanitizeRowText(row.text))
 }
 
-/** One agent task. */
+/** Token count in the compact form the transcript uses. */
+function formatTokens(tokens: number): string | undefined {
+  if (tokens <= 0) return undefined
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k tok` : `${String(tokens)} tok`
+}
+
+/**
+ * One agent task.
+ *
+ * Folding hides the *process* only. What the user asked and what the model
+ * answered stay on screen either way; the thinking and the terminal calls
+ * collapse behind a single summary line — `已工作 6 秒 · 1.2k tok ›` — the way
+ * the transcript this is modelled on reads.
+ */
 export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElement {
   const { block, theme } = props
   const [expanded, setExpanded] = useState(false)
@@ -243,35 +256,57 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
     return () => { clearInterval(timer) }
   }, [running])
   const endedAt = block.notice?.time ?? now
-  const steps = useMemo(() => buildSteps(block.rows, block.startedAt), [block.rows, block.startedAt])
-  const body = expanded ? steps : steps.slice(-2)
+  const asked = block.rows.filter(row => row.role === 'user')
+  const answers = block.rows.filter(row => row.role === 'assistant')
+  const process = block.rows.filter(row => row.role !== 'user' && row.role !== 'assistant')
+  const steps = useMemo(() => buildSteps(process, block.startedAt), [process, block.startedAt])
+  const tokens = formatTokens(block.tokens)
   const failed = block.status === 'failed' || block.status === 'aborted'
   return createElement('div', {
     'data-dshell-block': 'agent',
     style: { margin: '14px 0 18px', overflow: 'hidden' },
   },
+    ...asked.map(row => createElement('div', {
+      key: row.key,
+      style: {
+        borderRadius: '10px',
+        background: theme.inputBar,
+        padding: '7px 11px',
+        // The request sits on the right, the way the transcript separates
+        // who is speaking without labelling it.
+        margin: '6px 0 6px auto',
+        width: 'fit-content',
+        maxWidth: '78%',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: theme.text,
+      },
+    }, sanitizeRowText(row.text))),
     createElement('div', {
       onClick: () => { setExpanded(value => !value) },
-      style: { display: 'flex', alignItems: 'baseline', gap: '8px', cursor: 'pointer', lineHeight: '20px' },
+      style: {
+        display: 'flex', alignItems: 'baseline', gap: '6px', cursor: 'pointer',
+        color: failed ? FAIL_COLOR : theme.muted, fontSize: 12, margin: '6px 0 4px',
+      },
     },
-      createElement('span', { style: { color: failed ? FAIL_COLOR : theme.muted, fontSize: 11 } }, running ? '◐' : '●'),
-      createElement('span', {
-        style: { color: theme.text, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      }, block.title.length === 0 ? '（无标题）' : block.title),
-      createElement('span', {
-        style: { color: theme.muted, fontSize: 12, flex: '0 0 auto' },
-      }, running ? `工作中 ${formatDuration(endedAt - block.startedAt)}` : formatDuration(endedAt - block.startedAt)),
+      createElement('span', null, running ? '◐' : failed ? '◼' : '▹'),
+      createElement('span', null, running
+        ? `工作中 ${formatDuration(endedAt - block.startedAt)}`
+        : `已工作 ${formatDuration(endedAt - block.startedAt)}`),
+      tokens === undefined ? null : createElement('span', null, `· ${tokens}`),
+      createElement('span', { style: { fontSize: 11 } }, expanded ? '⌄' : '›'),
     ),
-    createElement('div', { style: { height: 1, background: theme.border, margin: '8px 0 6px' } }),
-    createElement('div', null,
-      ...body.map(step => {
-        if (step.kind === 'tool') return createElement(ToolStep, { key: step.key, step, theme })
-        if (step.kind === 'group') return createElement(ToolGroup, { key: step.key, step, theme })
-        return createElement(TextStep, { key: step.key, step, theme })
-      }),
-    ),
-    // A finished task says everything in its header; only a failure has more
-    // to tell (the reason), so the footer appears for those alone.
+    ...(expanded
+      ? steps.map(step => (step.kind === 'tool'
+          ? createElement(ToolStep, { key: step.key, step, theme })
+          : step.kind === 'group'
+            ? createElement(ToolGroup, { key: step.key, step, theme })
+            : createElement(TextStep, { key: step.key, step, theme })))
+      : []),
+    ...answers.map(row => createElement('div', {
+      key: row.key,
+      style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6, color: theme.text, margin: '4px 0' },
+    }, sanitizeRowText(row.text))),
     block.notice === undefined || !failed ? null : createElement('div', {
       style: { color: FAIL_COLOR, fontSize: 12, marginTop: '4px' },
     }, block.notice.text),
