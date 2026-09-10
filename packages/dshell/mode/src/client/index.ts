@@ -20,6 +20,7 @@ import type {
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { BlockView } from './block-view.js'
 import { DshellLeftControls, DshellTerminalView } from './controls.js'
 import { THEMES, setTheme, themeStore } from './theme.js'
@@ -27,7 +28,7 @@ import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
 
 export const name = '@deepseek-ai/dsh-dshell-mode/client'
 
-export const inject = ['slots', 'sessions', 'dshellPtyStream', 'modelDirectories'] as const
+export const inject = ['slots', 'sessions', 'dshellPtyStream', 'modelDirectories', 'uiConversation'] as const
 
 /** Per-message routing mode for one session. */
 const MODE_MENU_ROWS: readonly { name: 'shell' | 'agent'; description: string }[] = [
@@ -193,6 +194,9 @@ export function apply(ctx: Context): void {
   // tsc program (host SessionStore vs client ISessions); see terminal-bridge.
   const sessions = ctx.get('sessions') as unknown as ISessions
   const pty = ctx.get('dshellPtyStream') as PtyStreamService
+  const uiConversation = ctx.get('uiConversation') as unknown as {
+    imageUrl: (sessionId: SessionId, attachment: Parameters<MessageImageLoader>[0]) => Promise<string>
+  }
   // Cast: the modelDirectories merge lives in ui-model-selection's face,
   // which this package must not take as a dependency (the model chip here
   // reads the service read-only; the declarer stays ui-model-selection).
@@ -309,6 +313,11 @@ export function apply(ctx: Context): void {
         sessionId,
         pty,
         sessions,
+        // Attachments arrive as opaque refs; the conversation service owns the
+        // only sanctioned way to turn one into a URL.
+        loadImage: sessionId === undefined
+          ? undefined
+          : (attachment) => uiConversation.imageUrl(sessionId, attachment),
       }),
     },
     BlockView,

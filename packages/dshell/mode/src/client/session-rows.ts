@@ -25,6 +25,27 @@ export interface SessionRow {
   readonly time: number
   /** A tool call's own command, when its arguments name one. */
   readonly command?: string | undefined
+  /**
+   * Image attachments this event carried. Unresolved: the view turns each into
+   * a URL through the conversation service, so the row model stays free of
+   * transport concerns.
+   */
+  readonly images?: readonly unknown[] | undefined
+}
+
+/**
+ * Image attachments inside a message or result, walking the nesting a
+ * `tool-result` block uses.
+ * @param content - the event's content blocks.
+ * @returns the attachment refs, in order.
+ */
+export function imagesOf(content: readonly unknown[] | undefined): readonly unknown[] {
+  const found: unknown[] = []
+  for (const block of contentBlocks(content)) {
+    if (block.type === 'image' && block.attachment !== undefined) found.push(block.attachment)
+    else if (Array.isArray(block.content)) found.push(...imagesOf(block.content as unknown[]))
+  }
+  return found
 }
 
 /** The command inside a tool call's arguments, when there is one to show. */
@@ -106,7 +127,7 @@ export function resultText(content: readonly unknown[] | undefined): string {
       if (nested.length > 0) parts.push(nested)
       continue
     }
-    if (block.type === 'image') parts.push('[图片]')
+    // Images are rendered from the row's attachments, not as a text marker.
   }
   return parts.join('\n').trim()
 }
@@ -126,10 +147,12 @@ export function rowOf(
   key: string,
   text: string,
   time: number,
-  extra: { label?: string; callId?: string; command?: string | undefined } = {},
+  extra: { label?: string; callId?: string; command?: string | undefined; images?: readonly unknown[] } = {},
 ): SessionRow | null {
   const body = text.replace(/\n+$/, '')
-  if (body.trim().length === 0) return null
+  // An image-only message is still a message: without this the row vanishes
+  // and the reader sees a request that was never made.
+  if (body.trim().length === 0 && (extra.images?.length ?? 0) === 0) return null
   const lines = body.split('\n').length
   // Reasoning folds whenever it is more than a one-liner or a wall of prose;
   // other roles fold on line count alone.
@@ -166,7 +189,9 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     // Legacy sessions carry the Phase 7 client-side context fence inside
     // the user's own message; show only the words beneath it.
     const stripped = /^\[dshell 终端上下文\][\s\S]*?```\n([\s\S]*)$/.exec(text)
-    const row = rowOf('user', `${event.type}:${event.seq}`, stripped === null ? text : (stripped[1] ?? ''), event.time)
+    const row = rowOf('user', `${event.type}:${event.seq}`, stripped === null ? text : (stripped[1] ?? ''), event.time, {
+      images: imagesOf(event.data.content),
+    })
     return row === null ? [] : [row]
   }
   if (event.type === 'assistant/message') {
@@ -175,7 +200,7 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     const base = `${event.type}:${event.seq}`
     const reasoning = rowOf('reasoning', `${base}:r`, reasoningOfBlocks(content), event.time, { label: '思考' })
     if (reasoning !== null) rows.push(reasoning)
-    const answer = rowOf('assistant', `${base}:t`, textOfBlocks(content), event.time)
+    const answer = rowOf('assistant', `${base}:t`, textOfBlocks(content), event.time, { images: imagesOf(content) })
     if (answer !== null) rows.push(answer)
     toolCallsOfBlocks(content).forEach((call, index) => {
       toolNames.set(call.id, call.name)
@@ -194,10 +219,11 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     const name = toolNames.get(callId) ?? event.data.error?.name ?? '工具'
     const body = resultText(event.data.message.content)
     const failed = event.data.error !== undefined
-    const text = body.length > 0 ? body : (failed ? '（失败，无输出）' : '（无文本输出）')
-    const row = rowOf('tool', `${event.type}:${event.seq}`, text, event.time, {
+    const images = imagesOf(event.data.message.content)
+    const row = rowOf('tool', `${event.type}:${event.seq}`, body, event.time, {
       label: `${name}${failed ? ' ✗' : ''}`,
       callId,
+      images,
     })
     return row === null ? [] : [row]
   }

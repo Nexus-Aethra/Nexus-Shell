@@ -15,6 +15,7 @@
 
 import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import { sanitizeRowText } from './session-rows.js'
+import type { PtyBlock } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { TurnBlock } from './blocks.js'
 import type { TodoItem } from './todo-card.js'
 
@@ -40,23 +41,36 @@ function visible(text: string): boolean {
  * @returns the items in display order: region, task, region, task, … region.
  */
 export function assembleTimeline(
-  blocks: readonly TurnBlock[],
-  slices: readonly { text: string; time: number }[],
+  hostBlocks: readonly PtyBlock[],
+  fold: { readonly blocks: readonly TurnBlock[] },
 ): ViewItem[] {
   const items: ViewItem[] = []
-  for (const [index, block] of blocks.entries()) {
-    const text = slices[index]?.text ?? ''
-    if (visible(text)) items.push({ kind: 'shell', key: `shell:${String(index)}`, time: block.startedAt, text })
-    items.push({ kind: 'agent', key: block.key, time: block.startedAt, block })
+  const used = new Set<string>()
+  for (const host of hostBlocks) {
+    if (host.kind === 'shell') {
+      if (visible(host.text)) {
+        items.push({ kind: 'shell', key: `shell:${String(host.seq)}`, time: host.startedAt, text: host.text })
+      }
+      continue
+    }
+    // One turn can fold into several blocks (a supervised phase change splits
+    // it), so consume every block that carries this turn.
+    for (const block of fold.blocks) {
+      if (block.turn !== host.turn || used.has(block.key)) continue
+      used.add(block.key)
+      items.push({ kind: 'agent', key: block.key, time: block.startedAt, block })
+    }
   }
-  const tail = slices[blocks.length]?.text ?? ''
-  if (visible(tail)) {
-    items.push({
-      kind: 'shell',
-      key: `shell:${String(blocks.length)}`,
-      time: slices[blocks.length]?.time ?? 0,
-      text: tail,
-    })
+  // Tasks the host has no block for — history from before the block log
+  // existed — are older than what it does have, so they slot in by time
+  // rather than collecting at one end.
+  for (const block of fold.blocks) {
+    if (used.has(block.key)) continue
+    used.add(block.key)
+    const at = items.findIndex(item => item.time > block.startedAt)
+    const node: ViewItem = { kind: 'agent', key: block.key, time: block.startedAt, block }
+    if (at < 0) items.push(node)
+    else items.splice(at, 0, node)
   }
   return items
 }

@@ -12,9 +12,15 @@
  * The log lives at $DSH_HOME/dshell-pty/<dsh-session-id>.log. Appends
  * are batched and flushed on a short timer; close() and truncate() flush
  * synchronously.
+ *
+ * Alongside the text, the buffer keeps the arrival time of every append. That
+ * timeline is what lets a reader place shell output between the agent tasks it
+ * sat between: a replay carries the whole window in one frame, so a browser
+ * that only knew its own frames could not tell where one command ended. The
+ * host was there for all of it, so the times travel with the text.
  */
 
-import { mkdir, open, stat } from 'node:fs/promises'
+import { mkdir, open, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 /** Window and flush knobs for one PtyBuffer. */
@@ -27,6 +33,8 @@ export interface PtyBufferOptions {
   seedMaxBytes: number
   /** Append batching window in milliseconds. */
   flushIntervalMs: number
+  /** How long a changed timeline waits before it is written beside the log. */
+  timelineSaveDelayMs: number
 }
 
 export const DEFAULT_PTY_BUFFER_OPTIONS: PtyBufferOptions = {
@@ -34,6 +42,62 @@ export const DEFAULT_PTY_BUFFER_OPTIONS: PtyBufferOptions = {
   windowMaxLines: 2000,
   seedMaxBytes: 64 * 1024,
   flushIntervalMs: 150,
+  timelineSaveDelayMs: 500,
+}
+
+/** When a stretch of text reached the buffer, and how long it was. */
+export interface PtyTimelineEntry {
+  /** Epoch milliseconds. */
+  t: number
+  /** Characters this entry accounts for. */
+  n: number
+}
+
+/** Where a buffer keeps its persisted arrival timeline. */
+function timelinePath(logPath: string): string {
+  return `${logPath}.timeline.json`
+}
+
+/**
+ * The timeline for a freshly seeded window: the sidecar if it still aligns,
+ * otherwise one entry stamped with the log's own mtime — a restart is exactly
+ * one batch of old output followed by precise frames again.
+ */
+async function seedTimeline(logPath: string, seedChars: number): Promise<PtyTimelineEntry[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(timelinePath(logPath), 'utf8'))
+    if (Array.isArray(parsed)) {
+      const entries: PtyTimelineEntry[] = []
+      for (const item of parsed) {
+        if (!Array.isArray(item)) continue
+        const [t, n] = item as [unknown, unknown]
+        if (typeof t === 'number' && typeof n === 'number' && n > 0) entries.push({ t, n })
+      }
+      const total = entries.reduce((sum, entry) => sum + entry.n, 0)
+      if (total >= seedChars) {
+        // The seed is the log's tail, so keep the timeline's tail: drop the
+        // entries (or the part of one) older than the seeded text.
+        let excess = total - seedChars
+        while (excess > 0 && entries.length > 0) {
+          const head = entries[0]
+          if (head === undefined) break
+          if (head.n <= excess) { excess -= head.n; entries.shift() }
+          else { head.n -= excess; excess = 0 }
+        }
+        if (entries.length > 0) return entries
+      } else if (entries.length > 0 && total > 0) {
+        // The log grew past the persisted timeline: the missing prefix is the
+        // oldest text we can no longer time, so it gets the seed's timestamp.
+        entries.unshift({ t: Date.now(), n: seedChars - total })
+        return entries
+      }
+    }
+  } catch {
+    // No sidecar, or unreadable: fall through to the mtime anchor.
+  }
+  let seededAt = Date.now()
+  try { seededAt = (await stat(logPath)).mtimeMs } catch { /* keep now */ }
+  return [{ t: seededAt, n: seedChars }]
 }
 
 /** Decode the tail of a UTF-8 file without splitting a multibyte sequence. */
@@ -49,6 +113,9 @@ export class PtyBuffer {
   private pending = ''
   private flushTimer: NodeJS.Timeout | undefined
   private writing = false
+  /** Arrival time of each append still inside the window, oldest first. */
+  private timeline: PtyTimelineEntry[] = []
+  private timelineTimer: NodeJS.Timeout | undefined
 
   private constructor(
     readonly logPath: string,
@@ -83,6 +150,7 @@ export class PtyBuffer {
       seed = ''
     }
     const buffer = new PtyBuffer(logPath, options, seed)
+    if (seed.length > 0) buffer.timeline = await seedTimeline(logPath, seed.length)
     buffer.trim()
     buffer.handle = await open(logPath, 'a')
     return buffer
@@ -92,6 +160,8 @@ export class PtyBuffer {
   append(delta: string): void {
     if (delta.length === 0) return
     this.window += delta
+    this.timeline.push({ t: Date.now(), n: delta.length })
+    this.scheduleTimelineSave()
     this.trim()
     this.pending += delta
     if (this.flushTimer === undefined) {
@@ -105,7 +175,14 @@ export class PtyBuffer {
   /** Replace the window wholesale after the backend dropped retained lines. */
   resync(text: string): void {
     this.window = text
+    this.timeline = text.length === 0 ? [] : [{ t: Date.now(), n: text.length }]
+    this.scheduleTimelineSave()
     this.trim()
+  }
+
+  /** Arrival timeline of the retained window, oldest first. */
+  timelineEntries(): readonly PtyTimelineEntry[] {
+    return this.timeline
   }
 
   /** The in-memory window, oldest lines first. */
@@ -136,8 +213,11 @@ export class PtyBuffer {
   /** Drop the window and truncate the log (the `/clear` path). */
   async truncate(): Promise<void> {
     this.window = ''
+    this.timeline = []
+    if (this.timelineTimer !== undefined) { clearTimeout(this.timelineTimer); this.timelineTimer = undefined }
     await this.flush()
     await this.handle?.truncate(0)
+    await writeFile(timelinePath(this.logPath), '[]', 'utf8').catch(() => { /* best effort */ })
   }
 
   /**
@@ -178,9 +258,27 @@ export class PtyBuffer {
 
   /** Flush pending writes and release the log handle. */
   async close(): Promise<void> {
+    if (this.timelineTimer !== undefined) { clearTimeout(this.timelineTimer); this.timelineTimer = undefined }
+    await this.saveTimeline()
     await this.flush()
     await this.handle?.close()
     this.handle = undefined
+  }
+
+  /** Coalesce timeline writes: a chatty shell would otherwise rewrite per frame. */
+  private scheduleTimelineSave(): void {
+    if (this.timelineTimer !== undefined) return
+    this.timelineTimer = setTimeout(() => {
+      this.timelineTimer = undefined
+      void this.saveTimeline()
+    }, this.options.timelineSaveDelayMs)
+  }
+
+  /** Persist the window's arrival timeline beside the log. */
+  private async saveTimeline(): Promise<void> {
+    const pairs = this.timeline.map(entry => [entry.t, entry.n])
+    await writeFile(timelinePath(this.logPath), JSON.stringify(pairs), 'utf8')
+      .catch(() => { /* best effort: a missing sidecar only costs placement */ })
   }
 
   /** Enforce the window caps by dropping the oldest lines. */
@@ -192,7 +290,27 @@ export class PtyBuffer {
       const overLines = lines.length > this.options.windowMaxLines
       if (!overBytes && !overLines) return
       const drop = overLines ? lines.length - this.options.windowMaxLines : 1
+      const before = this.window.length
       this.window = lines.slice(drop).join('\n')
+      // The timeline must consume exactly what the window dropped, or every
+      // later offset would be timed by the wrong frame.
+      this.consumeTimeline(before - this.window.length)
+    }
+  }
+
+  /** Drop `count` characters from the timeline's oldest end. */
+  private consumeTimeline(count: number): void {
+    let remaining = count
+    while (remaining > 0 && this.timeline.length > 0) {
+      const head = this.timeline[0]
+      if (head === undefined) return
+      if (head.n <= remaining) {
+        remaining -= head.n
+        this.timeline.shift()
+      } else {
+        head.n -= remaining
+        remaining = 0
+      }
     }
   }
 }

@@ -18,8 +18,12 @@ import type { SessionMode } from './types.js'
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 
 export interface DshellInputStandardProps {
-  /** Live composer state (draft text) — the submit router reads it. */
-  useInput?: <S>(sel: (state: { draft: string }) => S, eq?: (a: S, b: S) => boolean) => S
+  /**
+   * Live composer state — the submit router reads the draft and the pending
+   * attachment ids. The declared shape is the subset dshell touches; the stock
+   * store carries more.
+   */
+  useInput?: <S>(sel: (state: { draft: string; attachmentIds?: readonly string[] }) => S, eq?: (a: S, b: S) => boolean) => S
   /** Programmatic draft writes (the router clears the composer after a shell send). */
   inputActions?: { setDraft(text: string): void }
 }
@@ -59,6 +63,12 @@ export function DshellLeftControls(props: {
   const draft = props.useInput?.(state => state.draft) ?? ''
   const draftRef = useRef(draft)
   draftRef.current = draft
+  // A pending attachment is the one thing bash cannot receive. Routing is
+  // decided here, not in bash: with a file attached the stock pipeline runs,
+  // which is what puts the image in front of the model.
+  const attachmentCount = props.useInput?.(state => state.attachmentIds?.length ?? 0) ?? 0
+  const attachmentsRef = useRef(attachmentCount)
+  attachmentsRef.current = attachmentCount
   const modeRef = useRef(mode)
   modeRef.current = mode
   // Agent mode gives the keyboard back to the stock composer editor; the
@@ -76,6 +86,10 @@ export function DshellLeftControls(props: {
     if (pty === undefined || clearDraft === undefined) return
     const route = (): boolean => {
       if (modeRef.current !== 'shell') return false
+      // Leave an attached message to the stock sender: a shell has no way to
+      // read an image, and dropping the attachment silently is worse than
+      // answering in the wrong surface.
+      if (attachmentsRef.current > 0) return false
       const text = draftRef.current
       if (text.trim().length === 0) return false
       // A leading slash belongs to the stock command/trigger pipeline
@@ -170,7 +184,9 @@ export function DshellLeftControls(props: {
       onClick: () => { props.setMode(next) },
     }, `${glyph} ${label}`),
     createElement('div', { style: { color: theme.muted, fontSize: 12, marginLeft: 8 } },
-      mode === 'shell' ? '直接输入 · Ctrl+C 中断 · Ctrl+Shift+C 复制' : 'Enter 发送对话 · /agent 切终端'),
+      mode === 'shell'
+        ? (attachmentCount > 0 ? '有附件：Enter 发送给 AI · 附件已转对话' : '直接输入 · Ctrl+C 中断 · Ctrl+Shift+C 复制')
+        : 'Enter 发送对话 · /agent 切终端'),
   )
 }
 

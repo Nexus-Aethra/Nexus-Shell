@@ -23,6 +23,7 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { createFold, foldEvent } from './blocks.js'
 import { AgentBlock } from './agent-block.js'
 import { assembleTimeline, todosOf, type ViewItem } from './block-model.js'
@@ -59,6 +60,8 @@ export function BlockView(props: {
   pty: PtyStreamService
   sessions: ISessions
   sessionId: SessionId | undefined
+  /** Turns an attachment ref into a URL (the conversation service's loader). */
+  loadImage: MessageImageLoader | undefined
 }): ReactElement {
   const theme = useDshellTheme()
   const seat = useRef<HTMLDivElement | null>(null)
@@ -128,12 +131,10 @@ export function BlockView(props: {
     if (id === undefined) return []
     const fold = createFold()
     for (const entry of entries) if (entry.type === 'event') foldEvent(fold, entry.event)
-    // Cut the shell stream at each task's start, so a stretch of terminal
-    // output that spans several tasks is split between them rather than
-    // lumped above or below all of them.
-    const slices = props.pty.slices(id, fold.blocks.map(block => block.startedAt))
-    return assembleTimeline(fold.blocks, slices)
-    // `version` re-cuts the PTY regions when output arrives.
+    // The host cut the stream into blocks as the bytes arrived, so the order
+    // is exact by construction — no reconstruction from timestamps.
+    return assembleTimeline(props.pty.blocks(id), fold)
+    // `version` re-reads the host's blocks when output arrives.
   }, [entries, id, props.pty, version])
 
   // Follow the tail unless the reader has scrolled away.
@@ -190,7 +191,7 @@ export function BlockView(props: {
           : []
         const node = item.kind === 'shell'
           ? createElement(ShellRegion, { key: `${item.key}:${String(version)}`, item, theme })
-          : createElement(AgentBlock, { key: item.key, block: item.block, theme })
+          : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage })
         return [...divider, node]
       }),
     ),

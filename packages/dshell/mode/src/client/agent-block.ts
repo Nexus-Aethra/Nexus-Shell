@@ -11,6 +11,7 @@ import type { TurnBlock } from './blocks.js'
 import { SESSION_ROW_LABEL, sanitizeRowText, type SessionRow } from './session-rows.js'
 import { SPAN_FONT, SPAN_FONT_SIZE } from './block-terminal.js'
 import { renderMarkdown } from './markdown.js'
+import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { Theme } from './theme.js'
 
 /**
@@ -41,10 +42,17 @@ function injectFoldCss(): void {
   document.head.append(style)
 }
 
-type ToolStepModel = { key: string; label: string; command: string | undefined; output: string | undefined }
+type ToolStepModel = { key: string; label: string; command: string | undefined; output: string | undefined; images: readonly unknown[] | undefined }
+
+/**
+ * Resolves an attachment ref to a displayable URL. Spelled as the conversation
+ * contract's own loader, so the service's implementation assigns without a
+ * cast and the attachment shape stays that package's business.
+ */
+export type ImageLoader = MessageImageLoader
 type Step =
   | { kind: 'text'; key: string; row: SessionRow; duration: number | undefined }
-  | { kind: 'tool'; key: string; label: string; command: string | undefined; output: string | undefined }
+  | { kind: 'tool'; key: string; label: string; command: string | undefined; output: string | undefined; images: readonly unknown[] | undefined }
   | { kind: 'group'; key: string; label: string; items: ToolStepModel[] }
 
 /** Tool names the reader knows by their job rather than their identifier. */
@@ -96,6 +104,7 @@ export function buildSteps(rows: readonly SessionRow[], startedAt: number): Step
         label: toolLabel(row.label ?? SESSION_ROW_LABEL.call),
         command: row.command,
         output: result?.text,
+        images: result?.images,
       })
       continue
     }
@@ -119,11 +128,11 @@ function groupRuns(steps: readonly Step[]): Step[] {
     const run: ToolStepModel[] = []
     let cursor = index
     for (let scan = steps[cursor]; scan?.kind === 'tool'; scan = steps[cursor]) {
-      run.push({ key: scan.key, label: scan.label, command: scan.command, output: scan.output })
+      run.push({ key: scan.key, label: scan.label, command: scan.command, output: scan.output, images: scan.images })
       cursor += 1
     }
     if (run.length === 1 && run[0] !== undefined) {
-      out.push({ kind: 'tool', key: run[0].key, label: run[0].label, command: run[0].command, output: run[0].output })
+      out.push({ kind: 'tool', key: run[0].key, label: run[0].label, command: run[0].command, output: run[0].output, images: run[0].images })
     } else if (run.length > 1) {
       out.push({ kind: 'group', key: `group:${run[0]?.key ?? String(index)}`, label: run[0]?.label ?? '终端', items: run })
     }
@@ -142,7 +151,7 @@ function clip(text: string, limit: number): { text: string; hidden: number } {
 }
 
 /** A terminal call: one line folded, a `$ command` + output card expanded. */
-function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme }): ReactElement {
+function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
   const { step, theme } = props
   const [open, setOpen] = useState(false)
   const preview = step.command ?? '…'
@@ -182,11 +191,49 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme }
       clipped.text,
       clipped.hidden > 0 ? createElement('div', { style: { color: theme.muted } }, `… 还有 ${String(clipped.hidden)} 行`) : null,
     ),
+    createElement(RowImages, { images: step.images, loadImage: props.loadImage, theme }),
   )
 }
 
+/**
+ * Attachments carried by one row, resolved to URLs through the conversation
+ * service. Rendering them is what lets the reader confirm the model was handed
+ * the image at all.
+ */
+function RowImages(props: { images: readonly unknown[] | undefined; loadImage: ImageLoader | undefined; theme: Theme }): ReactElement | null {
+  const { images, loadImage } = props
+  const [urls, setUrls] = useState<readonly string[]>([])
+  const key = JSON.stringify(images ?? [])
+  useEffect(() => {
+    if (images === undefined || images.length === 0 || loadImage === undefined) { setUrls([]); return }
+    let live = true
+    void Promise.all(images.map(image => loadImage(image as Parameters<ImageLoader>[0]).catch(() => '')))
+      .then(resolved => { if (live) setUrls(resolved.filter(url => url.length > 0)) })
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` stands in for the array identity
+  }, [key, loadImage])
+  if (urls.length === 0) return null
+  return createElement('div', {
+    'data-dshell-block-images': '',
+    style: { display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '6px 0 2px' },
+  }, ...urls.map((url, index) => createElement('img', {
+    key: `${url}:${String(index)}`,
+    src: url,
+    alt: '附件图片',
+    onClick: () => { window.open(url, '_blank', 'noopener') },
+    style: {
+      maxWidth: 'min(420px, 100%)',
+      maxHeight: '260px',
+      borderRadius: '8px',
+      border: `1px solid ${props.theme.border}`,
+      cursor: 'zoom-in',
+      objectFit: 'contain',
+    },
+  })))
+}
+
 /** A run of terminal calls: one counted line, the calls listed when opened. */
-function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme }): ReactElement {
+function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
   const { step, theme } = props
   const [open, setOpen] = useState(false)
   return createElement('div', { style: { margin: '2px 0' } },
@@ -205,13 +252,13 @@ function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme
     ),
     ...(open
       ? step.items.map(item => createElement('div', { key: item.key, style: { marginLeft: '20px' } },
-          createElement(ToolStep, { step: { kind: 'tool', ...item }, theme })))
+          createElement(ToolStep, { step: { kind: 'tool', ...item }, theme, loadImage: props.loadImage })))
       : []),
   )
 }
 
 /** Prose and thinking steps. */
-function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme }): ReactElement {
+function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
   const { step, theme } = props
   const row = step.row
   const [open, setOpen] = useState(false)
@@ -291,7 +338,7 @@ function formatTokens(tokens: number): string | undefined {
  * collapse behind a single summary line — `已工作 6 秒 · 1.2k tok ›` — the way
  * the transcript this is modelled on reads.
  */
-export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElement {
+export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
   const { block, theme } = props
   const [expanded, setExpanded] = useState(false)
   const running = block.status === 'running'
@@ -326,11 +373,12 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
         margin: '6px 0 6px auto',
         width: 'fit-content',
         maxWidth: '78%',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
         color: theme.text,
       },
-    }, sanitizeRowText(row.text))),
+    },
+      createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, sanitizeRowText(row.text)),
+      createElement(RowImages, { images: row.images, loadImage: props.loadImage, theme }),
+    )),
     createElement('div', {
       'data-dshell-fold': '',
       onClick: () => { setExpanded(value => !value) },
@@ -349,14 +397,17 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
     ),
     ...(expanded
       ? steps.map(step => (step.kind === 'tool'
-          ? createElement(ToolStep, { key: step.key, step, theme })
+          ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage })
           : step.kind === 'group'
-            ? createElement(ToolGroup, { key: step.key, step, theme })
-            : createElement(TextStep, { key: step.key, step, theme })))
+            ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage })
+            : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage })))
       : []),
     // An answer is written to be read: render its markdown rather than the
     // raw syntax it arrived in.
-    ...answers.flatMap(row => renderMarkdown(sanitizeRowText(row.text), theme, row.key)),
+    ...answers.flatMap(row => [
+      ...renderMarkdown(sanitizeRowText(row.text), theme, row.key),
+      createElement(RowImages, { key: `${row.key}:img`, images: row.images, loadImage: props.loadImage, theme }),
+    ]),
     block.notice === undefined || !failed ? null : createElement('div', {
       style: { color: FAIL_COLOR, fontSize: 12, marginTop: '4px' },
     }, block.notice.text),

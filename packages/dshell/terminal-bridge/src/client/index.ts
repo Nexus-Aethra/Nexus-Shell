@@ -33,12 +33,29 @@ export const name = '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 
 export const inject = ['sessions'] as const
 
+/** One host-defined block: a shell stretch or one agent turn, in order. */
+export interface PtyBlock {
+  readonly seq: number
+  readonly kind: 'shell' | 'agent'
+  readonly turn?: number | undefined
+  readonly startedAt: number
+  readonly endedAt?: number | undefined
+  readonly text: string
+}
+
 /** One PTY output chunk with its arrival time. */
 export interface PtyChunk {
   text: string
   time: number
   /** True for the bind replay (4.9 seeded tail) or a resync. */
   replay: boolean
+  /**
+   * On a replay, the host's own arrival timeline for this text: a replay is
+   * one frame, so without it the whole scrollback would carry a single
+   * timestamp and every shell region would collapse to one end of the
+   * timeline.
+   */
+  timeline?: readonly { t: number; n: number }[]
 }
 
 export interface PtyStreamState {
@@ -53,6 +70,27 @@ const HISTORY_MAX_BYTES = 256 * 1024
 const HISTORY_MAX_FRAMES = 1000
 const RECONNECT_DELAY_MS = 2000
 
+/**
+ * Drop `count` characters from the front of a history's arrival timeline,
+ * splitting the entry that straddles the cut.
+ */
+function dropTimeline(history: SessionHistory, count: number): void {
+  let remaining = count
+  while (remaining > 0 && history.timeline.length > 0) {
+    const head = history.timeline[0]
+    if (head === undefined) return
+    if (head.n <= remaining) {
+      remaining -= head.n
+      history.timeline.shift()
+      history.recorded -= head.n
+    } else {
+      head.n -= remaining
+      history.recorded -= remaining
+      remaining = 0
+    }
+  }
+}
+
 /** One wire frame from the bridge (`§ 5`). */
 interface WireFrame {
   kind?: string
@@ -66,6 +104,13 @@ interface WireFrame {
   user?: string
   host?: string
   home?: string
+  /** `(time, length)` pairs the host kept for the replayed text. */
+  timeline?: [number, number][]
+  /** `blocks` frames: the host's ordered block list, replacing the client's. */
+  blocks?: PtyBlock[]
+  /** `block-text` frames: a delta appended to one open block. */
+  seq?: number
+  text?: string
 }
 
 /** Debounce before a changed timeline is written back to localStorage. */
@@ -98,6 +143,16 @@ export class PtyStreamService extends Service {
   })
 
   private readonly histories = new Map<string, SessionHistory>()
+  /** Per-session block lists, exactly as the host ordered them. The stored
+   * copy is mutable because a live block grows by deltas. */
+  private readonly blockLists = new Map<string, {
+    seq: number
+    kind: 'shell' | 'agent'
+    turn?: number | undefined
+    startedAt: number
+    endedAt?: number | undefined
+    text: string
+  }[]>()
   private readonly chunkListeners = new Set<(sessionId: string, chunk: PtyChunk) => void>()
   private socket: WebSocket | undefined
   /** The session the current socket was opened (or is connecting) for. */
@@ -117,6 +172,11 @@ export class PtyStreamService extends Service {
     let text = ''
     for (const chunk of history.chunks) text += chunk.text
     return text
+  }
+
+  /** The session's host-defined blocks, in render order. */
+  blocks(dshSessionId: string): readonly PtyBlock[] {
+    return this.blockLists.get(dshSessionId) ?? []
   }
 
   /** The session's timed chunk list — the canvas merge's PTY side (4.4). */
@@ -229,8 +289,29 @@ export class PtyStreamService extends Service {
           text: frame.chunk,
           time: frame.time ?? Date.now(),
           replay: frame.replay === true,
+          ...(Array.isArray(frame.timeline)
+            ? { timeline: frame.timeline.map(pair => ({ t: pair[0], n: pair[1] })) }
+            : {}),
         })
         if (frame.replay !== true) console.debug('[dshell-pty]', frame.chunk)
+        return
+      }
+      if (frame.kind === 'blocks' && Array.isArray(frame.blocks)) {
+        const sessionId = this.boundId
+        if (sessionId !== undefined) {
+          this.blockLists.set(sessionId, frame.blocks.map(block => ({ ...block })))
+          this.patch({ version: this.state.getSnapshot().version + 1 })
+        }
+        return
+      }
+      if (frame.kind === 'block-text' && typeof frame.seq === 'number' && typeof frame.text === 'string') {
+        const sessionId = this.boundId
+        const list = sessionId === undefined ? undefined : this.blockLists.get(sessionId)
+        const block = list?.find(candidate => candidate.seq === frame.seq)
+        if (block !== undefined) {
+          block.text += frame.text
+          this.patch({ version: this.state.getSnapshot().version + 1 })
+        }
         return
       }
       if (frame.kind === 'info') {
@@ -290,11 +371,16 @@ export class PtyStreamService extends Service {
     if (chunk.replay) {
       history.chunks = [chunk]
       history.bytes = chunk.text.length
-      // Keep only the timeline entries the replayed text still covers: a
-      // resync replaces the stream, so entries older than it are meaningless.
-      while (history.timeline.length > 0 && history.recorded > chunk.text.length) {
-        const dropped = history.timeline.shift()
-        history.recorded -= dropped?.n ?? 0
+      if (chunk.timeline !== undefined && chunk.timeline.length > 0) {
+        // The host watched every frame, so its timeline is authoritative for
+        // the text it just shipped.
+        history.timeline = chunk.timeline.map(entry => ({ t: entry.t, n: entry.n }))
+        history.recorded = timelineBytes(history.timeline)
+      } else if (history.recorded !== chunk.text.length) {
+        // No timeline came with the replay and the one we hold describes a
+        // different text: keeping it would time offsets by the wrong frame.
+        history.timeline = []
+        history.recorded = 0
       }
     } else {
       history.chunks = [...history.chunks, chunk]
@@ -304,6 +390,9 @@ export class PtyStreamService extends Service {
         if (dropped === undefined || history.chunks.length === 1) break
         history.chunks = history.chunks.slice(1)
         history.bytes -= dropped.text.length
+        // A dropped chunk's bytes leave the text, so its arrival entry must
+        // leave the timeline: the two are sliced against each other.
+        dropTimeline(history, dropped.text.length)
       }
       history.timeline.push({ t: chunk.time, n: chunk.text.length })
       history.recorded += chunk.text.length

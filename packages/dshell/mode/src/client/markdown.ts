@@ -17,7 +17,7 @@ import { SPAN_FONT } from './block-terminal.js'
 import type { Theme } from './theme.js'
 
 /** Inline spans: code, bold, italic, strikethrough, links. */
-const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_|~~[^~]+~~|\[[^\]]+\]\([^)\s]+\))/u
+const INLINE = /(`[^`]+`|!\[[^\]]*\]\([^)\s]+\)|\*\*[^*]+\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_|~~[^~]+~~|\[[^\]]+\]\([^)\s]+\))/u
 
 function inline(text: string, theme: Theme, key: string): ReactNode[] {
   const nodes: ReactNode[] = []
@@ -45,6 +45,14 @@ function inline(text: string, theme: Theme, key: string): ReactNode[] {
       nodes.push(createElement('span', { key: id, style: { textDecoration: 'line-through', opacity: 0.7 } }, inner))
     } else if (token.startsWith('*') || token.startsWith('_')) {
       nodes.push(createElement('em', { key: id }, inner))
+    } else if (token.startsWith('![')) {
+      const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/u.exec(token)
+      nodes.push(createElement('img', {
+        key: id,
+        src: image?.[2] ?? '',
+        alt: image?.[1] ?? '',
+        style: { maxWidth: '100%', maxHeight: '320px', borderRadius: '8px', display: 'block', margin: '6px 0' },
+      }))
     } else {
       const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/u.exec(token)
       nodes.push(createElement('a', {

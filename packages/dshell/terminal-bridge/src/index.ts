@@ -32,6 +32,7 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the host connection service merge (ctx.connection,
 // upgrade auth) and the agents service merge (ctx.agents) into the program.
 import type {} from '@deepseek-ai/dsh-client-connection'
+import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { DshellPtyBackend, type DshellPtySession } from './pty.js'
 import {
@@ -125,6 +126,8 @@ interface MainRecord {
   /** The backend's rich handle: raw output push, exit push, resize. */
   session: DshellPtySession
   buffer: PtyBuffer
+  /** The host's block model for this session: the render order's source. */
+  blocks: BlockLog
   /** Shell identity; every respawn and `/clear` takes a fresh value. */
   generation: number
   /** Bytes ever appended to the logical stream, independent of window trims. */
@@ -172,6 +175,21 @@ export class DshellTerminalBridge extends Service {
       this.backend.dispose()
       void this.disposeAll()
     }, 'dshell-bridge: teardown')
+    // Turn boundaries come from the session itself, so a block is cut exactly
+    // where the agent took over and where it handed the terminal back.
+    ctx.on('session/event', (session: Session, event: { type?: string; data?: unknown }) => {
+      const sessionId = String(session.id)
+      const record = this.recordFor(sessionId)
+      if (record === undefined) return
+      const data = (event.data ?? {}) as { turn?: number }
+      if (event.type === 'turn/start') {
+        record.blocks.startTurn(data.turn)
+        this.broadcast(sessionId, { kind: 'blocks', blocks: record.blocks.snapshot() })
+      } else if (event.type === 'turn/end') {
+        record.blocks.endTurn()
+        this.broadcast(sessionId, { kind: 'blocks', blocks: record.blocks.snapshot() })
+      }
+    }, { global: true })
     // Session dispose (sidebar delete, host-side cleanup) → mark the
     // session's main PTY dead so the bindClient sequence can forward the
     // close frame and the dispose timer frees the node-pty.
@@ -237,6 +255,12 @@ export class DshellTerminalBridge extends Service {
     }
   }
 
+  /** The live main record for a dsh session, if one exists. */
+  private recordFor(dshSessionId: string): MainRecord | undefined {
+    for (const record of this.mains.values()) if (record.dshSessionId === dshSessionId) return record
+    return undefined
+  }
+
   private async spawnMain(agent: Agent, dshSessionId: string): Promise<MainRecord> {
     const cwd = agent.session?.header?.cwd
     const spawned = await this.ctx.terminals.spawn(agent, {
@@ -248,13 +272,22 @@ export class DshellTerminalBridge extends Service {
     if (session === undefined) {
       throw new Error(`dshell-bridge: backend session missing after spawn (${String(spawned.sessionId)})`)
     }
-    const buffer = await PtyBuffer.open(join(ptyLogDir(), `${dshSessionId}.log`))
+    const logPath = join(ptyLogDir(), `${dshSessionId}.log`)
+    const buffer = await PtyBuffer.open(logPath)
+    const blocks = new BlockLog(blockLogPath(logPath))
+    await blocks.load()
+    if (blocks.snapshot().length === 0 && buffer.text().length > 0) {
+      // First run after this log was introduced (or after a clear): the
+      // seeded history has no block yet, so give it the shell block it was.
+      blocks.append(buffer.text(), Date.now())
+    }
     const record: MainRecord = {
       agent,
       dshSessionId,
       ptyId: spawned.sessionId,
       session,
       buffer,
+      blocks,
       generation: nextShellGeneration++,
       // The seeded log tail is history the previous shell already produced;
       // starting the cursor at its end keeps a respawn from replaying it.
@@ -275,6 +308,8 @@ export class DshellTerminalBridge extends Service {
     record.stopOutput = session.onOutput((chunk) => {
       if (record.initializing) return
       record.buffer.append(chunk)
+      const block = record.blocks.append(chunk)
+      this.broadcast(record.dshSessionId, { kind: 'block-text', seq: block.seq, text: chunk })
       record.absOffset += Buffer.byteLength(chunk, 'utf8')
       const closed = splitOutput(record.splitter, chunk, Date.now())
       if (closed.length > 0) {
@@ -323,7 +358,13 @@ export class DshellTerminalBridge extends Service {
       void record.buffer.truncate().then(() => {
         record.buffer.append(seeded)
         record.absOffset = Buffer.byteLength(seeded, 'utf8')
-        this.broadcast(record.dshSessionId, { kind: 'output', chunk: seeded, time: Date.now(), replay: true })
+        this.broadcast(record.dshSessionId, {
+          kind: 'output',
+          chunk: seeded,
+          time: Date.now(),
+          replay: true,
+          timeline: record.buffer.timelineEntries().map(entry => [entry.t, entry.n]),
+        })
         record.inputQueue.push('\n')
         this.pump(record)
       })
@@ -616,7 +657,10 @@ export class DshellTerminalBridge extends Service {
         chunk: record.initializing ? '' : record.buffer.text(),
         time: Date.now(),
         replay: true,
+        timeline: record.buffer.timelineEntries().map(entry => [entry.t, entry.n]),
       })
+      // The host owns block order; the client renders this list as given.
+      this.sendFrame(client, { kind: 'blocks', blocks: record.blocks.snapshot() })
     }, (error: unknown) => {
       this.sendFrame(client, { kind: 'error', message: String(error) })
       client.close(1008, 'bind rejected')
