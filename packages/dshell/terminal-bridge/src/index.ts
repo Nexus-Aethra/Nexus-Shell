@@ -26,6 +26,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type { TerminalSendOperation, TerminalSessionId, TerminalSignal } from '@deepseek-ai/dsh-terminal'
 import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the host connection service merge (ctx.connection,
@@ -70,10 +71,19 @@ interface MainRecord {
   /** Push-subscription disposers, released in dropMain. */
   stopOutput: () => void
   stopExit: () => void
+  /**
+   * Set when the PTY exited or the dsh session was disposed. The record
+   * stays in `mains` briefly so a reconnecting client can receive the
+   * close frame in its bindClient sequence; `disposeRecord` removes it
+   * after the grace.
+   */
+  dead?: { reason: string; time: number }
+  /** Pending dispose handle, kept so a rapid respawn can cancel it. */
+  disposeTimer?: NodeJS.Timeout
 }
 
 export class DshellTerminalBridge extends Service {
-  static inject = ['terminals'] as const
+  static inject = ['terminals', 'agents'] as const
 
   private readonly mains = new Map<Agent, MainRecord>()
   private readonly pendingMain = new Map<Agent, Promise<MainRecord>>()
@@ -93,6 +103,24 @@ export class DshellTerminalBridge extends Service {
       this.backend.dispose()
       void this.disposeAll()
     }, 'dshell-bridge: teardown')
+    // Session dispose (sidebar delete, host-side cleanup) → mark the
+    // session's main PTY dead so the bindClient sequence can forward the
+    // close frame and the dispose timer frees the node-pty.
+    ctx.on('session/disposed', (session: Session) => {
+      const sessionId = String(session.id)
+      for (const record of this.mains.values()) {
+        if (record.dshSessionId !== sessionId) continue
+        this.markDead(record, 'session closed')
+        const set = this.clients.get(sessionId)
+        if (set !== undefined) {
+          for (const client of set) {
+            this.boundSession.delete(client)
+            if (client.readyState === WebSocket.OPEN) client.close(1000, 'session closed')
+          }
+          this.clients.delete(sessionId)
+        }
+      }
+    })
     ctx.inject(['webServer', 'connection'], (webCtx) => {
       const wss = new WebSocketServer({ noServer: true })
       const route: WebUpgradeRoute = {
@@ -121,7 +149,14 @@ export class DshellTerminalBridge extends Service {
       throw new Error(`dshell-bridge: no live agent for session "${dshSessionId}"`)
     }
     const existing = this.mains.get(agent)
-    if (existing !== undefined) return existing
+    if (existing !== undefined && existing.dead === undefined) return existing
+    if (existing !== undefined) {
+      // A dead record blocks the owner's name reservation; force-release
+      // it inline so the spawn below doesn't collide on "name main exists".
+      if (existing.disposeTimer !== undefined) clearTimeout(existing.disposeTimer)
+      await this.disposeRecord(existing)
+      void this.ctx.terminals.kill(agent, existing.ptyId, 'dshell: replace dead').catch(() => {})
+    }
     const pending = this.pendingMain.get(agent)
     if (pending !== undefined) return await pending
     const promise = this.spawnMain(agent, dshSessionId)
@@ -167,9 +202,7 @@ export class DshellTerminalBridge extends Service {
       this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
     })
     record.stopExit = session.onExit((status) => {
-      const reason = status.kind === 'exited' ? `exit code ${String(status.exitCode)}` : 'closed'
-      this.broadcast(record.dshSessionId, { kind: 'closed', reason })
-      void this.dropMain(record)
+      this.markDead(record, status.kind === 'exited' ? `exit code ${String(status.exitCode)}` : status.kind)
     })
     // Replace the stock `dsh> ` prompt with a bash-style `user@host:path$`
     // cue once the shell is ready; PS1 and PROMPT_COMMAND are rewritten in
@@ -208,9 +241,19 @@ export class DshellTerminalBridge extends Service {
     })
   }
 
+  /**
+   * Ensure the session has a *live* main record. If the existing one is
+   * dead, ensureMainShell forces a release-and-respawn inline so the
+   * returned record is always usable (Phase 9 hardening — feeds,
+   * signals, clears must never operate on a dying PTY).
+   */
+  private ensureLiveMain(dshSessionId: string): Promise<MainRecord> {
+    return this.ensureMainShell(dshSessionId)
+  }
+
   /** Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the active send). */
   feed(dshSessionId: string, text: string): void {
-    void this.ensureMainShell(dshSessionId).then((record) => {
+    void this.ensureLiveMain(dshSessionId).then((record) => {
       if (text === '\u0003' && record.activeSend !== undefined) {
         record.activeSend.cancel()
         return
@@ -228,7 +271,7 @@ export class DshellTerminalBridge extends Service {
    * additionally drops the persisted scrollback).
    */
   async clearSession(dshSessionId: string): Promise<void> {
-    const record = await this.ensureMainShell(dshSessionId)
+    const record = await this.ensureLiveMain(dshSessionId)
     this.performClear(record)
   }
 
@@ -282,15 +325,35 @@ export class DshellTerminalBridge extends Service {
     }
   }
 
-  private async dropMain(record: MainRecord): Promise<void> {
+  /**
+   * Mark a record dead: stop listeners, broadcast the close frame, and
+   * schedule disposal so a reconnecting client still receives the frame
+   * in its bindClient push sequence (Phase 9 hardening).
+   */
+  private markDead(record: MainRecord, reason: string): void {
+    if (record.dead !== undefined) return
+    record.dead = { reason, time: Date.now() }
     record.stopOutput()
     record.stopExit()
-    await record.buffer.close().catch(() => {})
+    record.stopOutput = () => {}
+    record.stopExit = () => {}
+    this.broadcast(record.dshSessionId, { kind: 'closed', reason })
+    // Release the dsh-side name reservation NOW so a same-tick respawn
+    // (via ensureLiveMain) doesn't collide with the still-resident owner.
+    void this.ctx.terminals.kill(record.agent, record.ptyId, 'dshell: dead').catch(() => {})
+    record.disposeTimer = setTimeout(() => { void this.disposeRecord(record) }, 200)
+  }
+
+  /** Drop a dead record from `mains` and release its PtyBuffer. */
+  private async disposeRecord(record: MainRecord): Promise<void> {
+    delete record.disposeTimer
     this.mains.delete(record.agent)
+    await record.buffer.close().catch(() => {})
   }
 
   private async disposeAll(): Promise<void> {
     for (const record of [...this.mains.values()]) {
+      if (record.disposeTimer !== undefined) clearTimeout(record.disposeTimer)
       record.stopOutput()
       record.stopExit()
       await record.buffer.close().catch(() => {})
@@ -344,6 +407,10 @@ export class DshellTerminalBridge extends Service {
   }
 
   private bindClient(client: WebSocket, dshSessionId: string): void {
+    // Stash the dead reason BEFORE ensureMainShell swaps in a replacement,
+    // so the close frame can be forwarded to a freshly reconnected client.
+    const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
+    const priorDead = agent === undefined ? undefined : this.mains.get(agent)?.dead
     void this.ensureMainShell(dshSessionId).then((record) => {
       let set = this.clients.get(dshSessionId)
       if (set === undefined) {
@@ -352,19 +419,31 @@ export class DshellTerminalBridge extends Service {
       }
       set.add(client)
       this.boundSession.set(client, dshSessionId)
-      client.send(JSON.stringify({
-        kind: 'info', user: this.promptUser, host: this.promptHost, home: homedir(),
-      }))
-      client.send(JSON.stringify({
+      if (priorDead !== undefined) {
+        this.sendFrame(client, { kind: 'closed', reason: priorDead.reason })
+      }
+      this.sendFrame(client, { kind: 'info', user: this.promptUser, host: this.promptHost, home: homedir() })
+      this.sendFrame(client, {
         kind: 'output',
         chunk: record.initializing ? '' : record.buffer.text(),
         time: Date.now(),
         replay: true,
-      }))
+      })
     }, (error: unknown) => {
-      client.send(JSON.stringify({ kind: 'error', message: String(error) }))
+      this.sendFrame(client, { kind: 'error', message: String(error) })
       client.close(1008, 'bind rejected')
     })
+  }
+
+  /** Send a single frame to one ws client; tolerates a closing socket. */
+  private sendFrame(client: WebSocket, payload: Record<string, unknown>): void {
+    if (client.readyState !== WebSocket.OPEN) return
+    try {
+      client.send(JSON.stringify(payload))
+    } catch {
+      // The client closed mid-write; the close handler will drop the
+      // boundSession entry, nothing else to do here.
+    }
   }
 
   private broadcast(dshSessionId: string, frame: Record<string, unknown>): void {

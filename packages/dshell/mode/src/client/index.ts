@@ -35,7 +35,6 @@ import {
   useSyncExternalStore,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
 } from 'react'
 import { type Context } from '@deepseek-ai/cordis'
@@ -53,8 +52,10 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the sessions service merge (ctx.sessions).
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
-import type { IConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
-// Type-only: pulls the SlotRegistry service merge (ctx.slots).
+// Type-only: pulls the Conversation SlotMap (input.left / composer.dock seats).
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+// Type-only: pulls the renderer-owned slots service (ctx.slots) and the
+// generic SlotMap interface that constrains the `inject` name string.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { Terminal as XtermTerminal, type ITheme } from '@xterm/xterm'
 import { XTERM_CSS } from './xterm-css.js'
@@ -91,30 +92,7 @@ interface ModelChipFace {
   select: (selection: ModelSelection) => Promise<boolean>
 }
 
-/** Props injected into the terminal dock. */
-interface TerminalDockProps {
-  sessionId: SessionId | undefined
-  /** Per-session mode store; absent with no session. */
-  mode: SnapshotStore<SessionMode> | undefined
-  /** Per-session PTY history source. */
-  pty: PtyStreamService | undefined
-  /** Sessions face: slash-command dispatch, /new, and the 4.4 event merge. */
-  sessions: ISessions
-  /** Model chip face; absent with no session. */
-  model: ModelChipFace | undefined
-  submitShell(text: string): void
-  submitAgent(text: string): Promise<void>
-  /** Host slash-command executor (`/clear`, stock `/compact`); absent with no session. */
-  runCommand: ((line: string) => Promise<string>) | undefined
-  /** `/new`: create a session inheriting the current cwd and open it. */
-  createSession: (() => Promise<void>) | undefined
-}
-
-const PREFIX_PATTERN = /^\/(agent|shell|terminal|clear|new|compact)(?:\s+([\s\S]+))?\s*$/
-
 /** Strip dsh's prompt-protocol OSC markers (133;D + 133;A/B/C + OSC 1337 sequences). */
-const OSC_DS_PROBE = /\x1b\]133;[^\x07\x1b]*(\x07|\x1b\\)/g
-
 /** Theme registry. `accent` colors the active-mode chip + prompt glyph; `user` / `path` color the bash PS1 segments. */
 interface Theme {
   readonly id: string
@@ -241,22 +219,21 @@ function setTheme(id: string): void {
   }
 }
 
-/** Stable no-session host-info snapshot (uSES-safe identity). */
-const EMPTY_HOST_INFO: { user: string; host: string; home: string } = { user: '', host: '', home: '' }
-const subscribeNoop = () => () => {}
+/** Public setter used by dshell-settings; kept here so the theme registry
+ * stays the single source of truth (the host bridge also reads it to
+ * re-issue the bash PS1 after a palette change). */
+export { setTheme }
 
-const rootStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  flex: '1 1 auto',
-  minHeight: 0,
-  backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.012) 0%, rgba(0,0,0,0.25) 100%)',
-  color: 'var(--dshell-fg)',
-  fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-  fontSize: 13,
-  lineHeight: 1.55,
-  letterSpacing: 0,
+/** Read the current theme id (used by dshell-settings + host). */
+export function currentThemeId(): string {
+  return themeStore.getSnapshot()
 }
+
+/** Subscribe to theme changes (used by dshell-settings + host). */
+export function subscribeTheme(listener: () => void): () => void {
+  return themeStore.subscribe(listener)
+}
+
 const scrollStyle: CSSProperties = {
   flex: '1 1 auto',
   minHeight: 0,
@@ -266,16 +243,6 @@ const scrollStyle: CSSProperties = {
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
   scrollbarColor: 'var(--dshell-border-strong) transparent',
-}
-const inputBarStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  borderTop: '1px solid var(--dshell-border)',
-  padding: '10px 14px 12px',
-  flex: '0 0 auto',
-  background: 'var(--dshell-input-bar)',
-  backdropFilter: 'blur(8px)',
 }
 const modeChipStyle: CSSProperties = {
   border: '1px solid var(--dshell-border-strong)',
@@ -289,268 +256,7 @@ const modeChipStyle: CSSProperties = {
   fontFamily: 'inherit',
   transition: 'color 120ms, border-color 120ms',
 }
-const modeChipStyleActive: CSSProperties = {
-  ...modeChipStyle,
-  color: 'var(--dshell-accent)',
-  borderColor: 'var(--dshell-accent-border)',
-}
-const promptPrefixStyle: CSSProperties = {
-  color: 'var(--dshell-accent)',
-  fontWeight: 600,
-  whiteSpace: 'pre',
-  userSelect: 'none',
-  marginRight: 6,
-}
-const inputStyle: CSSProperties = {
-  flex: 1,
-  background: 'transparent',
-  border: 'none',
-  outline: 'none',
-  color: 'var(--dshell-fg)',
-  fontFamily: 'inherit',
-  fontSize: 13,
-  minWidth: 0,
-  padding: '2px 0',
-}
-const errorStyle: CSSProperties = {
-  color: '#f87171',
-  fontSize: 12,
-  padding: '0 4px',
-}
-const noticeStyle: CSSProperties = {
-  color: 'var(--dshell-muted)',
-  fontSize: 12,
-  padding: '0 4px',
-}
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
-const chipMenuStyle: CSSProperties = {
-  position: 'absolute',
-  bottom: 'calc(100% + 8px)',
-  right: 0,
-  minWidth: 200,
-  maxHeight: 360,
-  overflowY: 'auto',
-  background: 'var(--dshell-menu-bg)',
-  border: '1px solid var(--dshell-menu-border)',
-  borderRadius: 10,
-  padding: 4,
-  zIndex: 60,
-  boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55)',
-}
-const chipGroupStyle: CSSProperties = {
-  fontSize: 10.5,
-  color: 'var(--dshell-muted)',
-  textTransform: 'uppercase',
-  letterSpacing: 0.6,
-  padding: '8px 10px 4px',
-  whiteSpace: 'nowrap',
-  fontWeight: 600,
-}
-const chipItemStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  width: '100%',
-  textAlign: 'left',
-  background: 'transparent',
-  border: 'none',
-  color: 'var(--dshell-fg)',
-  cursor: 'pointer',
-  borderRadius: 6,
-  padding: '6px 10px',
-  fontSize: 12,
-  whiteSpace: 'nowrap',
-  fontFamily: 'inherit',
-  transition: 'background 80ms',
-}
-const chipItemStyleActive: CSSProperties = {
-  ...chipItemStyle,
-  background: 'var(--dshell-accent-faint)',
-  color: 'var(--dshell-accent-text)',
-}
-const swatchStyle: CSSProperties = {
-  width: 14,
-  height: 14,
-  borderRadius: 3,
-  border: '1px solid rgba(255,255,255,0.1)',
-  flex: '0 0 auto',
-}
-
-/** Apply the theme's CSS variables onto the dock root element. */
-function applyThemeVars(el: HTMLElement | null, theme: Theme): void {
-  if (el === null) return
-  const s = el.style
-  s.setProperty('--dshell-bg', theme.bg)
-  s.setProperty('--dshell-fg', theme.text)
-  s.setProperty('--dshell-muted', theme.muted)
-  s.setProperty('--dshell-border', theme.border)
-  s.setProperty('--dshell-border-strong', theme.borderStrong)
-  s.setProperty('--dshell-input-bar', theme.inputBar)
-  s.setProperty('--dshell-accent', theme.accent)
-  s.setProperty('--dshell-accent-text', theme.accentText)
-  s.setProperty('--dshell-accent-border', theme.accentBorder)
-  s.setProperty('--dshell-accent-faint', theme.accentFaint)
-  s.setProperty('--dshell-menu-bg', theme.menuBg)
-  s.setProperty('--dshell-menu-border', theme.menuBorder)
-}
-
-/**
- * Build the PS1 rewrite for a theme. Backslash-literal escapes only —
- * dsh's input sanitizer strips raw ESC bytes, while bash expands \e \u \h
- * \w at render time. Colors survive in the real PTY but dsh's scrollback
- * sanitizer strips them from the browser stream (documented dsh contract).
- * One line with the new PROMPT_COMMAND re-asserting from $DSHELL_PS1, so
- * no prompt render between assignments can reset the prompt.
- */
-function ps1For(theme: Theme): string {
-  const colored = [
-    `\\e[${theme.ps1User}m\\u@\\h\\e[0m:\\e[${theme.ps1Path}m\\w\\e[0m`,
-    '\\$ ',
-  ].join('')
-  return `export DSHELL_PS1='${colored}'; export PS1="$DSHELL_PS1"; export PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?"; PS1="$DSHELL_PS1"'\n`
-}
-
-/** Tiny preview swatch showing a theme's two PS1 colors side by side. */
-function ThemeSwatch(props: { theme: Theme }): ReactElement {
-  return createElement('span', {
-    style: {
-      ...swatchStyle,
-      background: `linear-gradient(135deg, ${props.theme.accent} 0%, ${props.theme.accent} 55%, ${props.theme.text} 55%, ${props.theme.text} 100%)`,
-    },
-  })
-}
-
-/** The dock's theme chip: a palette dot + a flat picker over the theme registry. */
-function ThemeChip(): ReactElement {
-  const [open, setOpen] = useState(false)
-  const currentId = useSyncExternalStore(
-    themeStore.subscribe,
-    () => themeStore.getSnapshot(),
-  )
-  const current = getTheme(currentId)
-  return createElement('div', { style: chipSeatStyle },
-    createElement('button', {
-      style: modeChipStyle,
-      title: '终端配色',
-      onClick: () => { setOpen(!open) },
-    }, createElement(ThemeSwatch, { theme: current }), ` ${current.label}`),
-    open ? createElement('div', { style: chipMenuStyle },
-      THEMES.map(theme => {
-        const active = theme.id === current.id
-        return createElement('button', {
-          key: theme.id,
-          style: active ? chipItemStyleActive : chipItemStyle,
-          onClick: () => {
-            setOpen(false)
-            setTheme(theme.id)
-          },
-        },
-          createElement(ThemeSwatch, { theme }),
-          createElement('span', null, theme.label),
-          active ? createElement('span', { style: { marginLeft: 'auto', color: 'var(--dshell-accent)' } }, '✓') : null,
-        )
-      }),
-    ) : null,
-  )
-}
-
-/** The dock's model chip: current selection + a flat picker over the shared directory. */
-function ModelChip(props: { face: ModelChipFace }): ReactElement {
-  const [open, setOpen] = useState(false)
-  const state = useSyncExternalStore(
-    props.face.directory.subscribe,
-    () => props.face.directory.getSnapshot(),
-  )
-  if (open && state.groups.length === 0 && state.status !== 'loading') props.face.load()
-  const current = state.current
-  const currentLabel = current === null ? '选择模型' : current.model
-  const groups = state.groups
-  return createElement('div', { style: chipSeatStyle },
-    createElement('button', {
-      style: { ...modeChipStyle, color: current === null ? '#9d9da6' : '#cbb5ff' },
-      title: '切换模型',
-      onClick: () => {
-        setOpen(!open)
-        props.face.load()
-      },
-    }, `◆ ${currentLabel}`),
-    open ? createElement('div', { style: chipMenuStyle },
-      groups.length === 0
-        ? createElement('div', { style: chipGroupStyle },
-          state.status === 'loading' ? '目录加载中…' : '目录暂不可用')
-        : groups.map(group =>
-          createElement('div', { key: group.id },
-            createElement('div', { style: chipGroupStyle }, group.name),
-            group.models.map(model => {
-              const active = current?.provider === group.id && current?.model === model.id
-              return createElement('button', {
-                key: model.id,
-                style: active ? chipItemStyleActive : chipItemStyle,
-                onClick: () => {
-                  setOpen(false)
-                  void props.face.select({ provider: group.id, model: model.id })
-                },
-              }, (active ? '✓ ' : '  ') + model.name)
-            }),
-          )),
-    ) : null,
-  )
-}
-
-/** Auto-scrolling PTY pane: only pins to the bottom when content overflows. */
-/** readline redraws erase the line with backspaces; collapse them for plain rendering. */
-function collapseBackspaces(text: string): string {
-  let out = ''
-  for (const ch of text) {
-    if (ch === '\b') out = out.slice(0, -1)
-    else out += ch
-  }
-  return out
-}
-
-/** Cap to the newest `maxBytes` UTF-8 bytes without splitting a codepoint. */
-function capUtf8Tail(text: string, maxBytes: number): string {
-  const bytes = new TextEncoder().encode(text)
-  if (bytes.length <= maxBytes) return text
-  const slice = bytes.subarray(bytes.length - maxBytes)
-  let skip = 0
-  while (skip < slice.length && (slice[skip]! & 0b1100_0000) === 0b1000_0000) skip++
-  return new TextDecoder().decode(slice.subarray(skip))
-}
-
-/**
- * Design 4.6: the recent main-PTY output as a fenced context block —
- * anchored on the newest prompt line before the trailing idle prompt,
- * capped at 100 lines and 4 KiB. Empty when the shell has no recent
- * command worth anchoring. (The plugin `source` stamp of the design is
- * host-only — the client wire always stamps `user` — so the block rides
- * inside the user message with an explicit header instead.)
- */
-function terminalContextBlock(history: string): string {
-  const plain = toPlainText(history)
-  const lines = plain.replace(/\n+$/, '').split('\n')
-  let end = lines.length
-  if (end > 0 && /^[^ ]*[@:][^ ]*[$#] $/.test(lines[end - 1] ?? '')) end -= 1
-  let start = 0
-  for (let i = end - 1; i >= 0; i--) {
-    if (/[$#] $/.test(lines[i] ?? '')) {
-      start = i + 1
-      break
-    }
-  }
-  const window = lines.slice(start, end).join('\n')
-  if (window.trim().length === 0) return ''
-  const linesCapped = window.split('\n').slice(-100).join('\n')
-  const capped = capUtf8Tail(linesCapped, 4 * 1024)
-  return `[dshell 终端上下文] 用户 main 终端最近一次命令的输入与输出:\n\`\`\`\n${capped}\n\`\`\``
-}
-
-/** Collapse readline's backspace redraws; also strip raw ANSI for plain text. */
-function toPlainText(text: string): string {
-  const withoutAnsi = text.replace(OSC_DS_PROBE, '').replace(/\u0007/g, '')
-    .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g, '')
-  return collapseBackspaces(withoutAnsi)
-}
 
 let xtermCssInjected = false
 
@@ -810,7 +516,7 @@ function PtyCanvas(props: {
     return eventSource.subscribe(() => { render(eventSource.getSnapshot()) })
   }, [eventSource, props.pty])
 
-  return createElement('div', { ref, style: { ...scrollStyle, position: 'relative' } },
+  return createElement('div', { ref, style: { ...scrollStyle, position: 'relative', width: '100%', maxWidth: '100%' } },
     createElement('span', {
       ref: probeRef,
       style: {
@@ -820,170 +526,81 @@ function PtyCanvas(props: {
     }, 'W'.repeat(40)))
 }
 
-/** The fused terminal surface: PTY scrollback above, input line at the bottom. */
-function TerminalDock(props: TerminalDockProps): ReactElement {
-  const [text, setText] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const rootRef = useRef<HTMLDivElement | null>(null)
+/** Compact dshell controls rendered into the stock composer's
+ * `conversation.input.left` slot. Stock InputBar already supplies
+ * `/`/`@` trigger popups, context meter, model select, attachment, and
+ * send/stop; this entry just adds the shell/agent mode chip and a
+ * shell-mode hint. The mode store is the per-session one defined in
+ * `apply()`; the chip is purely a view over it. */
+function DshellLeftControls(props: {
+  sessionId: SessionId | undefined
+  mode: SnapshotStore<SessionMode> | undefined
+  pty: PtyStreamService | undefined
+  setMode(next: SessionMode): void
+  submitShell(text: string): void
+}): ReactElement | null {
+  if (props.sessionId === undefined) return null
   const mode = useSyncExternalStore(
     props.mode?.subscribe ?? (() => () => {}),
     props.mode?.getSnapshot ?? (() => 'shell' as SessionMode),
   )
-  const themeId = useSyncExternalStore(
-    themeStore.subscribe,
-    () => themeStore.getSnapshot(),
+  const next: SessionMode = mode === 'shell' ? 'agent' : 'shell'
+  const glyph = mode === 'shell' ? '$' : '✦'
+  const label = mode === 'shell' ? 'shell' : 'agent'
+  return createElement('div', { style: chipSeatStyle },
+    createElement('button', {
+      style: modeChipStyle,
+      title: mode === 'shell' ? '切换到对话模式' : '切换到 shell 模式',
+      onClick: () => { props.setMode(next) },
+    }, `${glyph} ${label}`),
+    mode === 'shell' && props.pty !== undefined
+      ? createElement('div', { style: { color: 'var(--dshell-muted, #9d9da6)', fontSize: 12, marginLeft: 8 } },
+          'shell 模式下,用 /shell <cmd> 跑命令')
+      : null,
   )
-  const theme = getTheme(themeId)
-  // Server's OS identity arrives on the ws `info` frame; subscribing keeps
-  // the PS1 effect honest when it lands after mount.
-  const hostInfo = useSyncExternalStore(
-    props.pty?.host.subscribe ?? subscribeNoop,
-    () => props.pty?.host.getSnapshot() ?? EMPTY_HOST_INFO,
-  )
+}
 
-  // Re-skin the dock whenever the theme changes; also re-issue the bash
-  // PS1 so the shell prompt follows the palette (colors surface in the
-  // real PTY; the browser scrollback stays monochrome — dsh strips ANSI).
-  useEffect(() => {
-    applyThemeVars(rootRef.current, theme)
-  }, [theme])
-  const appliedThemeRef = useRef<string | undefined>(undefined)
-  useEffect(() => {
-    if (props.sessionId === undefined || props.pty === undefined) return
-    if (props.pty.host.getSnapshot().user === '') return
-    if (appliedThemeRef.current === theme.id) return
-    appliedThemeRef.current = theme.id
-    props.submitShell(ps1For(theme))
-  }, [theme, props.sessionId, props.pty, hostInfo.user])
-
-  const dispatch = (target: SessionMode, payload: string): void => {
-    setError(null)
-    if (target === 'shell') {
-      props.submitShell(payload)
-      return
-    }
-    const sessionId = props.sessionId
-    if (sessionId === undefined) {
-      setError('没有打开的会话')
-      return
-    }
-    const block = terminalContextBlock(props.pty === undefined ? '' : props.pty.read(String(sessionId)))
-    props.submitAgent(block.length === 0 ? payload : `${block}\n\n${payload}`).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    })
-  }
-
-  const submit = (): void => {
-    const raw = text
-    setText('')
-    const match = PREFIX_PATTERN.exec(raw.trim())
-    if (match !== null) {
-      const name = match[1] ?? ''
-      const payload = (match[2] ?? '').trim()
-      if (name === 'agent' || name === 'shell' || name === 'terminal') {
-        const next: SessionMode = name === 'agent' ? 'agent' : 'shell'
-        props.mode?.set(next)
-        if (payload !== '') dispatch(next, payload)
-        return
-      }
-      // Real commands: /new is client-side (the current-session selection
-      // is client-only state); /clear and stock /compact ride the host
-      // executor. Command results surface as an ephemeral notice — the
-      // command/run flow nodes render in the hidden chat scaffold.
-      if (props.sessionId === undefined) return
-      if (name === 'new') {
-        if (props.createSession === undefined) return
-        props.createSession().catch((reason: unknown) => {
-          setError(reason instanceof Error ? reason.message : String(reason))
-        })
-        return
-      }
-      if (props.runCommand === undefined) return
-      props.runCommand(raw.trim()).then((notice) => {
-        setError(null)
-        setNotice(notice.length === 0 ? null : notice)
-      }, (reason: unknown) => {
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-      return
-    }
-    if (props.sessionId === undefined) return
-    if (raw.trim() === '' && mode === 'agent') return
-    dispatch(mode, raw)
-  }
-
-  const placeholder = props.sessionId === undefined
-    ? '新建会话后开始'
-    : mode === 'shell'
-      ? '输入命令…  /agent 切到对话'
-      : '与 AI 对话…  /shell 切回命令'
-  const promptGlyph = props.sessionId === undefined
-    ? '›'
-    : mode === 'shell' ? '$' : '✦'
-
-  return createElement('div', { ref: rootRef, style: rootStyle, 'data-dshell-dock': '' },
-    props.pty !== undefined
-      ? createElement(PtyCanvas, { pty: props.pty, sessions: props.sessions, sessionId: props.sessionId, theme })
-      : createElement('div', { style: { ...scrollStyle, color: 'var(--dshell-muted)' } }, '正在加载终端…'),
-    createElement('div', { style: inputBarStyle },
-      createElement('button', {
-        style: mode === 'shell' ? modeChipStyle : modeChipStyleActive,
-        title: '点击切换模式（/agent、/shell）',
-        onClick: () => { props.mode?.set(mode === 'shell' ? 'agent' : 'shell') },
-      }, mode === 'shell' ? '$ shell' : '✦ agent'),
-      createElement('span', { style: promptPrefixStyle }, promptGlyph),
-      createElement('input', {
-        style: inputStyle,
-        value: text,
-        autoFocus: props.sessionId !== undefined,
-        spellCheck: false,
-        placeholder,
-        onChange: (event) => { setText(event.target.value) },
-        onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            submit()
-            return
-          }
-          if (mode !== 'shell' || props.sessionId === undefined || props.pty === undefined) return
-          // Readline bindings the browser input would otherwise swallow:
-          // Tab completes on the shell, Up/Down walk history via C-p/C-n
-          // (no ESC bytes — those never survive the PTY input path),
-          // Ctrl+C interrupts the foreground job (terminal convention
-          // beats copy). Recalled lines replace the box's text, matching
-          // readline's line replacement.
-          if (event.key === 'Tab') {
-            event.preventDefault()
-            props.pty.send('\t')
-          } else if (event.key === 'ArrowUp') {
-            event.preventDefault()
-            setText('')
-            props.pty.send('\u0010')
-          } else if (event.key === 'ArrowDown') {
-            event.preventDefault()
-            setText('')
-            props.pty.send('\u000e')
-          } else if (event.key === 'c' && event.ctrlKey) {
-            event.preventDefault()
-            setText('')
-            props.pty.sendSignal('SIGINT')
-          }
-        },
-      }),
-      props.sessionId !== undefined && props.model !== undefined
-        ? createElement(ModelChip, { face: props.model })
-        : null,
-      createElement(ThemeChip),
-    ),
-    error !== null ? createElement('div', { style: errorStyle }, error) : null,
-    error === null && notice !== null ? createElement('div', { style: noticeStyle }, notice) : null,
+/** dshell PTY canvas rendered into the stock composer's
+ * `conversation.composer.dock` slot (the area below the composer card
+ * in `InputBar.tsx:569-571`). It receives the same standardProps the
+ * stock owner passes — we use the explicit `pty` + `sessions` props we
+ * derive in our registration, since the dock slot's standardProps do
+ * not include PtyStreamService. */
+function DshellDockCanvas(props: {
+  sessionId: SessionId | undefined
+  pty: PtyStreamService
+  sessions: ISessions
+  theme: Theme
+}): ReactElement {
+  return createElement('div', {
+    'data-dshell-pty-dock': '',
+    style: {
+      borderTop: `1px solid ${props.theme.border}`,
+      background: props.theme.bg,
+      minHeight: 220,
+      maxHeight: '40vh',
+      width: '100%',
+      maxWidth: '100%',
+      overflow: 'hidden',
+      padding: 8,
+      boxSizing: 'border-box',
+    },
+  },
+    createElement(PtyCanvas, {
+      pty: props.pty,
+      sessions: props.sessions,
+      sessionId: props.sessionId,
+      theme: props.theme,
+    }),
   )
 }
 
 /**
- * Mount the mode store and the fused terminal dock, shadowing the stock
- * composer bar.
+ * Mount the mode store and contribute dshell pieces as entries into the
+ * stock composer slot hierarchy. The stock `InputBar` is the visible
+ * composer (see dsh `ui-conversation/.../InputBar.tsx`); dshell adds
+ * the mode chip to `conversation.input.left` and the PTY canvas to
+ * `conversation.composer.dock`.
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
@@ -1008,14 +625,6 @@ export function apply(ctx: Context): void {
     return store
   }
 
-  const scopedConversation = (sessionId: SessionId): IConversation => {
-    const conversation = sessions.scope(sessionId)?.get('conversation')
-    if (conversation === undefined) {
-      throw new Error(`dshell-mode: session "${String(sessionId)}" resolved no conversation service`)
-    }
-    return conversation
-  }
-
   /** Model chip face for one session; undefined while the session is unusable. */
   const modelSeat = (sessionId: SessionId): ModelChipFace | undefined => {
     try {
@@ -1030,46 +639,51 @@ export function apply(ctx: Context): void {
     }
   }
 
-  ctx.slots.inject('conversation.composer.bar', () => ctx.slots.register(
+  // dshell does not shadow the stock composer bar — the stock InputBar owns
+  // the composer surface, so the user gets stock features out of the box:
+  // the `/` | `@` trigger popup (commands / skills / files / sessions),
+  // context-occupancy ring, model select, attachment surface, subagent bar,
+  // and send / stop button. dshell contributes its own pieces as child
+  // entries into the stock slots:
+  //  - `conversation.input.left`   dshell mode chip + shell hint
+  //  - `conversation.composer.dock` the PTY canvas below the composer
+  // Stock's `InputBar` renders all of these through its own `renderSlot`
+  // chain (see dsh/packages/client/ui-conversation/src/client/skeleton/
+  // InputBar.tsx:518-570). dshell's TerminalDock is therefore gone — the
+  // visible surface is stock InputBar + dshell slots.
+  ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
     {
-      // The entry name IS the hole it fills; priority -1 shadows the stock
-      // InputBar (priority 0, lowest renders). The composer's child holes
-      // ('conversation.input.model' etc.) are already declared by the stock
-      // conversation.composer.bar entry — one declarer per hole, and a
-      // second declaration fails the whole load — so the dock renders the
-      // model chip directly (ModelSelect over ctx.modelDirectories) instead
-      // of through renderSlot.
-      name: 'conversation.composer.bar',
-      priority: -1,
+      // Own id so dshell can be addressed individually by future owners.
+      id: 'dshell-mode-chip',
+      name: 'conversation.input.left',
+      order: 100,
       inject: (sessionId: SessionId | undefined) => ({
         sessionId,
         mode: sessionId === undefined ? undefined : modeFor(sessionId),
-        pty,
-        sessions,
         model: sessionId === undefined ? undefined : modelSeat(sessionId),
+        sessions,
+        pty,
+        setMode: (next: SessionMode) => {
+          if (sessionId !== undefined) modeFor(sessionId).set(next)
+        },
         submitShell: (text: string) => { pty.send(text.length === 0 ? '\r' : `${text}\r`) },
-        submitAgent: async (text: string) => {
-          if (sessionId === undefined) throw new Error('dshell-mode: no session open')
-          await scopedConversation(sessionId).send(text)
-        },
-        runCommand: sessionId === undefined ? undefined : async (line: string) => {
-          const face = sessions.binding(sessionId)?.session
-          if (face === undefined) throw new Error(`dshell-mode: session "${String(sessionId)}" resolved no session face`)
-          const result = await face.command(line)
-          if (result.ok !== true) throw new Error(String(result.error.message))
-          // The command's own result text lands in the command/run event log,
-          // not this admission promise; the notice confirms admission only.
-          return result.value.matched === true ? `已执行 ${line}` : `${line} 未被识别`
-        },
-        createSession: sessionId === undefined ? undefined : async () => {
-          const list = sessions.list.getSnapshot()
-          const cwd = list.current === undefined ? undefined : list.byId[list.current]?.cwd
-          const created = await sessions.create(cwd === undefined ? {} : { cwd })
-          sessions.open(created)
-        },
       }),
     },
-    TerminalDock,
+    DshellLeftControls,
+  ))
+  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
+    {
+      id: 'dshell-pty-canvas',
+      name: 'conversation.composer.dock',
+      order: 100,
+      inject: (sessionId: SessionId | undefined) => ({
+        sessionId,
+        pty,
+        sessions,
+        theme: getTheme(DEFAULT_THEME_ID),
+      }),
+    },
+    DshellDockCanvas,
   ))
 }
 
