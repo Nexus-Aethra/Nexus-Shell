@@ -18,9 +18,30 @@ export interface SessionRow {
   /** Starts collapsed unless the user has explicitly expanded it. */
   readonly defaultCollapsed: boolean
   /** Header label override (a tool's own name). */
-  readonly label?: string
+  readonly label?: string | undefined
   /** `tool-call` correlation id, so a later result can name its tool. */
-  readonly callId?: string
+  readonly callId?: string | undefined
+  /** Event time, so a row can report how long it ran. */
+  readonly time: number
+  /** A tool call's own command, when its arguments name one. */
+  readonly command?: string | undefined
+}
+
+/** The command inside a tool call's arguments, when there is one to show. */
+export function commandOfArgs(raw: string): string | undefined {
+  if (raw.trim().length === 0) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return undefined
+    const record = parsed as Record<string, unknown>
+    for (const key of ['command', 'cmd', 'script']) {
+      const value = record[key]
+      if (typeof value === 'string' && value.trim().length > 0) return value.trim()
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Line count above which a row starts collapsed in the merged timeline. */
@@ -104,7 +125,8 @@ export function rowOf(
   role: SessionRowRole,
   key: string,
   text: string,
-  extra: { label?: string; callId?: string } = {},
+  time: number,
+  extra: { label?: string; callId?: string; command?: string | undefined } = {},
 ): SessionRow | null {
   const body = text.replace(/\n+$/, '')
   if (body.trim().length === 0) return null
@@ -120,6 +142,7 @@ export function rowOf(
     text: body,
     collapsible,
     defaultCollapsed: collapsible,
+    time,
     ...extra,
   }
 }
@@ -143,23 +166,24 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     // Legacy sessions carry the Phase 7 client-side context fence inside
     // the user's own message; show only the words beneath it.
     const stripped = /^\[dshell 终端上下文\][\s\S]*?```\n([\s\S]*)$/.exec(text)
-    const row = rowOf('user', `${event.type}:${event.seq}`, stripped === null ? text : (stripped[1] ?? ''))
+    const row = rowOf('user', `${event.type}:${event.seq}`, stripped === null ? text : (stripped[1] ?? ''), event.time)
     return row === null ? [] : [row]
   }
   if (event.type === 'assistant/message') {
     const content = event.data.message.content
     const rows: SessionRow[] = []
     const base = `${event.type}:${event.seq}`
-    const reasoning = rowOf('reasoning', `${base}:r`, reasoningOfBlocks(content), { label: '⎿ 思考过程' })
+    const reasoning = rowOf('reasoning', `${base}:r`, reasoningOfBlocks(content), event.time, { label: '思考' })
     if (reasoning !== null) rows.push(reasoning)
-    const answer = rowOf('assistant', `${base}:t`, textOfBlocks(content))
+    const answer = rowOf('assistant', `${base}:t`, textOfBlocks(content), event.time)
     if (answer !== null) rows.push(answer)
     toolCallsOfBlocks(content).forEach((call, index) => {
       toolNames.set(call.id, call.name)
       const preview = compactArguments(call.args)
-      const row = rowOf('call', `${base}:c${String(index)}`, preview, {
-        label: `→ ${call.name}`,
+      const row = rowOf('call', `${base}:c${String(index)}`, preview, event.time, {
+        label: call.name,
         callId: call.id,
+        command: commandOfArgs(call.args),
       })
       if (row !== null) rows.push(row)
     })
@@ -171,18 +195,21 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     const body = resultText(event.data.message.content)
     const failed = event.data.error !== undefined
     const text = body.length > 0 ? body : (failed ? '（失败，无输出）' : '（无文本输出）')
-    const row = rowOf('tool', `${event.type}:${event.seq}`, text, { label: `← ${name}${failed ? ' ✗' : ''}` })
+    const row = rowOf('tool', `${event.type}:${event.seq}`, text, event.time, {
+      label: `${name}${failed ? ' ✗' : ''}`,
+      callId,
+    })
     return row === null ? [] : [row]
   }
   if (event.type === 'command/done') {
     const outcome = event.data.kind === 'error' ? `失败:${event.data.text ?? ''}` : (event.data.text ?? '')
-    const row = rowOf('command', `${event.type}:${event.seq}`, outcome.trim().length === 0 ? '完成' : outcome)
+    const row = rowOf('command', `${event.type}:${event.seq}`, outcome.trim().length === 0 ? '完成' : outcome, event.time)
     return row === null ? [] : [row]
   }
   if (event.type === 'command/run') {
     const args = event.data.args
     const text = args === undefined || args === '' ? event.data.name : `${event.data.name} ${args}`
-    const row = rowOf('command', `${event.type}:${event.seq}`, text)
+    const row = rowOf('command', `${event.type}:${event.seq}`, text, event.time)
     return row === null ? [] : [row]
   }
   return []

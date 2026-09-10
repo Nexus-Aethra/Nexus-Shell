@@ -236,12 +236,11 @@ export const BLOCK_COLOR: Record<TurnBlock['status'], string> = {
 
 /** Header text of a block, without color. */
 export function blockLabel(block: TurnBlock): string {
-  const turn = block.turn === undefined ? '' : `#${String(block.turn)} · `
   const status = block.status === 'running'
     ? '运行中'
     : block.status === 'done' ? '✓ 完成' : block.status === 'aborted' ? '◼ 已中断' : '✗ 出错'
   const title = block.title.length > 60 ? `${block.title.slice(0, 57)}…` : block.title
-  return `${turn}${status}${title.length === 0 ? '' : ` · ${title}`}`
+  return `${status}${title.length === 0 ? '' : ` · ${title}`}`
 }
 
 /** Gutter style a block's rule carries. */

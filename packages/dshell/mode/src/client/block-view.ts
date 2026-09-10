@@ -23,57 +23,16 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { blockLabel, createFold, foldEvent } from './blocks.js'
+import { createFold, foldEvent } from './blocks.js'
+import { AgentBlock } from './agent-block.js'
 import { assembleTimeline, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
-import { SESSION_ROW_LABEL, sanitizeRowText, type SessionRow } from './session-rows.js'
-import { useDshellTheme, type Theme } from './theme.js'
-
-/** Status colours a task header uses, mirroring the canvas's ANSI palette. */
-const STATUS_COLOR: Record<string, string> = {
-  running: '#06989a',
-  done: '#4e9a06',
-  aborted: '#c4a000',
-  failed: '#cc0000',
-}
-
-/** Content lines a folded task card previews. */
-const PREVIEW_LINES = 2
-
-/**
- * Row colours, matching the ANSI palette the canvas painted each role with, so
- * a task reads the same in either view: the user's words, the answer, the
- * chain of thought, a tool call and its result are all distinguishable.
- */
-const ROW_COLOR: Record<SessionRow['role'], string> = {
-  user: '#06989a',
-  assistant: '#4e9a06',
-  reasoning: '#6b7280',
-  call: '#75507b',
-  tool: '#3465a4',
-  command: '#c4a000',
-}
-
-/** One session row as a coloured, labelled line. */
-function RowLine(props: { row: SessionRow; theme: Theme; dim: boolean; clamp: boolean }): ReactElement {
-  const { row, theme } = props
-  const color = props.dim ? theme.muted : ROW_COLOR[row.role]
-  return createElement('div', {
-    style: {
-      whiteSpace: 'pre-wrap',
-      wordBreak: 'break-word',
-      ...(props.clamp ? { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } : {}),
-    },
-  },
-    createElement('span', { style: { color, marginRight: '6px' } }, row.label ?? SESSION_ROW_LABEL[row.role]),
-    createElement('span', { style: { color: props.dim ? theme.muted : theme.text } }, sanitizeRowText(row.text)),
-  )
-}
+import { useDshellTheme } from './theme.js'
 
 /** A shell region: a plain terminal, no header and no frame of its own. */
 function ShellRegion(props: {
   item: Extract<ViewItem, { kind: 'shell' }>
-  theme: Theme
+  theme: import('./theme.js').Theme
 }): ReactElement {
   const host = useRef<HTMLDivElement | null>(null)
   const handle = useRef<ReturnType<typeof createSpanTerminal> | undefined>(undefined)
@@ -92,54 +51,6 @@ function ShellRegion(props: {
     'data-dshell-shell-region': '',
     style: { fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE, lineHeight: `${String(SPAN_LINE_HEIGHT)}px` },
   })
-}
-
-/** An agent task card. */
-function AgentBlock(props: {
-  item: Extract<ViewItem, { kind: 'agent' }>
-  theme: Theme
-}): ReactElement {
-  const block = props.item.block
-  const [expanded, setExpanded] = useState(false)
-  const rows = block.rows
-  const body = expanded ? rows : rows.slice(-PREVIEW_LINES)
-  return createElement('div', { 'data-dshell-block': 'agent', style: cardStyle(props.theme) },
-    createElement('div', {
-      onClick: () => { setExpanded(value => !value) },
-      style: {
-        display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer',
-        fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE, lineHeight: '18px',
-      },
-    },
-      createElement('span', { style: { color: STATUS_COLOR[block.status] ?? props.theme.text } }, '▸'),
-      createElement('span', {
-        style: { color: props.theme.text, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-      }, blockLabel(block)),
-      createElement('span', { style: { color: props.theme.muted, fontSize: 11 } }, expanded ? '▾' : '▸'),
-    ),
-    ...body.map((row, index) => createElement(RowLine, {
-      key: `${row.key}:${String(index)}`,
-      row,
-      theme: props.theme,
-      dim: !expanded,
-      clamp: !expanded,
-    })),
-    block.notice === undefined ? null : createElement('div', {
-      style: { color: props.theme.muted, fontSize: 11, marginTop: '2px' },
-    }, block.notice.text),
-  )
-}
-
-function cardStyle(theme: Theme): Record<string, string> {
-  return {
-    border: `1px solid ${theme.border}`,
-    borderLeft: `3px solid ${theme.borderStrong}`,
-    borderRadius: '6px',
-    background: theme.inputBar,
-    margin: '6px 0',
-    padding: '6px 8px',
-    overflow: 'hidden',
-  }
 }
 
 /** The block view seat: the whole content column above the composer. */
@@ -259,7 +170,7 @@ export function BlockView(props: {
     },
       ...items.map(item => (item.kind === 'shell'
         ? createElement(ShellRegion, { key: `${item.key}:${String(version)}`, item, theme })
-        : createElement(AgentBlock, { key: item.key, item, theme }))),
+        : createElement(AgentBlock, { key: item.key, block: item.block, theme }))),
     ),
   )
 }

@@ -508,6 +508,7 @@ export function PtyCanvas(props: {
             role: chunk.type === 'reasoning-delta' ? 'reasoning' : 'assistant',
             key: 'stream',
             text,
+            time: entry.event.time,
             collapsible: false,
             defaultCollapsed: false,
             ...(chunk.type === 'reasoning-delta' ? { label: '⎿ 思考过程' } : {}),
