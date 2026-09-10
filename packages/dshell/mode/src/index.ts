@@ -30,9 +30,13 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
 // Type-only: pulls the host agent Events merge (`agent/pre-step`).
 import type {} from '@deepseek-ai/dsh-agent'
+// Type-only: pulls the settings service merge (optional `ctx.settings`).
+import type {} from '@deepseek-ai/dsh-settings'
 // Type-only: pulls the bridge service merge (ctx.dshellTerminalBridge).
 import type {} from '@deepseek-ai/dsh-dshell-terminal-bridge'
 import type { TerminalDelta } from '@deepseek-ai/dsh-dshell-terminal-bridge'
+import { DSHELL_SETTINGS_NAMESPACE } from './theme-settings.js'
+import { DshellSettingsSchema } from './theme-settings-schema.js'
 
 export const name = '@deepseek-ai/dsh-dshell-mode/host'
 
@@ -97,6 +101,12 @@ function formatDelta(delta: TerminalDelta): string | undefined {
  * @param ctx - host root context.
  */
 export function apply(ctx: Context): void {
+  // The settings namespace the Plugins section dispatches a card for: the
+  // browser half registers its card under this same key. Registration is all
+  // it takes — the Host stores the palette id without interpreting it.
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.register(DSHELL_SETTINGS_NAMESPACE, DshellSettingsSchema)
+  })
   const bridge = ctx.dshellTerminalBridge
   /** What each agent's model has already been shown. */
   const watermarks = new Map<Agent, string>()

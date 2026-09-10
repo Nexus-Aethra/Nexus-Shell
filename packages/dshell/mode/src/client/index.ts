@@ -1,4 +1,3 @@
-import { createElement, useSyncExternalStore, type ReactElement } from 'react'
 import { type Context } from '@deepseek-ai/cordis'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 // Type-only: pulls the sessions service merge (ctx.sessions).
@@ -8,8 +7,10 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the renderer-owned slots service (ctx.slots) and the
 // generic SlotMap interface that constrains the `inject` name string.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-// Type-only: pulls the settings SlotMap (`settings.general.item`).
+// Type-only: pulls the settings SlotMap and the ctx.settingsScope merge.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: pulls the plugin-card SlotMap (`settings.plugin.item`).
+import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 // Type-only: pulls the `ctx.inputTriggers` service merge; the named types are
 // the frozen source contract (`CommandClaim`/`PickOutcome` re-exported there).
 import type {
@@ -21,14 +22,16 @@ import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/c
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../theme-settings.js'
 import { BlockView } from './block-view.js'
 import { DshellLeftControls, DshellTerminalView } from './controls.js'
-import { THEMES, setTheme, themeStore } from './theme.js'
+import { DshellThemeCard } from './theme-card.js'
+import { adoptTheme, connectThemeSettings } from './theme.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
 
 export const name = '@deepseek-ai/dsh-dshell-mode/client'
 
-export const inject = ['slots', 'sessions', 'dshellPtyStream', 'modelDirectories', 'uiConversation'] as const
+export const inject = ['slots', 'sessions', 'dshellPtyStream', 'modelDirectories', 'uiConversation', 'settingsScope'] as const
 
 /** Per-message routing mode for one session. */
 const MODE_MENU_ROWS: readonly { name: 'shell' | 'agent'; description: string }[] = [
@@ -123,65 +126,6 @@ function modeSwitchSource(deps: {
 }
 
 /**
- * Terminal-palette picker for the Settings General section. It lives beside
- * the registry it writes (the module-level `themeStore`), so the palette has
- * one owner and no cross-plugin service is needed to reach it.
- */
-function DshellThemeSettingsRow(): ReactElement {
-  const current = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
-  return createElement('div', {
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 8,
-      padding: '16px 0',
-      borderBottom: '0.5px solid var(--dsw-alias-border-l2)',
-    },
-  },
-    createElement('div', {
-      style: { fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-primary)' },
-    }, '终端配色'),
-    createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
-      THEMES.map(theme => createElement('button', {
-        key: theme.id,
-        type: 'button',
-        'aria-pressed': current === theme.id,
-        onClick: () => { setTheme(theme.id) },
-        style: {
-          flex: '1 1 140px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 8,
-          padding: '14px 16px',
-          borderRadius: 16,
-          cursor: 'pointer',
-          font: 'inherit',
-          fontSize: 13,
-          color: 'var(--dsw-alias-label-primary)',
-          border: current === theme.id
-            ? '1px solid var(--dsw-alias-brand-primary)'
-            : '0.5px solid var(--dsw-alias-border-l4)',
-          background: current === theme.id ? 'var(--dsw-alias-bg-module-platform)' : 'transparent',
-        },
-      },
-        createElement('span', {
-          style: {
-            display: 'inline-block',
-            width: 10,
-            height: 10,
-            borderRadius: 999,
-            background: theme.accent,
-            border: `1px solid ${theme.borderStrong}`,
-          },
-        }),
-        theme.label,
-      )),
-    ),
-  )
-}
-
-/**
  * Mount the mode store and contribute dshell pieces as entries into the
  * stock composer slot hierarchy. The stock `InputBar` is the visible
  * composer (see dsh `ui-conversation/.../InputBar.tsx`); dshell adds
@@ -231,6 +175,24 @@ export function apply(ctx: Context): void {
   /** Send one line (or a bare Enter) to the bridge-owned main shell. */
   const sendShell = (text: string): void => { pty.send(text.length === 0 ? '\r' : `${text}\r`) }
 
+  // The palette's durable half. The scope is the Host settings document's
+  // mirror: its value wins over the localStorage pre-paint cache on arrival
+  // (another browser's change, or this user's earlier session), and each local
+  // pick is written back through it. Writing is skipped while the transport
+  // reports the namespace unwritable — the local store has already moved, so
+  // the pick still takes effect for this browser instead of silently failing.
+  const themeScope = ctx.settingsScope.bind<DshellSettings>({ namespace: DSHELL_SETTINGS_NAMESPACE })
+  connectThemeSettings((id) => {
+    if (!themeScope.getSnapshot().writable) return
+    void themeScope.set('theme', id).catch(() => { /* the scope republishes on failure */ })
+  })
+  const syncTheme = (): void => {
+    const snapshot = themeScope.getSnapshot()
+    if (snapshot.status === 'ready') adoptTheme(snapshot.value?.theme)
+  }
+  ctx.effect(() => themeScope.subscribe(syncTheme), 'dshell-mode: theme settings mirror')
+  syncTheme()
+
   // dshell does not shadow the stock composer bar — the stock InputBar owns
   // the composer surface, so the user gets stock features out of the box:
   // the `/` | `@` trigger popup (commands / skills / files / sessions),
@@ -270,11 +232,13 @@ export function apply(ctx: Context): void {
       'dshell-mode: /shell + /agent source',
     )
   })
-  // The terminal palette is a preference with no page of its own, so it
-  // belongs in the General section's item seat — out of the composer.
-  ctx.slots.inject('settings.general.item', () => ctx.slots.register(
-    { name: 'settings.general.item', id: 'dshell-theme', order: 200 },
-    DshellThemeSettingsRow,
+  // The palette is a dshell plugin setting, so it lives in the Plugins
+  // settings section's "configurable" tab as a card keyed by the namespace it
+  // edits — the same namespace this package's Host half registers, which is
+  // what makes the tab dispatch the card at all.
+  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register(
+    { name: 'settings.plugin.item', key: DSHELL_SETTINGS_NAMESPACE },
+    DshellThemeCard,
   ))
   // The terminal IS the conversation surface, so this entry takes over the
   // stock `chat` view cell (same id, lower priority shadows it) instead of

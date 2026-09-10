@@ -41,9 +41,12 @@
     "@deepseek-ai/dsh-client-ui-model-selection": "link:../../../dsh/packages/client/ui-model-selection",
     "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
     "@deepseek-ai/dsh-client-ui-settings": "link:../../../dsh/packages/client/ui-settings",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "link:../../../dsh/packages/client/ui-settings-plugins",
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
     "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
+    "@deepseek-ai/dsh-settings": "link:../../../dsh/packages/settings/settings",
+    "@deepseek-ai/schemastery": "link:../../../dsh/vendor/schemastery",
     "@xterm/xterm": "6.0.0"
   },
   "devDependencies": {

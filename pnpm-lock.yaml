@@ -164,6 +164,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-settings':
         specifier: link:../../../dsh/packages/client/ui-settings
         version: link:../../../dsh/packages/client/ui-settings
+      '@deepseek-ai/dsh-client-ui-settings-plugins':
+        specifier: link:../../../dsh/packages/client/ui-settings-plugins
+        version: link:../../../dsh/packages/client/ui-settings-plugins
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
@@ -173,6 +176,12 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../dsh/packages/settings/settings
+        version: link:../../../dsh/packages/settings/settings
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../dsh/vendor/schemastery
+        version: link:../../../dsh/vendor/schemastery
       '@xterm/xterm':
         specifier: 6.0.0
         version: 6.0.0
