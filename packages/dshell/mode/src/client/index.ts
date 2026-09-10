@@ -24,7 +24,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../theme-settings.js'
 import { BlockView } from './block-view.js'
-import { DshellLeftControls, DshellTerminalView } from './controls.js'
+import { DshellLeftControls } from './controls.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
@@ -129,8 +129,8 @@ function modeSwitchSource(deps: {
  * Mount the mode store and contribute dshell pieces as entries into the
  * stock composer slot hierarchy. The stock `InputBar` is the visible
  * composer (see dsh `ui-conversation/.../InputBar.tsx`); dshell adds
- * the mode chip to `conversation.input.left` and the PTY canvas to
- * `conversation.composer.dock`.
+ * the mode chip to `conversation.input.left` and the block view to the
+ * conversation's view cell.
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
@@ -199,9 +199,8 @@ export function apply(ctx: Context): void {
   // context-occupancy ring, model select, attachment surface, subagent bar,
   // and send / stop button. dshell contributes exactly two entries:
   //  - `conversation.input.left`  the dual-mode chip + submit router
-  //  - `conversation.view` (id `terminal`)  the full-bleed PTY canvas
-  // The canvas is a conversation VIEW, not a composer child: the view
-  // area is the content column above the composer, while
+  //  - `conversation.view` (id `chat`)  the block view
+  // The view is the content column above the composer, while
   // `conversation.composer.dock` lives inside the composer card.
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
     {
@@ -266,25 +265,6 @@ export function apply(ctx: Context): void {
       }),
     },
     BlockView,
-  ))
-  // The original single-canvas surface, kept as a sibling for the one thing it
-  // still does better: raw keyboard ownership (`onData` for Tab, arrows,
-  // Ctrl+C) and full-screen programs. Nothing shows the tab strip, so it is
-  // reachable only by a stored view id — it is a fallback, not a peer.
-  ctx.slots.inject('conversation.view', () => ctx.slots.register(
-    {
-      id: 'canvas',
-      name: 'conversation.view',
-      order: 10,
-      label: () => '终端画布',
-      inject: (sessionId: SessionId | undefined) => ({
-        sessionId,
-        pty,
-        sessions,
-        mode: sessionId === undefined ? undefined : modeFor(sessionId),
-      }),
-    },
-    DshellTerminalView,
   ))
 }
 

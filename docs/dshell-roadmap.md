@@ -453,15 +453,20 @@ priority), which is `DEFAULT_VIEW_ID` in
 `ui-conversation/src/client/view-selection.ts`. That placement is
 load-bearing, not cosmetic: a sibling tab is reachable only through a
 stored view selection, and dshell hides the tab strip, so while the
-canvas held `chat` a fresh session silently opened the old surface. The
-canvas is now the sibling (id `canvas`), kept only for raw keyboard
-ownership and full-screen programs.
+canvas held `chat` a fresh session silently opened the old surface.
 
-Still open: terminal input parity in the block view (`onData` for Tab,
-arrows and Ctrl+C still belongs to the canvas tab), full-screen programs
-(PTY rows follow the seat, but a region renders at its own content
-height), per-row folding inside an expanded task card, and virtualizing
-long sessions.
+The canvas is now deleted — `canvas.ts`, its `DshellTerminalView`, the
+ANSI block renderers in `blocks.ts` (`blockSegments`, `renderNotice`, the
+gutter/colour helpers) and `activeTerm`, which existed only so the
+composer could copy the canvas selection. The block view is the only
+conversation surface.
+
+Still open: terminal input parity (`onData` for Tab, arrows and Ctrl+C
+had no owner once the canvas went: shell input goes through the composer,
+so interactive full-screen programs still need a terminal that owns the
+keyboard), full-screen programs (PTY rows follow the seat, but a region
+renders at its own content height), per-row folding inside an expanded
+task card, and virtualizing long sessions.
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 
@@ -622,11 +627,18 @@ Goal: a session can run on a remote device instead of this machine.
 Shipped:
 
 - `dshell-ssh` (new host+client package): a durable device registry
-  (name, host, port, user, remote directory) whose private keys are
-  separate 0600 files under `$DSH_HOME/dshell/ssh/keys/`, a card in the
-  Plugins settings section to add/edit/test/delete them, and a durable
-  session→device assignment chosen in the new-session dialog (the row
-  then reads `名称 ⌁ 设备`).
+  (name, host, port, user, remote directory, login method) whose secrets
+  are separate 0600 files under `$DSH_HOME/dshell/ssh/keys/`, a card in
+  the Plugins settings section to add/edit/test/delete them, and a durable
+  session→device assignment chosen in the new-session dialog (the row then
+  reads `名称 ⌁ 设备`). The dialog asks for the run target first — a
+  本机 / SSH 设备 slider — and only shows the device list once SSH is
+  chosen; the device's directory then replaces the local continuity
+  default.
+- Login method is per device: `key` (stored private key, or the harness
+  user's own agent/config when none is stored) or `password` (stored
+  0600, handed to ssh through OpenSSH's askpass hook — ssh has no password
+  flag, and the secret never appears in a command line).
 - Routing: `ctx.shell.resolve` is wrapped, so a bound session's shell
   commands are rewritten to `ssh … 'cd <dir> && exec bash -lc <command>'`
   and the stock executor keeps owning timeouts, caps, streaming,

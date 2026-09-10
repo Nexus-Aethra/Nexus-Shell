@@ -8,11 +8,9 @@ import {
   type ReactElement,
 } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { activeTerm, useDshellTheme } from './theme.js'
-import { PtyCanvas } from './canvas.js'
+import { useDshellTheme } from './theme.js'
 import type { SessionMode } from './types.js'
 
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
@@ -71,8 +69,8 @@ export function DshellLeftControls(props: {
   attachmentsRef.current = attachmentCount
   const modeRef = useRef(mode)
   modeRef.current = mode
-  // Agent mode gives the keyboard back to the stock composer editor; the
-  // canvas blurs itself in PtyCanvas (focus follows mode, design 4.8).
+  // Agent mode gives the keyboard back to the stock composer editor. The
+  // block view never takes focus for itself, so nothing has to be blurred.
   useEffect(() => {
     if (mode !== 'agent') return
     const editor = document.querySelector('[contenteditable="true"][role="textbox"]')
@@ -117,17 +115,6 @@ export function DshellLeftControls(props: {
           clearDraft('')
           pty.send('\u0003')
           return
-        }
-        if (mod && event.shiftKey && key === 'c') {
-          const selection = activeTerm.current?.getSelection() ?? ''
-          if (selection.length > 0) {
-            if (navigator.clipboard !== undefined) {
-              void navigator.clipboard.writeText(selection).catch(() => { /* clipboard denied */ })
-            }
-            event.preventDefault()
-            event.stopImmediatePropagation()
-            return
-          }
         }
         if (mod && event.shiftKey && key === 'v' && navigator.clipboard !== undefined) {
           event.preventDefault()
@@ -212,49 +199,3 @@ export class DshellViewBoundary extends Component<{ children: ReactElement }, { 
     return this.props.children
   }
 }
-
-/**
- * The dshell main surface: the PTY canvas registered as the `terminal`
- * conversation view (`conversation.view`, id `terminal`). The view area
- * is the whole content column above the composer, so the canvas is
- * full-bleed — the composer card below stays stock (its `/` | `@`
- * popups, model select, context ring, attachments).
- */
-export function DshellTerminalView(props: {
-  sessionId: SessionId | undefined
-  pty: PtyStreamService
-  sessions: ISessions
-  mode: SnapshotStore<SessionMode> | undefined
-}): ReactElement {
-  // Palette changes re-render the canvas in place (PtyCanvas re-themes xterm
-  // from props.theme without recreating the terminal).
-  const theme = useDshellTheme()
-  const mode = useSyncExternalStore(
-    props.mode?.subscribe ?? (() => () => {}),
-    props.mode?.getSnapshot ?? (() => 'shell' as SessionMode),
-  )
-  return createElement('div', {
-    'data-dshell-terminal-view': '',
-    style: {
-      position: 'relative',
-      display: 'flex',
-      flexDirection: 'column',
-      flex: '1 1 auto',
-      minHeight: 0,
-      minWidth: 0,
-      overflow: 'hidden',
-      background: theme.bg,
-    },
-  },
-    createElement(DshellViewBoundary, null,
-      createElement(PtyCanvas, {
-        pty: props.pty,
-        sessions: props.sessions,
-        sessionId: props.sessionId,
-        theme,
-        mode,
-      }),
-    ),
-  )
-}
-

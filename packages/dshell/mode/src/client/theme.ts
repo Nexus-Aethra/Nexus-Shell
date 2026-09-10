@@ -2,7 +2,7 @@
  * Dshell palettes and the xterm mapping.
  *
  * The registry is a module-level snapshot store so a palette switch re-renders
- * every seat (chips, canvas, block view, settings card) without prop drilling.
+ * every seat (chips, block view, settings card) without prop drilling.
  *
  * The selected id is authoritative in the Host settings document
  * (`../theme-settings.ts`, namespace `dshell`) and is edited through the card
@@ -15,7 +15,6 @@
 import { useSyncExternalStore } from 'react'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ITheme } from '@xterm/xterm'
-import { Terminal as XtermTerminal } from '@xterm/xterm'
 import { DEFAULT_THEME_ID, isThemeId, type DshellThemeId } from '../theme-settings.js'
 import { XTERM_CSS } from './xterm-css.js'
 
@@ -193,7 +192,7 @@ export function injectXtermCss(): void {
   xtermCssInjected = true
   const style = document.createElement('style')
   // xterm's own CSS leaves the viewport opaque in some renderers; force the
-  // whole terminal tree transparent so the canvas blends with the app
+  // whole terminal tree transparent so each terminal blends with the app
   // surface instead of painting a black card.
   style.textContent = `${XTERM_CSS}\n.xterm,.xterm-viewport,.xterm-screen,.xterm-scrollable-element{background-color:transparent !important;}`
   document.head.append(style)
@@ -202,13 +201,6 @@ export function injectXtermCss(): void {
 /** Map a dock theme palette onto the xterm renderer. The background stays
  * fully transparent so the terminal blends with the app surface instead of
  * painting its own black card (the palette's `bg` is `transparent` too). */
-/**
- * The one live canvas terminal. The composer's key router needs it to copy the
- * terminal selection (Ctrl+Shift+C) while the keyboard sits in the input line
- * rather than the canvas.
- */
-export const activeTerm: { current: XtermTerminal | null } = { current: null }
-
 export function xtermTheme(theme: Theme): ITheme {
   return {
     background: '#00000000',
