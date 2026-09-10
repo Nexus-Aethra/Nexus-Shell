@@ -3,10 +3,44 @@
  * collapsible block per task (or supervised phase), and its renderers.
  */
 
-import type { SessionEventLike, SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+import type {
+  AssistantLiveChunkEvent,
+  SessionEventLike,
+  SessionEventLikeEntry,
+} from '@deepseek-ai/dsh-api-session-controller/client'
 import { sanitizeRowText, sessionRowsOf, type SessionRow } from './session-rows.js'
 
 export const BLOCK_LINES = 3
+
+/**
+ * The attempt currently writing into a block, accumulated from the client-only
+ * live chunks (`assistant/live-chunk`).
+ *
+ * Held apart from `rows` on purpose: rows are durable session events, while
+ * this is a partial line the model is still producing. It is displayed after
+ * them and dropped the moment the durable message arrives, so the reader never
+ * sees the same text twice.
+ *
+ * Keyed by `attemptId` because a retry reuses the same turn and step: text
+ * accumulated for one attempt must never be shown as another's.
+ */
+export interface LiveStream {
+  /** The attempt these chunks belong to. */
+  readonly attemptId: string
+  /** The turn the attempt belongs to. */
+  readonly turn: number
+  /** The step the attempt belongs to. */
+  readonly step: number
+  /** Answer text so far (`text-delta`). */
+  text: string
+  /** Thinking so far (`reasoning-delta`). */
+  reasoning: string
+  /** Timestamp of the newest chunk, for the row's time. */
+  time: number
+}
+
+/** The mutable live stream of one block, created on the first visible chunk. */
+type MutableStream = { -readonly [K in keyof LiveStream]: LiveStream[K] }
 
 /** One agent task or supervised phase, folded into a collapsible block. */
 export interface TurnBlock {
@@ -19,8 +53,8 @@ export interface TurnBlock {
   status: 'running' | 'done' | 'aborted' | 'failed'
   /** The block's rows, oldest first. */
   readonly rows: SessionRow[]
-  /** Newest live-streamed row while the model writes; folded in until settle. */
-  stream: SessionRow | undefined
+  /** The attempt streaming into this block right now; dropped at settlement. */
+  stream: MutableStream | undefined
   /** Timeline anchor: when the block opened. */
   readonly startedAt: number
   /** `step/start` count and summed tokens, for the closing notice. */
@@ -136,6 +170,50 @@ export function noticeOf(block: TurnBlock, reason: { kind: string; error?: { mes
 }
 
 /**
+ * Append one client-only live chunk to a block's streaming line.
+ *
+ * Only text and reasoning deltas are visible; `block-start`, `block-end`,
+ * `usage` and `finish` carry no new prose and are ignored. A chunk belonging to
+ * a different attempt than the one on record starts a fresh accumulation, so a
+ * retry never inherits the abandoned attempt's half-written text.
+ * @param block - the block the model is writing into, if one is open.
+ * @param event - the transient live-chunk event.
+ * @returns whether anything visible changed (the caller repaints only then).
+ */
+export function noteLiveChunk(block: TurnBlock | undefined, event: AssistantLiveChunkEvent): boolean {
+  if (block === undefined) return false
+  const chunk = event.data.chunk
+  if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta') return false
+  const attemptId = String(event.data.attemptId)
+  if (block.stream === undefined || block.stream.attemptId !== attemptId) {
+    block.stream = {
+      attemptId,
+      turn: event.data.turn,
+      step: event.data.step,
+      text: '',
+      reasoning: '',
+      time: event.time,
+    }
+  }
+  if (chunk.type === 'text-delta') block.stream.text += chunk.text
+  else block.stream.reasoning += chunk.text
+  block.stream.time = event.time
+  return chunk.text.length > 0
+}
+
+/**
+ * Drop a block's streaming line: the durable message that supersedes it has
+ * arrived (or the turn ended), so keeping it would show the text twice.
+ * @param block - the block to clear.
+ * @returns whether a stream was actually dropped.
+ */
+export function clearStream(block: TurnBlock | undefined): boolean {
+  if (block === undefined || block.stream === undefined) return false
+  block.stream = undefined
+  return true
+}
+
+/**
  * Fold one durable event into the block model. Blocks open on a user request
  * or a turn start, split on a supervised phase change (a new in-progress todo
  * item), and close on `turn/end`. Every other event contributes rows.
@@ -181,6 +259,9 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
       : findLast(fold.blocks, candidate => candidate.turn === turn && candidate.status === 'running')
     if (block === undefined) return
     block.status = statusOfReason(event.data.reason)
+    // The turn is over: whatever the transient rows had accumulated is either
+    // superseded by the durable message below or was never completed.
+    clearStream(block)
     if (block === fold.open) {
       fold.open = undefined
       fold.phase = undefined
@@ -213,6 +294,10 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
     return
   }
   const block = fold.open ?? openBlock(fold, time, '')
+  // The durable message is the authoritative text of the attempt that was
+  // streaming, so the partial line it supersedes goes away here rather than
+  // waiting for the turn to end.
+  if (event.type === 'assistant/message') clearStream(block)
   block.rows.push(...rows)
   noteStep(block, event)
   block.tokens += usageTokens(event)

@@ -159,6 +159,18 @@ export class DshellTerminalBridge extends Service {
 
   private readonly mains = new Map<Agent, MainRecord>()
   private readonly pendingMain = new Map<Agent, Promise<MainRecord>>()
+  /**
+   * The grid each session's view last asked for, kept per dsh session id.
+   *
+   * A resize can arrive before the session's main shell exists (the view
+   * measures on mount, the bind is still spawning) and before the client is
+   * registered as bound, so it is remembered here and applied at spawn; a
+   * request that is only applied when a shell happens to exist is a request
+   * the session never sees, and the PTY then keeps the backend's default
+   * columns forever — the shell wraps and pads its output to that width while
+   * the view renders at its own.
+   */
+  private readonly pendingSizes = new Map<string, { cols: number; rows: number }>()
   private readonly clients = new Map<string, Set<WebSocket>>()
   private readonly boundSession = new Map<WebSocket, string>()
   /** OS identity for the bash prompt; safe for embedding inside PS1 quotes. */
@@ -319,6 +331,11 @@ export class DshellTerminalBridge extends Service {
       stopOutput: () => {},
       stopExit: () => {},
     }
+    // Start at the grid the view asked for, not the backend's default: the
+    // shell's first prompt decides where every later line wraps, and the view
+    // is already sized when a session is opened or restored.
+    const requested = this.pendingSizes.get(dshSessionId)
+    if (requested !== undefined) session.resize(requested.cols, requested.rows)
     this.mains.set(agent, record)
     // Raw ANSI push: every output byte lands in the persisted buffer and on
     // the wire untouched — the canvas renders it natively. Suppressed while
@@ -647,6 +664,21 @@ export class DshellTerminalBridge extends Service {
         return
       }
       const bound = this.boundSession.get(client)
+      // Handled before the bound check on purpose: the view sends its grid the
+      // moment its seat is laid out, which can be before this client finished
+      // binding (and before the shell it names was spawned).
+      if (frame.kind === 'resize' && typeof frame.cols === 'number' && typeof frame.rows === 'number') {
+        const session = bound ?? frame.sessionId
+        if (session === undefined) return
+        if (bound !== undefined && frame.sessionId !== undefined && frame.sessionId !== bound) return
+        const cols = Math.max(1, Math.floor(frame.cols))
+        const rows = Math.max(1, Math.floor(frame.rows))
+        this.pendingSizes.set(session, { cols, rows })
+        const resizeAgent = this.ctx.get('agents')?.get(session as SessionId)
+        const resizeRecord = resizeAgent === undefined ? undefined : this.mains.get(resizeAgent)
+        resizeRecord?.session.resize(cols, rows)
+        return
+      }
       if (bound === undefined || (frame.sessionId !== undefined && frame.sessionId !== bound)) return
       if (frame.kind === 'input' && typeof frame.text === 'string') {
         this.feed(bound, frame.text)
@@ -659,12 +691,6 @@ export class DshellTerminalBridge extends Service {
           })
         }
         return
-      }
-      // Resize is real on the raw backend: the browser canvas drives cols/rows.
-      if (frame.kind === 'resize' && typeof frame.cols === 'number' && typeof frame.rows === 'number') {
-        void this.ensureMainShell(bound).then((record) => {
-          record.session.resize(Math.floor(frame.cols as number), Math.floor(frame.rows as number))
-        }, () => {})
       }
     })
     client.on('close', () => {

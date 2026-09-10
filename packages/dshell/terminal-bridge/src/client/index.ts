@@ -160,6 +160,16 @@ export class PtyStreamService extends Service {
   private desiredId: string | undefined
   private boundId: string | undefined
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * The grid the view last asked for.
+   *
+   * Kept because the request can arrive before the socket is up (the view
+   * measures on mount, the socket may still be connecting) and because a
+   * reconnected or newly spawned shell must not start at the backend's default
+   * size. Without this the PTY keeps whatever size it was spawned with, so the
+   * shell wraps and pads its output to a width the view does not have.
+   */
+  private desiredSize: { cols: number; rows: number } | undefined
 
   constructor(ctx: Context) {
     super(ctx, 'dshellPtyStream')
@@ -240,10 +250,24 @@ export class PtyStreamService extends Service {
     this.socket.send(JSON.stringify({ kind: 'input', sessionId: this.boundId, text }))
   }
 
-  /** Resize the bound main PTY (the raw backend honors cols/rows). */
+  /**
+   * Resize the bound main PTY (the raw backend honors cols/rows).
+   *
+   * The request is remembered as well as sent: this can run before the socket
+   * is open, and the size has to be replayed when it is, or the PTY keeps the
+   * backend's default grid for the session's whole life.
+   */
   resize(cols: number, rows: number): void {
-    if (this.boundId === undefined || this.socket?.readyState !== WebSocket.OPEN) return
-    this.socket.send(JSON.stringify({ kind: 'resize', sessionId: this.boundId, cols, rows }))
+    if (cols <= 0 || rows <= 0) return
+    this.desiredSize = { cols, rows }
+    this.flushSize()
+  }
+
+  /** Send the remembered grid, if the bound socket can carry it. */
+  private flushSize(): void {
+    if (this.boundId === undefined || this.desiredSize === undefined) return
+    if (this.socket?.readyState !== WebSocket.OPEN) return
+    this.socket.send(JSON.stringify({ kind: 'resize', sessionId: this.boundId, ...this.desiredSize }))
   }
 
   /**
@@ -270,6 +294,11 @@ export class PtyStreamService extends Service {
     this.socketSession = dshSessionId
     socket.onopen = () => {
       socket.send(JSON.stringify({ kind: 'bind', sessionId: dshSessionId }))
+      this.boundId = dshSessionId
+      // Replay the grid this session's view already asked for: a request made
+      // while the socket was still connecting was remembered, not lost, and
+      // the shell about to be spawned must start at it.
+      this.flushSize()
     }
     socket.onmessage = (event) => {
       // A superseded socket (handover already moved on) must never feed

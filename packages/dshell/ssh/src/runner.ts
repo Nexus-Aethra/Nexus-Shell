@@ -45,6 +45,13 @@ const BASE_OPTIONS = [
   '-o', 'ControlMaster=auto',
   '-o', `ControlPath=${join(sshDeviceRoot(), 'ctl', '%C')}`,
   '-o', 'ControlPersist=120s',
+  // Keepalives bound a master whose peer has gone away. Without them a
+  // connection that dies half-open leaves a live control socket in front of a
+  // dead sshd, and every later command and terminal hangs behind it with no
+  // error — the shell simply never starts. Probing means the master notices and
+  // exits, and the next invocation dials a fresh connection.
+  '-o', 'ServerAliveInterval=15',
+  '-o', 'ServerAliveCountMax=3',
 ] as const
 
 /** Quote one word for a POSIX shell. */

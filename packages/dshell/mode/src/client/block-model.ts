@@ -23,6 +23,12 @@ import type { TodoItem } from './todo-card.js'
 export type ViewItem =
   | { readonly kind: 'shell'; readonly key: string; readonly time: number; readonly text: string }
   | { readonly kind: 'agent'; readonly key: string; readonly time: number; readonly block: TurnBlock }
+  /**
+   * A message the reader just sent, shown from the session's local submission
+   * echo. It exists only until the durable event arrives, so the request is on
+   * screen the moment it is sent instead of when the model first answers.
+   */
+  | { readonly kind: 'pending'; readonly key: string; readonly time: number; readonly text: string }
 
 /** Whether a shell region holds anything a reader would see. */
 function visible(text: string): boolean {

@@ -15,7 +15,7 @@
  * and the composer paints over its tail.
  */
 
-import { createElement, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import type {
   ISessions,
   SessionEventLikeEntry,
@@ -24,12 +24,98 @@ import type {
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { createFold, foldEvent } from './blocks.js'
-import { AgentBlock } from './agent-block.js'
-import { assembleTimeline, todosOf, type ViewItem } from './block-model.js'
+import { clearStream, createFold, foldEvent, noteLiveChunk, type BlockFold } from './blocks.js'
+import { AgentBlock, UserBubble } from './agent-block.js'
+import { assembleTimeline, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
-import { TodoCard, injectTodoCardCss, setTodoPanelSuppressed } from './todo-card.js'
+import { TodoCard, injectTodoCardCss, setTodoPanelSuppressed, type TodoItem } from './todo-card.js'
 import { useDshellTheme } from './theme.js'
+
+/**
+ * One session's incremental fold.
+ *
+ * The fold is advanced by the event window's changes rather than rebuilt from
+ * the window on every revision: a turn streams many deltas, and re-folding all
+ * of history for each of them is what makes the view stall.
+ */
+interface FoldState {
+  readonly sessionId: string
+  fold: BlockFold
+  /** Highest durable seq folded, so an append never re-folds history. */
+  watermark: number
+  /** The session's current task list, tracked as `todo/write` events fold. */
+  todos: readonly TodoItem[]
+  /** Prompt ids whose durable `user/message` has already been folded. */
+  readonly submitted: Set<string>
+  /**
+   * Requests the host has taken into a turn but not yet written to the log.
+   *
+   * `agent/inbox/spliced` carries the message the moment the host admits it —
+   * ten seconds before the durable `user/message` on a slow route — so the
+   * request can be on screen while the model is still starting up. Keyed by
+   * prompt id, and dropped when the durable row arrives.
+   */
+  readonly inbox: Map<string, { time: number; text: string }>
+}
+
+/** Text of a spliced inbox entry's content blocks. */
+function textOfContent(content: readonly unknown[] | undefined): string {
+  const parts: string[] = []
+  for (const block of content ?? []) {
+    if (typeof block !== 'object' || block === null) continue
+    const record = block as { type?: unknown; text?: unknown }
+    if (record.type === 'text' && typeof record.text === 'string') parts.push(record.text)
+  }
+  return parts.join('\n').trim()
+}
+
+/**
+ * Fold one window entry into the fold: a live chunk updates the open block's
+ * streaming line, a durable event folds normally (once — the watermark makes a
+ * replayed entry a no-op).
+ * @returns whether the call changed anything visible.
+ */
+function advance(state: FoldState, entry: SessionEventLikeEntry): boolean {
+  if (entry.type === 'transient') return noteLiveChunk(state.fold.open, entry.event)
+  if (entry.event.seq <= state.watermark) return false
+  state.watermark = entry.event.seq
+  const event = entry.event
+  // The task list is tracked here rather than derived from the window, which
+  // the view no longer keeps: a new turn clears it, `todo/write` sets it.
+  if (event.type === 'turn/start') state.todos = []
+  else if (event.type === 'todo/write') state.todos = [...event.data.todos]
+  if (event.type === 'agent/inbox/spliced') {
+    // The host admits a prompt into the turn here, with its content and prompt
+    // id, long before it is durable. Everything not yet in the log is held as
+    // a not-yet-durable bubble; the durable event retires it below.
+    const inserted = (event.data as { inserted?: readonly unknown[] }).inserted ?? []
+    for (const raw of inserted) {
+      if (typeof raw !== 'object' || raw === null) continue
+      const entry = raw as {
+        id?: unknown
+        role?: unknown
+        source?: { kind?: unknown; rpcId?: unknown }
+        content?: readonly unknown[]
+      }
+      if (entry.role !== 'user' || entry.source?.kind !== 'user') continue
+      const rpcId = entry.source.rpcId ?? entry.id
+      if (typeof rpcId !== 'string') continue
+      const text = textOfContent(entry.content)
+      if (text.length > 0) state.inbox.set(rpcId, { time: event.time, text })
+    }
+  }
+  if (event.type === 'user/message') {
+    // The prompt id the reader's own submission carried: it is how the
+    // not-yet-durable bubble on screen knows its message has landed.
+    const rpcId = (event.data.source as { rpcId?: unknown }).rpcId
+    if (typeof rpcId === 'string') {
+      state.submitted.add(rpcId)
+      state.inbox.delete(rpcId)
+    }
+  }
+  foldEvent(state.fold, event)
+  return true
+}
 
 /** A shell region: a plain terminal, no header and no frame of its own. */
 function ShellRegion(props: {
@@ -51,7 +137,14 @@ function ShellRegion(props: {
   return createElement('div', {
     ref: host,
     'data-dshell-shell-region': '',
-    style: { fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE, lineHeight: `${String(SPAN_LINE_HEIGHT)}px` },
+    // Font size and line height belong to the terminal, which scales them when
+    // its grid is wider than the column; setting them here too would fight it.
+    style: {
+      fontFamily: SPAN_FONT,
+      // A region whose grid is wider than the column scales down to fit; if
+      // even the floor is not enough, this is where the rest becomes reachable.
+      overflowX: 'auto',
+    },
   })
 }
 
@@ -67,22 +160,80 @@ export function BlockView(props: {
   const seat = useRef<HTMLDivElement | null>(null)
   const probe = useRef<HTMLSpanElement | null>(null)
   const scroll = useRef<HTMLDivElement | null>(null)
-  const [entries, setEntries] = useState<readonly SessionEventLikeEntry[]>([])
+  const foldRef = useRef<FoldState | undefined>(undefined)
+  /** Messages sent but not yet durable: rendered below the fold's items. */
+  const pendingRef = useRef<readonly { key: string; rpcId: string; time: number; text: string }[]>([])
   const [version, setVersion] = useState(0)
+  const frame = useRef<number | undefined>(undefined)
   const id = props.sessionId === undefined ? undefined : String(props.sessionId)
+
+  // One render per animation frame at most. A streaming turn publishes a delta
+  // per token and a printing shell a chunk per write; rendering either one per
+  // event is what makes the column feel stuck.
+  const repaint = useCallback((): void => {
+    if (frame.current !== undefined) return
+    if (typeof requestAnimationFrame !== 'function') { setVersion(value => value + 1); return }
+    frame.current = requestAnimationFrame(() => {
+      frame.current = undefined
+      setVersion(value => value + 1)
+    })
+  }, [])
+  useEffect(() => () => {
+    if (frame.current !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame.current)
+    frame.current = undefined
+  }, [])
 
   // The binding (and its event window) materializes shortly after a session
   // opens; retry until it lands, and drop it when the session closes.
   useEffect(() => {
-    if (props.sessionId === undefined) { setEntries([]); return }
-    let source: SessionEventSource | undefined
+    foldRef.current = undefined
+    repaint()
+    if (props.sessionId === undefined) return
     const sessionId = props.sessionId
+    let bound: SessionEventSource | undefined
+    const state: FoldState = {
+      sessionId: String(sessionId),
+      fold: createFold(),
+      watermark: 0,
+      todos: [],
+      submitted: new Set<string>(),
+      inbox: new Map<string, { time: number; text: string }>(),
+    }
+    // A window-wide rebuild: the initial snapshot, and any mutation that
+    // rewrites what came before (a re-baseline or a history prepend).
+    const rebuild = (entries: readonly SessionEventLikeEntry[]): void => {
+      state.fold = createFold()
+      state.watermark = 0
+      state.todos = []
+      for (const entry of entries) advance(state, entry)
+      foldRef.current = state
+      repaint()
+    }
+    const accept = (): void => {
+      const window = bound?.getSnapshot()
+      if (window === undefined) return
+      if (window.change.kind === 'replace' || window.change.kind === 'prepend') {
+        rebuild(window.entries)
+        return
+      }
+      if (window.change.kind === 'settle-assistant') {
+        // The attempt is over: its partial line goes, and the durable message
+        // that supersedes it arrives with this very change (never as an
+        // append), so it has to be folded here or the answer is lost.
+        let changed = clearStream(state.fold.open)
+        if (window.change.entry !== undefined) changed = advance(state, window.change.entry) || changed
+        if (changed) repaint()
+        return
+      }
+      for (const entry of window.change.entries) advance(state, entry)
+      repaint()
+    }
     const tryBind = (): boolean => {
       try {
         const binding = props.sessions.binding(sessionId)
         if (binding === undefined) return false
-        source = binding.eventSource
-        setEntries(source.getSnapshot().entries)
+        bound = binding.eventSource
+        rebuild(bound.getSnapshot().entries)
         return true
       } catch {
         return false
@@ -92,29 +243,72 @@ export function BlockView(props: {
       const timer = setInterval(() => { if (tryBind()) clearInterval(timer) }, 500)
       return () => { clearInterval(timer) }
     }
-    const bound = source
-    return bound?.subscribe(() => { setEntries(bound.getSnapshot().entries) })
-  }, [props.sessions, props.sessionId])
+    const unsubscribe = bound?.subscribe(accept)
+    // The session snapshot's own view of what the reader has sent: the local
+    // submission echo (before the host admits the prompt) and the host queue
+    // (once it is admitted). Both are keyed by prompt id and retire on their
+    // own; the folded inbox splice and the durable row in the memo cover the
+    // rest of the path.
+    const face = props.sessions.binding(sessionId)?.session
+    let pendingKey = ''
+    const readPending = (): void => {
+      const snapshot = face?.getSnapshot()
+      if (snapshot === undefined) return
+      const folded = foldRef.current?.submitted
+      const claimed = new Set(foldRef.current?.inbox.keys() ?? [])
+      // A rejected prompt never becomes durable: drop its optimistic bubbles
+      // instead of leaving a message on screen the agent never received.
+      if (snapshot.promptError !== null) foldRef.current?.inbox.clear()
+      const queued = snapshot.queue
+        .filter(entry => entry.placement !== 'context' && entry.rpcId !== undefined)
+        .map(entry => ({ rpcId: String(entry.rpcId), text: entry.text ?? '', time: 0 }))
+      const queuedIds = new Set(queued.map(entry => entry.rpcId))
+      const echoes = snapshot.pendingSubmissions
+        .filter(entry => !queuedIds.has(String(entry.requestId)))
+        .map(entry => ({ rpcId: String(entry.requestId), text: entry.text, time: entry.time }))
+      const entries = [...queued, ...echoes]
+        .filter(entry => entry.text.length > 0)
+        .filter(entry => !claimed.has(entry.rpcId) && !folded?.has(entry.rpcId))
+      const key = entries.map(entry => `${entry.rpcId}\u0000${entry.text}`).join('\u0001')
+      if (key === pendingKey) return
+      pendingKey = key
+      pendingRef.current = entries.map(entry => ({ ...entry, key: `pending:${entry.rpcId}` }))
+      repaint()
+    }
+    const unsubscribePending = face?.subscribe(readPending)
+    readPending()
+    return () => { unsubscribe?.(); unsubscribePending?.() }
+  }, [props.sessions, props.sessionId, repaint])
 
   // PTY history changes bump the service's version; re-slice the regions.
-  useEffect(() => props.pty.state.subscribe(() => { setVersion(value => value + 1) }), [props.pty])
+  useEffect(() => props.pty.state.subscribe(() => { repaint() }), [props.pty, repaint])
 
-  // Keep the PTY's cell grid in step with the seat while this tab is active:
-  // the canvas normally owns that, and it is unmounted here.
+  // Keep the PTY's cell grid in step with the column while this tab is active:
+  // the shell wraps and pads its own output to the PTY's width, so that width
+  // has to be the one the regions render at. Measured from the scroll
+  // container's content box — the regions are its children, so this is their
+  // width too, minus the padding and any scrollbar that changes it.
   useEffect(() => {
     const el = seat.current
-    if (el === null) return
+    const box = scroll.current
+    if (el === null || box === null) return
     const sync = (): void => {
       const metrics = probe.current?.getBoundingClientRect()
       if (metrics === undefined || metrics.width <= 0) return
       const cellWidth = metrics.width / 40
-      if (el.clientWidth <= 0 || el.clientHeight <= 0) return
-      const cols = Math.min(500, Math.max(20, Math.floor(el.clientWidth / cellWidth)))
+      if (el.clientHeight <= 0) return
+      const style = getComputedStyle(box)
+      const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+      const content = box.clientWidth - (Number.isFinite(padding) ? padding : 0)
+      if (content <= 0) return
+      const cols = Math.min(500, Math.max(20, Math.floor(content / cellWidth)))
       const rows = Math.min(300, Math.max(6, Math.floor(el.clientHeight / SPAN_LINE_HEIGHT)))
       props.pty.resize(cols, rows)
     }
     const observer = new ResizeObserver(sync)
     observer.observe(el)
+    // A scrollbar appearing narrows the content box without resizing the seat.
+    observer.observe(box)
     sync()
     return () => { observer.disconnect() }
   }, [props.pty, id])
@@ -128,14 +322,37 @@ export function BlockView(props: {
   }, [])
 
   const items = useMemo(() => {
-    if (id === undefined) return []
-    const fold = createFold()
-    for (const entry of entries) if (entry.type === 'event') foldEvent(fold, entry.event)
+    const state = foldRef.current
+    // The fold lags a session switch by one render (the binding effect runs
+    // after paint), so never pair the new session's blocks with the old fold.
+    if (id === undefined || state === undefined || state.sessionId !== id) return []
     // The host cut the stream into blocks as the bytes arrived, so the order
     // is exact by construction — no reconstruction from timestamps.
-    return assembleTimeline(props.pty.blocks(id), fold)
-    // `version` re-reads the host's blocks when output arrives.
-  }, [entries, id, props.pty, version])
+    // `version` ticks on both a fold change and a PTY output change.
+    const items = assembleTimeline(props.pty.blocks(id), state.fold)
+    // A just-sent message has no durable row yet, so it trails the fold —
+    // soonest first: the host's admitted requests, then the local echo. When
+    // its durable event lands, the fold drops it from here.
+    const inbox = [...state.inbox].map(([rpcId, entry]) => ({
+      key: `inbox:${rpcId}`,
+      rpcId,
+      time: entry.time,
+      text: entry.text,
+    }))
+    const claimed = new Set(inbox.map(entry => entry.rpcId))
+    const extras = [
+      ...inbox,
+      ...pendingRef.current.filter(entry => !claimed.has(entry.rpcId) && !state.submitted.has(entry.rpcId)),
+    ].filter(entry => entry.text.length > 0)
+    return extras.length === 0
+      ? items
+      : [...items, ...extras.map(entry => ({ kind: 'pending' as const, key: entry.key, time: entry.time, text: entry.text }))]
+  }, [version, id, props.pty])
+
+  const todos = useMemo<readonly TodoItem[]>(() => {
+    const state = foldRef.current
+    return id !== undefined && state !== undefined && state.sessionId === id ? state.todos : []
+  }, [version, id])
 
   // Follow the tail unless the reader has scrolled away.
   const pinned = useRef(true)
@@ -168,7 +385,7 @@ export function BlockView(props: {
         font: `${String(SPAN_FONT_SIZE)}px ${SPAN_FONT}`,
       },
     }, 'W'.repeat(40)),
-    createElement(TodoCard, { todos: todosOf(entries), theme }),
+    createElement(TodoCard, { todos, theme }),
     createElement('div', {
       ref: scroll,
       'data-dshell-block-view': '',
@@ -181,17 +398,23 @@ export function BlockView(props: {
     },
       ...items.flatMap((item, index) => {
         const previous = items[index - 1]
-        // A hairline only where the kind changes: enough to see where a shell
-        // stretch ends and a task begins, without boxing either of them in.
-        const divider = previous !== undefined && previous.kind !== item.kind
+        // A hairline only where a shell stretch ends and a task begins: enough
+        // to see the boundary without boxing either of them in. A pending
+        // bubble belongs to the task it was sent to, so it draws none.
+        const divider = previous !== undefined && (previous.kind === 'shell') !== (item.kind === 'shell')
           ? [createElement('div', {
               key: `${item.key}:sep`,
               style: { height: 1, background: theme.border, margin: '12px 0' },
             })]
           : []
+        // The key is the item alone: including the output version remounted
+        // every region on every chunk, which threw away its terminal (and the
+        // incremental append path with it) instead of appending to it.
         const node = item.kind === 'shell'
-          ? createElement(ShellRegion, { key: `${item.key}:${String(version)}`, item, theme })
-          : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage })
+          ? createElement(ShellRegion, { key: item.key, item, theme })
+          : item.kind === 'pending'
+            ? createElement(UserBubble, { key: item.key, text: item.text, loadImage: props.loadImage, theme })
+            : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage })
         return [...divider, node]
       }),
     ),

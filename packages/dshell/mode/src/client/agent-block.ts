@@ -196,6 +196,37 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; 
 }
 
 /**
+ * The reader's own words: a right-aligned bubble, the way the transcript
+ * separates who is speaking without labelling it.
+ *
+ * Exported because a just-sent message is rendered from the session's pending
+ * submission echo — before it is durable, so the reader sees what they sent
+ * while the model is still starting up — and it must look identical to the
+ * durable row that replaces it.
+ */
+export function UserBubble(props: {
+  text: string
+  images?: readonly unknown[] | undefined
+  loadImage: ImageLoader | undefined
+  theme: Theme
+}): ReactElement {
+  return createElement('div', {
+    style: {
+      borderRadius: '10px',
+      background: props.theme.inputBar,
+      padding: '7px 11px',
+      margin: '6px 0 6px auto',
+      width: 'fit-content',
+      maxWidth: '78%',
+      color: props.theme.text,
+    },
+  },
+    createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, sanitizeRowText(props.text)),
+    createElement(RowImages, { images: props.images, loadImage: props.loadImage, theme: props.theme }),
+  )
+}
+
+/**
  * Attachments carried by one row, resolved to URLs through the conversation
  * service. Rendering them is what lets the reader confirm the model was handed
  * the image at all.
@@ -350,35 +381,68 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
   }, [running])
   useEffect(() => { injectFoldCss() }, [])
   const endedAt = block.notice?.time ?? now
-  const asked = block.rows.filter(row => row.role === 'user')
-  const answers = block.rows.filter(row => row.role === 'assistant')
-  const process = block.rows.filter(row => row.role !== 'user' && row.role !== 'assistant')
+  // The fold mutates `rows` in place, so the array identity stays put while a
+  // step streams and its length is what says a row was appended. Partitioning
+  // with fresh filters on every render would defeat both memos below and
+  // re-parse the whole answer on every streamed frame.
+  const { asked, answers, process } = useMemo(() => ({
+    asked: block.rows.filter(row => row.role === 'user'),
+    answers: block.rows.filter(row => row.role === 'assistant'),
+    process: block.rows.filter(row => row.role !== 'user' && row.role !== 'assistant'),
+  }), [block.rows, block.rows.length])
   const steps = useMemo(() => buildSteps(process, block.startedAt), [process, block.startedAt])
   const tokens = formatTokens(block.tokens)
   const failed = block.status === 'failed' || block.status === 'aborted'
+  // Answers are written to be read: render their markdown rather than the raw
+  // syntax they arrived in, and keep the result until the rows change.
+  const answerNodes = useMemo(
+    () => answers.flatMap(row => [
+      ...renderMarkdown(sanitizeRowText(row.text), theme, row.key),
+      createElement(RowImages, { key: `${row.key}:img`, images: row.images, loadImage: props.loadImage, theme }),
+    ]),
+    [answers, theme, props.loadImage],
+  )
+  // The live line the model is still writing. It renders through the same
+  // paths, in the same position, as the durable rows that supersede it, so
+  // settlement neither moves nor restyles the text.
+  const stream = block.stream
+  const liveReasoning = stream === undefined || stream.reasoning.length === 0
+    ? null
+    : createElement(TextStep, {
+      key: 'stream:reason',
+      step: {
+        kind: 'text',
+        key: 'stream:reason',
+        row: {
+          role: 'reasoning',
+          key: 'stream:reason',
+          text: stream.reasoning,
+          collapsible: false,
+          defaultCollapsed: false,
+          time: stream.time,
+          label: SESSION_ROW_LABEL.reasoning,
+        },
+        duration: undefined,
+      },
+      theme,
+      loadImage: props.loadImage,
+    })
+  const liveText = stream === undefined || stream.text.length === 0
+    ? undefined
+    : `${sanitizeRowText(stream.text)}${running ? '▍' : ''}`
   return createElement('div', {
     'data-dshell-block': 'agent',
     // The same 13px the terminal regions render at, so an answer and the
     // stream it came from read at one size.
     style: { margin: '14px 0 18px', overflow: 'hidden', fontSize: SPAN_FONT_SIZE, lineHeight: 1.6 },
   },
-    ...asked.map(row => createElement('div', {
+    ...asked.map(row => createElement(UserBubble, {
       key: row.key,
-      style: {
-        borderRadius: '10px',
-        background: theme.inputBar,
-        padding: '7px 11px',
-        // The request sits on the right, the way the transcript separates
-        // who is speaking without labelling it.
-        margin: '6px 0 6px auto',
-        width: 'fit-content',
-        maxWidth: '78%',
-        color: theme.text,
-      },
-    },
-      createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, sanitizeRowText(row.text)),
-      createElement(RowImages, { images: row.images, loadImage: props.loadImage, theme }),
-    )),
+      text: row.text,
+      images: row.images,
+      loadImage: props.loadImage,
+      theme,
+    })),
     createElement('div', {
       'data-dshell-fold': '',
       onClick: () => { setExpanded(value => !value) },
@@ -402,12 +466,11 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
             ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage })
             : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage })))
       : []),
-    // An answer is written to be read: render its markdown rather than the
-    // raw syntax it arrived in.
-    ...answers.flatMap(row => [
-      ...renderMarkdown(sanitizeRowText(row.text), theme, row.key),
-      createElement(RowImages, { key: `${row.key}:img`, images: row.images, loadImage: props.loadImage, theme }),
-    ]),
+    expanded ? liveReasoning : null,
+    ...answerNodes,
+    liveText === undefined
+      ? null
+      : createElement('div', { 'data-dshell-stream': '' }, ...renderMarkdown(liveText, theme, 'stream')),
     block.notice === undefined || !failed ? null : createElement('div', {
       style: { color: FAIL_COLOR, fontSize: 12, marginTop: '4px' },
     }, block.notice.text),

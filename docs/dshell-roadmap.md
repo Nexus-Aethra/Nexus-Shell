@@ -461,12 +461,45 @@ gutter/colour helpers) and `activeTerm`, which existed only so the
 composer could copy the canvas selection. The block view is the only
 conversation surface.
 
+How the block view stays live (each of these was a visible defect before it
+was written down):
+
+- **Streaming.** The event window delivers the model's partial answer as
+  client-only `transient` entries (`assistant/live-chunk`); the durable
+  `assistant/message` only lands when the attempt settles. The view folds the
+  deltas into `TurnBlock.stream` and drops that line the moment the message
+  arrives (`settle-assistant` carries it), so the answer grows token by token
+  and is then replaced in place rather than duplicated. The fold is advanced
+  incrementally with a durable watermark and renders on one `requestAnimationFrame`
+  at most, instead of re-folding the whole window per event.
+- **A sent message is on screen immediately.** The durable `user/message` is
+  appended when the first step begins — measured at 8–11 s after `turn/start` on
+  this route — so waiting for it left the request invisible for that whole
+  window. Three sources cover the path, all keyed by prompt id (`rpcId`) and all
+  retired by the durable row: the durable `agent/inbox/spliced` event (the host
+  admitting the prompt, ~1 ms after the turn opens), the host queue, and the
+  client's local submission echo (`beginSubmission`). A rejected prompt clears
+  them via `promptError`.
+- **A shell region renders at the width its output was produced at.** The grid
+  spans the column and widens only as far as a *redraw* needs (a stretch drawn
+  and then drawn again), measured by simulating the cursor column: `\r` and
+  `ESC 8` rewinds are what move a repaint's origin, while a long echoed line that
+  merely ends with a carriage return is left to wrap. Without this a padded
+  progress bar stacked one row per repaint. The font scales down (floor 9px, then
+  horizontal scroll) when the grid is wider than the column. The PTY itself is
+  driven to the same width, so this normally matches; see Phase 9.6 for the
+  resize path.
+- **Regions update in place.** A region's React key is its identity alone: keying
+  it by the PTY version remounted every terminal on every output chunk, which
+  threw away its scroll position and re-parsed the whole region per frame.
+
 Still open: terminal input parity (`onData` for Tab, arrows and Ctrl+C
 had no owner once the canvas went: shell input goes through the composer,
 so interactive full-screen programs still need a terminal that owns the
 keyboard), full-screen programs (PTY rows follow the seat, but a region
 renders at its own content height), per-row folding inside an expanded
-task card, and virtualizing long sessions.
+task card, virtualizing long sessions, and image attachments on a
+not-yet-durable bubble (its text shows, its previews do not).
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 
