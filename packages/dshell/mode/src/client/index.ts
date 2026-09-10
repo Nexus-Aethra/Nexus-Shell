@@ -668,18 +668,31 @@ function PtyCanvas(props: {
       if (probe === null) return
       const probeBox = probe.getBoundingClientRect()
       const charWidth = probeBox.width / 40
-      const lineHeight = probeBox.height
+      // xterm measures its own cell height, which is not the probe's CSS line
+      // box (16px vs 15px at this font size). Trusting the probe overshoots by
+      // a row or two, and the overflow is clipped — the bottom row, i.e. the
+      // live prompt, disappears under the composer. The rendered screen is the
+      // truth: its height is rows × cell height.
+      const screenBox = el.querySelector('.xterm-screen')?.getBoundingClientRect()
+      const cellHeight = screenBox !== undefined && screenBox.height > 0 && term.rows > 0
+        ? screenBox.height / term.rows
+        : probeBox.height
       // The probe has no metrics until the view area gets laid out (and a
       // hidden/zero-size ancestor yields 0 or NaN). xterm's resize throws
       // "This API only accepts integers" on non-finite input, so guard.
       if (!Number.isFinite(charWidth) || charWidth <= 0) return
-      if (!Number.isFinite(lineHeight) || lineHeight <= 0) return
+      if (!Number.isFinite(cellHeight) || cellHeight <= 0) return
       if (el.clientWidth <= 0 || el.clientHeight <= 0) return
+      // clientWidth/Height include this element's own padding, which the
+      // screen cannot use: subtract it instead of a hand-tuned constant.
+      const style = getComputedStyle(el)
+      const padX = (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0)
+      const padY = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0)
       // Clamp hard: a layout feedback loop (container growing with the
       // rendered screen) would otherwise runaway to hundreds of thousands
       // of rows.
-      const cols = Math.min(500, Math.max(20, Math.floor((el.clientWidth - 8) / charWidth)))
-      const rows = Math.min(300, Math.max(6, Math.floor((el.clientHeight - 12) / lineHeight)))
+      const cols = Math.min(500, Math.max(20, Math.floor((el.clientWidth - padX) / charWidth)))
+      const rows = Math.min(300, Math.max(6, Math.floor((el.clientHeight - padY) / cellHeight)))
       if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
       const size = sizeRef.current
       if (size !== undefined && size.cols === cols && size.rows === rows) return

@@ -355,7 +355,13 @@ Plugins touched:
   the client bundle (rolldown `noExternal` + CSS-as-string module —
   the combo loader only resolves dsh platform modules, so anything
   else must ship inside the bundle). A hidden probe span measures
-  char metrics; a ResizeObserver fits cols/rows and resizes the PTY.
+  char width; the cell height comes from the rendered `.xterm-screen`
+  (its height is rows × cell height), because xterm's own measurement
+  is 16px where the probe's CSS line box is 15px. A ResizeObserver
+  fits cols/rows from the container minus its computed padding and
+  resizes the PTY. Trusting the probe overshot by a row or two, and
+  the overflow was clipped — the live prompt vanished under the
+  composer as soon as output filled the canvas.
   The theme maps the dock palette (bg/text/cursor/selection).
 - `dshell-mode` (browser face, 4.4 merge) — `PtyCanvas` subscribes to
   the session's event window (`sessions.binding(id).eventSource`,
