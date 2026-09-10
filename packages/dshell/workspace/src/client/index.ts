@@ -43,10 +43,11 @@ import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 // Type-only: pulls ui-sidebar's SlotMap merge ('sidebar.workspaces' hole).
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SshSnapshot } from '@deepseek-ai/dsh-dshell-ssh/client'
 import { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'
 import { activeRows, directoryName, presetChoices, type PresetChoice, type SessionRow } from './rows.js'
-import { FlatSessionList, type FlatSessionListProps } from './session-list.js'
+import { FlatSessionList, type DeviceSeat, type FlatSessionListProps } from './session-list.js'
 
 export const name = '@deepseek-ai/dsh-dshell-workspace/client'
 
@@ -284,6 +285,23 @@ export function apply(ctx: Context): void {
   // explicit two-step cast.
   const sessions = ctx.get('sessions') as unknown as ISessions
   const panel = new SessionPanelClient()
+  // The SSH plugin is a sibling row: present in the dshell bundle, absent in a
+  // composition that omits it, so the seat is filled by injection rather than
+  // assumed. List and dialog both tolerate its absence.
+  let deviceSeat: DeviceSeat | undefined
+  ctx.inject(['dshellSsh'], (sshCtx) => {
+    const ssh = sshCtx.dshellSsh
+    deviceSeat = {
+      getSnapshot: () => ssh.getSnapshot() as SshSnapshot,
+      subscribe: listener => ssh.subscribe(listener),
+      devices: () => ssh.getSnapshot().devices.map(device => ({
+        id: device.id,
+        name: device.name,
+        remoteRoot: device.remoteRoot,
+      })),
+      bind: (sessionId, deviceId) => ssh.bind(String(sessionId), deviceId),
+    }
+  })
   const workspaces = new DshellWorkspaces(ctx, panel)
   const uiWorkspace = new DshellUiWorkspace(ctx, sessions, panel)
   void panel.load()
@@ -349,9 +367,13 @@ export function apply(ctx: Context): void {
       inject: (): FlatSessionListProps => ({
         sessions: sessions.list,
         panel,
+        device: deviceSeat,
         refresh: () => sessions.refresh(),
         createSession: (name, cwd, presetId) =>
-          uiWorkspace.createNamedSession(name, cwd, presetId).then((sessionId) => { sessions.open(sessionId) }),
+          uiWorkspace.createNamedSession(name, cwd, presetId).then((sessionId) => {
+            sessions.open(sessionId)
+            return sessionId
+          }),
         listPresets: () => uiWorkspace.listPresets(),
         open: (sessionId) => { sessions.open(sessionId) },
       }),

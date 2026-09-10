@@ -422,11 +422,10 @@ Plugins touched:
   `block-test`: shell output injected between two turns keeps its place
   across a reload.
 
-Blocks as the view's primary unit (in progress). The single-canvas
-surface caps presentation at the character grid — per-cell colour, no
-rounded corners, no element-level type, no hover states. The block view
-(`block-view.ts`, registered as a sibling `conversation.view` tab
-labelled 块视图) makes a DOM column the surface, and a block is a
+Blocks as the view's primary unit. The single-canvas surface caps
+presentation at the character grid — per-cell colour, no rounded
+corners, no element-level type, no hover states. The block view
+(`block-view.ts`) makes a DOM column the surface, and a block is a
 *stretch of the session*, not a command:
 
 - Everything the terminal printed between two agent tasks is one shell
@@ -449,11 +448,20 @@ Dropped along the way: slicing shell output per command. A block per
 the terminal's own design; the marker scanner and its `commands()` API
 were removed again.
 
-Still open: terminal input parity (the canvas owns `onData` for Tab,
-arrows and Ctrl+C, so interactive shell work still needs that tab),
-full-screen programs (PTY rows follow the seat, but a region renders at
-its own content height), per-row folding inside an expanded task card,
-and virtualizing long sessions.
+The block view occupies the stock `chat` view cell (same id, lower
+priority), which is `DEFAULT_VIEW_ID` in
+`ui-conversation/src/client/view-selection.ts`. That placement is
+load-bearing, not cosmetic: a sibling tab is reachable only through a
+stored view selection, and dshell hides the tab strip, so while the
+canvas held `chat` a fresh session silently opened the old surface. The
+canvas is now the sibling (id `canvas`), kept only for raw keyboard
+ownership and full-screen programs.
+
+Still open: terminal input parity in the block view (`onData` for Tab,
+arrows and Ctrl+C still belongs to the canvas tab), full-screen programs
+(PTY rows follow the seat, but a region renders at its own content
+height), per-row folding inside an expanded task card, and virtualizing
+long sessions.
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 
@@ -606,6 +614,47 @@ directory on the next event. The delete branch therefore has three
 outcomes: running → refused; loaded-and-idle → terminal released now,
 log removal scheduled and executed at the next start (before any client
 can resume); cold → purged immediately.
+
+## Phase 9.6 — SSH device sessions
+
+Goal: a session can run on a remote device instead of this machine.
+
+Shipped:
+
+- `dshell-ssh` (new host+client package): a durable device registry
+  (name, host, port, user, remote directory) whose private keys are
+  separate 0600 files under `$DSH_HOME/dshell/ssh/keys/`, a card in the
+  Plugins settings section to add/edit/test/delete them, and a durable
+  session→device assignment chosen in the new-session dialog (the row
+  then reads `名称 ⌁ 设备`).
+- Routing: `ctx.shell.resolve` is wrapped, so a bound session's shell
+  commands are rewritten to `ssh … 'cd <dir> && exec bash -lc <command>'`
+  and the stock executor keeps owning timeouts, caps, streaming,
+  background handles and cancellation. The target is resolved per call
+  from `ctx.agents.currentInitiator()`, so nothing about tool signatures
+  or registrations changes.
+- The local hop runs unconfined (`danger-full-access`): the session's
+  access mode describes THIS machine, and confining the `ssh` client
+  would deny it the network while the command that matters executes
+  under the device's own policy.
+
+Verified live against a private sshd on 127.0.0.1:2222 with its own host
+and client keys: a bound session's `echo $SSH_CONNECTION` returns the
+tunnel's addresses, an unbound session returns nothing.
+
+Not routed yet — each needs its own seam, in this order:
+
+- `ctx.subprocess` (spawn/resolveExecutable): the agent's `bash` goes
+  through `ctx.shell`, but `glob`/`grep` run ripgrep through
+  `ctx.subprocess` directly, and `terminal_*` goes through
+  `ctx.terminals` → backend → `ctx.subprocess.spawnTerminal`.
+- `ctx.fs`: `read`/`write`/`edit`/`str_replace_editor` operate on the
+  local filesystem and must move to a remote implementation (the E2B
+  pair `subprocess-e2b` / `fs-e2b` is the prior art for how a remote
+  provider replaces these single-owner services).
+- The visible dshell terminal: its PTY still spawns the local shell
+  (`DshellPtyBackend` → `nodePty.spawn('/bin/bash')`), so the user's own
+  prompt remains local even in a bound session.
 
 ## Phase 10 — Packaging
 

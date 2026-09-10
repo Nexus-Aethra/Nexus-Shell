@@ -19,6 +19,7 @@ import {
   type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SshSnapshot } from '@deepseek-ai/dsh-dshell-ssh/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'
@@ -31,6 +32,16 @@ import {
   rowStyle, rowTitleStyle, scrollStyle,
 } from './list-styles.js'
 
+/** The device face another plugin provides, when the SSH plugin is composed. */
+export interface DeviceSeat {
+  getSnapshot: () => SshSnapshot
+  subscribe: (listener: () => void) => () => void
+  /** Registered devices, for the new-session picker. */
+  devices: () => readonly { id: string; name: string; remoteRoot: string }[]
+  /** Assign a created session to a device (null keeps it local). */
+  bind: (sessionId: SessionId, deviceId: string | null) => Promise<void>
+}
+
 /** Props the sidebar slot injects into the flat session list. */
 export interface FlatSessionListProps {
   sessions: {
@@ -38,11 +49,27 @@ export interface FlatSessionListProps {
     subscribe: (listener: () => void) => () => void
   }
   panel: SessionPanelClient
+  /** Present only when the SSH plugin is part of the composition. */
+  device?: DeviceSeat | undefined
   /** Re-read the host session list (after a purge removed a log). */
   refresh: () => Promise<void>
-  createSession(name: string | undefined, cwd: string | undefined, presetId: string | undefined): Promise<void>
+  createSession(
+    name: string | undefined,
+    cwd: string | undefined,
+    presetId: string | undefined,
+  ): Promise<SessionId>
   listPresets: () => Promise<PresetChoice[]>
   open(sessionId: SessionId): void
+}
+
+/** Empty device snapshot, so the list renders before the SSH plugin answers. */
+const NO_DEVICES: SshSnapshot = {
+  devices: [], bindings: [], testResult: undefined, error: undefined, loaded: false,
+}
+
+/** Stable no-op subscription for a composition without the SSH plugin. */
+function noopSubscribe(): () => void {
+  return () => {}
 }
 
 /**
@@ -120,6 +147,18 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
   const state = useSyncExternalStore(props.sessions.subscribe, props.sessions.getSnapshot)
   const dialogOpen = useSyncExternalStore(newSessionDialog.subscribe, newSessionDialog.getSnapshot)
   const archive = useSyncExternalStore(props.panel.subscribe, props.panel.getSnapshot)
+  const deviceSeat = props.device
+  const ssh = useSyncExternalStore(
+    deviceSeat?.subscribe ?? noopSubscribe,
+    deviceSeat?.getSnapshot ?? (() => NO_DEVICES),
+  )
+  /** The device a session runs on, as a row suffix; local sessions get none. */
+  const deviceLabel = (sessionId: SessionId): string => {
+    const binding = ssh.bindings.find(entry => entry.sessionId === String(sessionId))
+    if (binding === undefined) return ''
+    const device = ssh.devices.find(candidate => candidate.id === binding.deviceId)
+    return device === undefined ? '' : ` ⌁ ${device.name}`
+  }
   const [archivedOpen, setArchivedOpen] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<{ id: SessionId; title: string } | undefined>(undefined)
   const [deleting, setDeleting] = useState(false)
@@ -192,7 +231,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           style: { ...rowStyle, fontWeight: selected ? 600 : 400, opacity: selected ? 1 : 0.8 },
           onClick: () => { props.open(row.id) },
         },
-          createElement('span', { style: rowTitleStyle }, rowLabel(row)),
+          createElement('span', { style: rowTitleStyle }, `${rowLabel(row)}${deviceLabel(row.id)}`),
           createElement('span', { 'data-dshell-row-actions': 'archive', style: rowActionsStyle },
             createElement('button', {
               style: rowActionStyle,
@@ -262,6 +301,10 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         defaultCwd: rows.find(row => !row.blank)?.cwd,
         createSession: props.createSession,
         listPresets: props.listPresets,
+        ...deviceSeat === undefined ? {} : {
+          devices: deviceSeat.devices(),
+          bind: deviceSeat.bind,
+        },
       })
       : null,
     deleteTarget === undefined

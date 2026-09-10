@@ -9,6 +9,7 @@ import {
   createElement, useEffect, useState,
   type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { newSessionDialog } from './dialog-store.js'
 import type { PresetChoice } from './rows.js'
 import {
@@ -20,13 +21,22 @@ import {
 export interface NewSessionDialogProps {
   defaultCwd: string | undefined
   listPresets: () => Promise<PresetChoice[]>
-  createSession(name: string | undefined, cwd: string | undefined, presetId: string | undefined): Promise<void>
+  createSession(
+    name: string | undefined,
+    cwd: string | undefined,
+    presetId: string | undefined,
+  ): Promise<SessionId>
+  /** Registered devices, when the SSH plugin is composed. */
+  devices?: readonly { id: string; name: string; remoteRoot: string }[] | undefined
+  /** Assign the created session to a device; absent keeps it local. */
+  bind?: ((sessionId: SessionId, deviceId: string | null) => Promise<void>) | undefined
 }
 
 export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const [name, setName] = useState('')
   const [dir, setDir] = useState(props.defaultCwd ?? '')
   const [preset, setPreset] = useState('')
+  const [deviceId, setDeviceId] = useState('')
   const [presets, setPresets] = useState<PresetChoice[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -42,16 +52,22 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
     return () => { alive = false }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
   }, [])
+  const devices = props.devices ?? []
+  const selectedDevice = devices.find(candidate => candidate.id === deviceId)
+
   const submit = async (): Promise<void> => {
     if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await props.createSession(
+      const sessionId = await props.createSession(
         name.trim() === '' ? undefined : name.trim(),
         dir.trim() === '' ? undefined : dir.trim(),
         preset === '' ? undefined : preset,
       )
+      // The assignment is what makes this session's commands run remotely, so
+      // a failure here must surface rather than silently run them locally.
+      await props.bind?.(sessionId, deviceId === '' ? null : deviceId)
       newSessionDialog.set(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -81,6 +97,29 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   },
     createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
       createElement('div', { style: dialogTitleStyle }, '新会话'),
+      devices.length === 0
+        ? null
+        : createElement('div', null,
+          createElement('div', { style: fieldLabelStyle }, 'SSH 设备'),
+          createElement('select', {
+            style: fieldInputStyle,
+            value: deviceId,
+            disabled: busy,
+            onChange: (event: ChangeEvent<HTMLSelectElement>) => {
+              const next = event.target.value
+              setDeviceId(next)
+              // A device's own directory is the only one that exists on it, so
+              // picking one replaces the local continuity default.
+              const device = devices.find(candidate => candidate.id === next)
+              if (device !== undefined && device.remoteRoot.trim() !== '') setDir(device.remoteRoot)
+            },
+          },
+            createElement('option', { value: '' }, '本机'),
+            ...devices.map(device => createElement('option', {
+              key: device.id,
+              value: device.id,
+            }, `${device.name}（${device.remoteRoot}）`)),
+          )),
       createElement('div', null,
         createElement('div', { style: fieldLabelStyle }, '名称'),
         createElement('input', {
@@ -96,7 +135,9 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
         createElement('input', {
           style: fieldInputStyle,
           value: dir,
-          placeholder: props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录',
+          placeholder: selectedDevice === undefined
+            ? (props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录')
+            : `远端目录（${selectedDevice.name}）`,
           onChange: (event) => { setDir(event.target.value) },
           onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
         })),

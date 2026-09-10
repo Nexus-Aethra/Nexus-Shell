@@ -54,6 +54,11 @@
     - id: dshell-workspace
       name: '@deepseek-ai/dsh-dshell-workspace'
 
+    # SSH devices: durable device/key registry, per-session assignment, and
+    # routing of a bound session's shell commands to that device.
+    - id: dshell-ssh
+      name: '@deepseek-ai/dsh-dshell-ssh'
+
 # ── workspace removal (design 4.7) ────────────────────────────────────
 # dshell has no use for dsh's directory-workspace grouping: a terminal's
 # workspace is its current directory. The four stock web-app rows are
