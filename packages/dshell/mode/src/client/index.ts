@@ -1410,11 +1410,14 @@ function PtyCanvas(props: {
       }
       // Blocks anchor at the request that opened them, so shell output that
       // arrives while the agent works lands after the block, never inside it.
+      // The PTY side uses timed segments, not raw chunks: a bind replay is one
+      // frame, and its single timestamp would bunch the whole scrollback after
+      // every block instead of between them.
       const items: TimelineItem[] = []
       let order = 0
-      for (const chunk of props.pty.chunks(id)) {
-        if (chunk.text.length === 0) continue
-        items.push({ kind: 'pty', time: chunk.time, order: order++, text: chunk.text })
+      for (const segment of props.pty.segments(id)) {
+        if (segment.text.length === 0) continue
+        items.push({ kind: 'pty', time: segment.time, order: order++, text: segment.text })
       }
       for (const block of fold.blocks) items.push({ kind: 'block', time: block.startedAt, order: order++, block })
       for (const notice of fold.notices) items.push({ kind: 'notice', time: notice.time, order: order++, text: notice.text })

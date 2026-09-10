@@ -41,6 +41,24 @@ const HISTORY_MAX_BYTES = 256 * 1024
 const HISTORY_MAX_FRAMES = 1000
 const RECONNECT_DELAY_MS = 2000
 
+/**
+ * Arrival-timeline persistence (localStorage). A bind replay delivers the
+ * whole retained scrollback as ONE frame, so its text has a single timestamp
+ * and a rebuild cannot place it between the session's task blocks — the shell
+ * history collapses to the end of the timeline. Recording `(time, length)` per
+ * live frame lets a rebuild slice that text back into its original pieces.
+ */
+const TIMELINE_STORAGE_PREFIX = 'dshell.pty.timeline.'
+const TIMELINE_MAX_ENTRIES = 2000
+const TIMELINE_MAX_BYTES = 256 * 1024
+const TIMELINE_SAVE_DELAY_MS = 500
+
+/** One live frame's arrival time and character count. */
+interface TimelineEntry {
+  t: number
+  n: number
+}
+
 interface WireFrame {
   kind?: string
   sessionId?: string
@@ -55,9 +73,50 @@ interface WireFrame {
   home?: string
 }
 
+/** One timed slice of a session's PTY text, for timeline placement. */
+export interface PtyTextSegment {
+  readonly text: string
+  readonly time: number
+}
+
+function timelineKey(sessionId: string): string {
+  return `${TIMELINE_STORAGE_PREFIX}${sessionId}`
+}
+
+/** Read a session's persisted arrival timeline; anything malformed reads empty. */
+function loadTimeline(sessionId: string): TimelineEntry[] {
+  try {
+    const raw = window.localStorage.getItem(timelineKey(sessionId))
+    if (raw === null) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const entries: TimelineEntry[] = []
+    for (const item of parsed) {
+      if (!Array.isArray(item)) continue
+      const [t, n] = item as [unknown, unknown]
+      if (typeof t === 'number' && typeof n === 'number' && n > 0) entries.push({ t, n })
+    }
+    return entries
+  } catch {
+    return []
+  }
+}
+
+function timelineBytes(entries: readonly TimelineEntry[]): number {
+  let total = 0
+  for (const entry of entries) total += entry.n
+  return total
+}
+
 interface SessionHistory {
   chunks: PtyChunk[]
   bytes: number
+  /** Arrival timeline of live frames, oldest first (see the storage block). */
+  timeline: TimelineEntry[]
+  /** Bytes the timeline accounts for. */
+  recorded: number
+  /** Debounced localStorage write. */
+  saveTimer: ReturnType<typeof setTimeout> | undefined
 }
 
 /** Client face of the PTY wire: one ws, per-session frame histories. */
@@ -100,6 +159,42 @@ export class PtyStreamService extends Service {
   /** The session's timed chunk list — the canvas merge's PTY side (4.4). */
   chunks(dshSessionId: string): readonly PtyChunk[] {
     return this.histories.get(dshSessionId)?.chunks ?? []
+  }
+
+  /**
+   * The session's PTY text as timed segments. A bind replay arrives as one
+   * frame, so a rebuild that used chunk timestamps would place the whole
+   * scrollback at the moment of the bind; this slices it back with the
+   * arrival times recorded per live frame.
+   * @param dshSessionId - the session whose stream to slice.
+   * @returns oldest-first segments; a session with no recorded timeline falls
+   *   back to its chunks, which is what a fresh browser sees.
+   */
+  segments(dshSessionId: string): readonly PtyTextSegment[] {
+    const history = this.histories.get(dshSessionId)
+    if (history === undefined) return []
+    const timeline = history.timeline
+    if (timeline.length === 0) {
+      return history.chunks.filter(chunk => chunk.text.length > 0).map(chunk => ({ text: chunk.text, time: chunk.time }))
+    }
+    const text = this.read(dshSessionId)
+    if (text.length === 0) return []
+    const segments: PtyTextSegment[] = []
+    let end = text.length
+    for (let index = timeline.length - 1; index >= 0 && end > 0; index -= 1) {
+      const entry = timeline[index]
+      if (entry === undefined) continue
+      const start = Math.max(0, end - entry.n)
+      segments.push({ text: text.slice(start, end), time: entry.t })
+      end = start
+    }
+    if (end > 0) {
+      // Bytes older than the recorded timeline (evicted, or a stream this
+      // browser never watched): one segment at the oldest time we know.
+      const oldest = timeline[0]?.t ?? 0
+      segments.push({ text: text.slice(0, end), time: oldest })
+    }
+    return segments.reverse()
   }
 
   /** Switch the connection to one session (undefined disconnects). */
@@ -230,14 +325,16 @@ export class PtyStreamService extends Service {
 
   /** Ingest one wire chunk into the session's history (replay resets it). */
   private ingest(dshSessionId: string, chunk: PtyChunk): void {
-    let history = this.histories.get(dshSessionId)
-    if (history === undefined) {
-      history = { chunks: [], bytes: 0 }
-      this.histories.set(dshSessionId, history)
-    }
+    const history = this.historyFor(dshSessionId)
     if (chunk.replay) {
       history.chunks = [chunk]
       history.bytes = chunk.text.length
+      // Keep only the timeline entries the replayed text still covers: a
+      // resync replaces the stream, so entries older than it are meaningless.
+      while (history.timeline.length > 0 && history.recorded > chunk.text.length) {
+        const dropped = history.timeline.shift()
+        history.recorded -= dropped?.n ?? 0
+      }
     } else {
       history.chunks = [...history.chunks, chunk]
       history.bytes += chunk.text.length
@@ -247,9 +344,48 @@ export class PtyStreamService extends Service {
         history.chunks = history.chunks.slice(1)
         history.bytes -= dropped.text.length
       }
+      history.timeline.push({ t: chunk.time, n: chunk.text.length })
+      history.recorded += chunk.text.length
+      while (history.timeline.length > TIMELINE_MAX_ENTRIES || history.recorded > TIMELINE_MAX_BYTES) {
+        const dropped = history.timeline.shift()
+        if (dropped === undefined) break
+        history.recorded -= dropped.n
+      }
     }
+    this.scheduleTimelineSave(dshSessionId, history)
     this.patch({ version: this.state.getSnapshot().version + 1 })
     for (const listener of [...this.chunkListeners]) listener(dshSessionId, chunk)
+  }
+
+  /** The per-session history, seeding the arrival timeline from storage once. */
+  private historyFor(dshSessionId: string): SessionHistory {
+    const existing = this.histories.get(dshSessionId)
+    if (existing !== undefined) return existing
+    const timeline = loadTimeline(dshSessionId)
+    const history: SessionHistory = {
+      chunks: [],
+      bytes: 0,
+      timeline,
+      recorded: timelineBytes(timeline),
+      saveTimer: undefined,
+    }
+    this.histories.set(dshSessionId, history)
+    return history
+  }
+
+  /** Coalesce timeline writes: a chatty shell would otherwise serialize per frame. */
+  private scheduleTimelineSave(dshSessionId: string, history: SessionHistory): void {
+    if (history.saveTimer !== undefined) return
+    history.saveTimer = setTimeout(() => {
+      history.saveTimer = undefined
+      try {
+        const pairs = history.timeline.map(entry => [entry.t, entry.n])
+        window.localStorage.setItem(timelineKey(dshSessionId), JSON.stringify(pairs))
+      } catch {
+        // Storage full or unavailable: the timeline is an optimization, so a
+        // failed write only costs the interleaving after the next reload.
+      }
+    }, TIMELINE_SAVE_DELAY_MS)
   }
 
   private patch(patch: Partial<PtyStreamState>): void {
