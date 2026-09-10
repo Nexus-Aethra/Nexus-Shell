@@ -19,6 +19,27 @@ import type { Theme } from './theme.js'
  */
 const FAIL_COLOR = '#cc0000'
 
+/** Kind marker style: fixed width, so labels line up down the transcript. */
+const MARK_STYLE = { flex: '0 0 auto', width: '14px', textAlign: 'center' } as const
+
+/** A foldable row: one hover target, so the whole line reads as the control. */
+const FOLD_STYLE = { margin: '0 -6px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer' } as const
+
+let foldCssInjected = false
+
+/** The plugin ships one client bundle, so the fold stylesheet is injected once. */
+function injectFoldCss(): void {
+  if (foldCssInjected || typeof document === 'undefined') return
+  foldCssInjected = true
+  const style = document.createElement('style')
+  style.textContent = [
+    '[data-dshell-fold]:hover{background:rgba(127,127,127,.10)}',
+    '[data-dshell-chevron]{opacity:.65;transition:transform 120ms ease,opacity 120ms ease}',
+    '[data-dshell-fold]:hover [data-dshell-chevron]{opacity:1}',
+  ].join('\n')
+  document.head.append(style)
+}
+
 type ToolStepModel = { key: string; label: string; command: string | undefined; output: string | undefined }
 type Step =
   | { kind: 'text'; key: string; row: SessionRow; duration: number | undefined }
@@ -128,18 +149,20 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme }
   const clipped = output === undefined ? undefined : clip(output, OUTPUT_LINES)
   return createElement('div', { style: { margin: '2px 0' } },
     createElement('div', {
+      'data-dshell-fold': '',
       onClick: () => { setOpen(value => !value) },
       style: {
-        display: 'flex', alignItems: 'baseline', gap: '6px', cursor: 'pointer',
+        display: 'flex', alignItems: 'baseline', gap: '6px',
         fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE,
+        ...FOLD_STYLE,
       },
     },
-      createElement('span', { style: { color: theme.muted, flex: '0 0 auto' } }, '▤'),
+      createElement('span', { style: { ...MARK_STYLE, color: theme.muted } }, '▤'),
       createElement('span', { style: { color: theme.muted, flex: '0 0 auto' } }, step.label),
       createElement('span', {
-        style: { color: theme.text, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        style: { color: theme.text, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       }, preview),
-      step.output === undefined ? null : createElement('span', { style: { color: theme.muted, fontSize: 11 } }, open ? '⌃' : '⌄'),
+      step.output === undefined ? null : createElement(Chevron, { open, theme }),
     ),
     !open || clipped === undefined ? null : createElement('div', {
       style: {
@@ -167,15 +190,17 @@ function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme
   const [open, setOpen] = useState(false)
   return createElement('div', { style: { margin: '2px 0' } },
     createElement('div', {
+      'data-dshell-fold': '',
       onClick: () => { setOpen(value => !value) },
       style: {
-        display: 'flex', alignItems: 'baseline', gap: '6px', cursor: 'pointer',
+        display: 'flex', alignItems: 'baseline', gap: '6px',
         color: theme.muted, fontFamily: SPAN_FONT, fontSize: SPAN_FONT_SIZE,
+        ...FOLD_STYLE,
       },
     },
-      createElement('span', null, '▤'),
+      createElement('span', { style: MARK_STYLE }, '▤'),
       createElement('span', null, `${step.label} · ${String(step.items.length)} 个命令`),
-      createElement('span', { style: { fontSize: 11 } }, open ? '⌃' : '⌄'),
+      createElement(Chevron, { open, theme }),
     ),
     ...(open
       ? step.items.map(item => createElement('div', { key: item.key, style: { marginLeft: '20px' } },
@@ -191,16 +216,17 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme }
   const [open, setOpen] = useState(false)
   if (row.role === 'reasoning') {
     return createElement('div', {
+      'data-dshell-fold': '',
       onClick: () => { setOpen(value => !value) },
-      style: { margin: '2px 0', cursor: 'pointer' },
+      style: { margin: '2px -6px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer' },
     },
       createElement('div', {
         style: { display: 'flex', alignItems: 'baseline', gap: '6px', color: theme.muted, fontSize: 12 },
       },
-        createElement('span', null, '◌'),
+        createElement('span', { style: MARK_STYLE }, '◌'),
         createElement('span', null, SESSION_ROW_LABEL.reasoning),
         step.duration === undefined ? null : createElement('span', null, `· 持续了 ${formatDuration(step.duration)}`),
-        createElement('span', { style: { fontSize: 11 } }, open ? '⌃' : '⌄'),
+        createElement(Chevron, { open, theme }),
       ),
       open ? createElement('div', {
         style: { color: theme.muted, whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginLeft: '20px', fontSize: 12 },
@@ -231,6 +257,25 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme }
   }, sanitizeRowText(row.text))
 }
 
+/**
+ * The one expand affordance. Every foldable row uses this: the same glyph, the
+ * same size, rotated by CSS rather than swapped for a different character, so
+ * open and closed read as one control instead of two.
+ */
+function Chevron(props: { open: boolean; theme: Theme }): ReactElement {
+  return createElement('span', {
+    'data-dshell-chevron': '',
+    style: {
+      display: 'inline-block',
+      fontSize: 14,
+      lineHeight: '14px',
+      color: props.theme.muted,
+      transform: props.open ? 'rotate(90deg)' : 'none',
+      transition: 'transform 120ms ease',
+    },
+  }, '›')
+}
+
 /** Token count in the compact form the transcript uses. */
 function formatTokens(tokens: number): string | undefined {
   if (tokens <= 0) return undefined
@@ -255,6 +300,7 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
     const timer = setInterval(() => { setNow(Date.now()) }, 1000)
     return () => { clearInterval(timer) }
   }, [running])
+  useEffect(() => { injectFoldCss() }, [])
   const endedAt = block.notice?.time ?? now
   const asked = block.rows.filter(row => row.role === 'user')
   const answers = block.rows.filter(row => row.role === 'assistant')
@@ -283,18 +329,20 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme }): ReactElem
       },
     }, sanitizeRowText(row.text))),
     createElement('div', {
+      'data-dshell-fold': '',
       onClick: () => { setExpanded(value => !value) },
       style: {
-        display: 'flex', alignItems: 'baseline', gap: '6px', cursor: 'pointer',
-        color: failed ? FAIL_COLOR : theme.muted, fontSize: 12, margin: '6px 0 4px',
+        display: 'flex', alignItems: 'baseline', gap: '6px',
+        color: failed ? FAIL_COLOR : theme.muted, fontSize: 12,
+        margin: '6px -6px 4px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer',
       },
     },
-      createElement('span', null, running ? '◐' : failed ? '◼' : '▹'),
+      createElement('span', { style: { fontSize: 9 } }, running ? '◐' : failed ? '◼' : '●'),
       createElement('span', null, running
         ? `工作中 ${formatDuration(endedAt - block.startedAt)}`
         : `已工作 ${formatDuration(endedAt - block.startedAt)}`),
       tokens === undefined ? null : createElement('span', null, `· ${tokens}`),
-      createElement('span', { style: { fontSize: 11 } }, expanded ? '⌄' : '›'),
+      createElement(Chevron, { open: expanded, theme }),
     ),
     ...(expanded
       ? steps.map(step => (step.kind === 'tool'
