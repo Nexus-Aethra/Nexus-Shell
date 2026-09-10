@@ -141,6 +141,31 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
     return await this.openBlankSession()
   }
 
+  /**
+   * dsh navigation action (rc.1): select a Session. dshell keeps dsh's own
+   * selection semantics, so this is the stock `open`.
+   */
+  openSession(sessionId: SessionId): void {
+    this.sessions.open(sessionId)
+  }
+
+  /**
+   * dsh navigation action (rc.1): "open a Workspace". dshell has no
+   * workspaces (design 4.7), so the action lands on the terminal-continuity
+   * blank session instead — the same target `connectWorkspace` uses.
+   */
+  async openWorkspace(_workspaceId: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void): Promise<void> {
+    const sessionId = await this.openBlankSession()
+    beforeOpen?.(sessionId)
+    this.sessions.open(sessionId)
+  }
+
+  /** dsh navigation action (rc.1): fork a Session and open the child. */
+  async forkSession(sessionId: SessionId): Promise<void> {
+    const child = await this.sessions.fork({ sessionId })
+    this.sessions.open(child)
+  }
+
   startSession(_workspaceId?: WorkspaceId): void {
     // The stock New-Session affordance opens dshell's naming dialog instead
     // of creating silently (design 4.7 naming paragraph).

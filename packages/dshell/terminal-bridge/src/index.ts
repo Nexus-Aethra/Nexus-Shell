@@ -34,8 +34,69 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { PtyBuffer } from './buffer.js'
 import { DshellPtyBackend, type DshellPtySession } from './pty.js'
+import {
+  createSplitter, sanitizeTerminalText, sliceWindow, splitOutput, trackInput,
+  type CommandSplitterState, type TerminalCommandRecord,
+} from './commands.js'
 
 export { DEFAULT_PTY_BUFFER_OPTIONS, PtyBuffer } from './buffer.js'
+export { sliceWindow, stripAnsi, sanitizeTerminalText, type TerminalCommandRecord } from './commands.js'
+
+/** Completed-command history retained per shell (oldest drop first). */
+const MAX_COMMAND_HISTORY = 200
+
+/**
+ * Shell generation counter. A new record — spawn or `/clear` — takes the next
+ * value, so a cursor minted against an older shell is always detectable as
+ * stale (a plain offset cannot be, since a respawn's log seed restarts near
+ * zero).
+ */
+let nextShellGeneration = 1
+
+/** Cursor state carried in the opaque token handed to agents. */
+interface CursorState {
+  readonly generation: number
+  readonly offset: number
+  readonly seq: number
+}
+
+/** Parse an opaque cursor token (`g<generation>:<offset>:<seq>`). */
+function parseCursor(cursor: string | undefined): CursorState | undefined {
+  if (cursor === undefined) return undefined
+  const match = /^g(\d+):(\d+):(\d+)$/.exec(cursor.trim())
+  if (match === null) return undefined
+  return { generation: Number(match[1]), offset: Number(match[2]), seq: Number(match[3]) }
+}
+
+/** Format one cursor token. */
+function formatCursor(state: CursorState): string {
+  return `g${String(state.generation)}:${String(state.offset)}:${String(state.seq)}`
+}
+
+/** Incremental slice of one shell's activity since a cursor. */
+export interface TerminalDelta {
+  /** Opaque token to pass back on the next call. */
+  readonly cursor: string
+  /** The shell generation the delta belongs to. */
+  readonly generation: number
+  /** Sanitized output appended since the cursor. */
+  readonly text: string
+  /** Commands completed since the cursor (bounded by the retained history). */
+  readonly commands: readonly TerminalCommandRecord[]
+  /** Count of completed commands since the cursor. */
+  readonly newCommandCount: number
+  /** Older output fell out of the retained window before the cursor. */
+  readonly dropped: boolean
+  /** The cursor belonged to a previous shell generation (respawn or /clear). */
+  readonly cleared: boolean
+}
+
+/** Latest retained commands of one shell. */
+export interface TerminalHistory {
+  readonly cursor: string
+  readonly generation: number
+  readonly commands: readonly TerminalCommandRecord[]
+}
 
 export const name = '@deepseek-ai/dsh-dshell-terminal-bridge'
 
@@ -64,6 +125,14 @@ interface MainRecord {
   /** The backend's rich handle: raw output push, exit push, resize. */
   session: DshellPtySession
   buffer: PtyBuffer
+  /** Shell identity; every respawn and `/clear` takes a fresh value. */
+  generation: number
+  /** Bytes ever appended to the logical stream, independent of window trims. */
+  absOffset: number
+  /** Completed commands, oldest drop first. */
+  commands: TerminalCommandRecord[]
+  /** Input-line assembly + output/marker splitter for this shell. */
+  splitter: CommandSplitterState
   activeSend: TerminalSendOperation | undefined
   inputQueue: string[]
   /** Init echo is scrubbed and output suppressed until the first settle. */
@@ -186,6 +255,12 @@ export class DshellTerminalBridge extends Service {
       ptyId: spawned.sessionId,
       session,
       buffer,
+      generation: nextShellGeneration++,
+      // The seeded log tail is history the previous shell already produced;
+      // starting the cursor at its end keeps a respawn from replaying it.
+      absOffset: Buffer.byteLength(buffer.text(), 'utf8'),
+      commands: [],
+      splitter: createSplitter(),
       activeSend: undefined,
       inputQueue: [],
       initializing: true,
@@ -196,9 +271,18 @@ export class DshellTerminalBridge extends Service {
     // Raw ANSI push: every output byte lands in the persisted buffer and on
     // the wire untouched — the canvas renders it natively. Suppressed while
     // the init echo is pending so a fresh session opens on a clean slate.
+    // The same bytes feed the command splitter (OSC 133;D closes a record).
     record.stopOutput = session.onOutput((chunk) => {
       if (record.initializing) return
       record.buffer.append(chunk)
+      record.absOffset += Buffer.byteLength(chunk, 'utf8')
+      const closed = splitOutput(record.splitter, chunk, Date.now())
+      if (closed.length > 0) {
+        record.commands.push(...closed)
+        if (record.commands.length > MAX_COMMAND_HISTORY) {
+          record.commands.splice(0, record.commands.length - MAX_COMMAND_HISTORY)
+        }
+      }
       this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
     })
     record.stopExit = session.onExit((status) => {
@@ -254,6 +338,9 @@ export class DshellTerminalBridge extends Service {
   /** Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the active send). */
   feed(dshSessionId: string, text: string): void {
     void this.ensureLiveMain(dshSessionId).then((record) => {
+      // The input side of the command splitter: assemble the line that Enter
+      // will queue, so the next `133;D` marker can pair command ↔ output.
+      trackInput(record.splitter, text)
       if (text === '\u0003' && record.activeSend !== undefined) {
         record.activeSend.cancel()
         return
@@ -285,22 +372,89 @@ export class DshellTerminalBridge extends Service {
     return record.ptyId
   }
 
-  /**
-   * Bounded recent output of one session's main shell — the Phase 7
-   * context-injection snapshot. Never spawns: a session the browser has
-   * not opened (or one whose shell exited) has no snapshot, so agent
-   * turns that carry no visible terminal stay context-free.
-   * @param dshSessionId - the dsh session whose main record to read.
-   * @param maxLines - newest-lines cap.
-   * @param maxBytes - UTF-8 byte cap, cut on a boundary when it binds.
-   * @returns the tail text, or undefined when there is no live main shell.
-   */
-  recentOutput(dshSessionId: string, maxLines: number, maxBytes: number): string | undefined {
+  /** The live main record for one session, or undefined. Never spawns. */
+  private liveRecord(dshSessionId: string): MainRecord | undefined {
     const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
     if (agent === undefined) return undefined
     const record = this.mains.get(agent)
     if (record === undefined || record.dead !== undefined) return undefined
-    return record.buffer.tail(maxLines, maxBytes)
+    return record
+  }
+
+  /** Cursor at the current head of one record. */
+  private headCursor(record: MainRecord): CursorState {
+    return {
+      generation: record.generation,
+      offset: record.absOffset,
+      seq: record.commands.at(-1)?.seq ?? 0,
+    }
+  }
+
+  /**
+   * Incremental slice of one session's main-shell activity since a cursor —
+   * the context-management read. Output is sanitized for the model; commands
+   * closed since the cursor come back structured. Never spawns a shell.
+   * @param dshSessionId - the dsh session whose main record to read.
+   * @param cursor - token from a previous call; omitted means "nothing yet",
+   *   which reports `cleared: false` and returns the whole retained window.
+   * @returns the delta, or undefined when there is no live main shell.
+   */
+  since(dshSessionId: string, cursor?: string): TerminalDelta | undefined {
+    const record = this.liveRecord(dshSessionId)
+    if (record === undefined) return undefined
+    const head = this.headCursor(record)
+    const parsed = parseCursor(cursor)
+    // A cursor from an older shell generation means the shell was replaced or
+    // cleared: report the reset and restart from the new head rather than
+    // replaying the seeded scrollback as if it were new.
+    if (parsed !== undefined && parsed.generation !== record.generation) {
+      return {
+        cursor: formatCursor(head),
+        generation: record.generation,
+        text: '',
+        commands: [],
+        newCommandCount: 0,
+        dropped: false,
+        cleared: true,
+      }
+    }
+    const windowText = record.buffer.text()
+    const windowStart = record.absOffset - Buffer.byteLength(windowText, 'utf8')
+    // No cursor at all means "nothing has been delivered yet": the whole
+    // retained window is the first delta, so the model starts out knowing
+    // what the terminal already shows.
+    const slice = sliceWindow(windowText, record.absOffset, parsed?.offset ?? windowStart)
+    const commands = record.commands.filter(command => command.seq > (parsed?.seq ?? 0))
+    return {
+      cursor: formatCursor(head),
+      generation: record.generation,
+      text: sanitizeTerminalText(slice.text),
+      commands,
+      newCommandCount: commands.length,
+      dropped: slice.dropped || (parsed === undefined && windowStart > 0),
+      cleared: false,
+    }
+  }
+
+  /**
+   * The latest retained commands of one session's main shell (no cursor) —
+   * what an agent asks for when it wants to look back rather than catch up.
+   * @param dshSessionId - the dsh session whose main record to read.
+   * @param limit - newest-commands cap.
+   * @returns the commands plus the cursor at the head, or undefined when no
+   *   live main shell exists.
+   */
+  history(dshSessionId: string, limit: number): TerminalHistory | undefined {
+    const record = this.liveRecord(dshSessionId)
+    if (record === undefined) return undefined
+    const commands = limit >= record.commands.length
+      ? record.commands
+      : record.commands.slice(record.commands.length - Math.max(0, limit))
+    return {
+      cursor: formatCursor(this.headCursor(record)),
+      generation: record.generation,
+      commands,
+    }
   }
 
   /**
@@ -308,6 +462,13 @@ export class DshellTerminalBridge extends Service {
    * bash renders a fresh `user@host:path$ ` cue (the `/clear` path).
    */
   private performClear(record: MainRecord): void {
+    // A clear is a new shell epoch: old cursors must read as stale, the
+    // splitter and command history restart, and the absolute offset restarts
+    // with the truncated window.
+    record.generation = nextShellGeneration++
+    record.absOffset = 0
+    record.commands = []
+    record.splitter = createSplitter()
     void record.buffer.truncate()
     this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
     record.inputQueue.push('\n')

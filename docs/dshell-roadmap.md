@@ -225,7 +225,11 @@ Plugins touched:
   replaced with a single bottom rule spanning the column (design 4.8).
   The old `[data-phase="active"]` overrides (including `viewArea
   { display: none }`) are gone: the stock active layout is where the
-  canvas and composer belong.
+  canvas and composer belong. The `uiWorkspace` stub also implements
+  dsh rc.1's added navigation actions (`openSession`, `openWorkspace`,
+  `forkSession`) against the cwd-session model: selecting a session is
+  the stock `open`, "open workspace" lands on the terminal-continuity
+  blank session, and fork uses the session controller's `fork`.
 
 Acceptance check (current state — see screenshot in conversation):
 
@@ -406,43 +410,69 @@ Acceptance check:
   access.
 - `/compact` triggers dsh's compaction service and reports its result.
 
-## Phase 7 — Terminal context injection
+## Phase 7 — Terminal context management (cursor + command records)
 
-Goal: agent turns include the recent `main` PTY output as a leading
-context block.
+Goal: agent turns carry the main shell's activity **incrementally** — only
+what the model has not seen — and the agent can look back at commands on
+demand.
 
 Covers decision: 4.6 (injection).
 
 Plugins touched:
 
-- `dshell-terminal-bridge` (host face) — `recentOutput(sessionId,
-  maxLines, maxBytes)` returns the PtyBuffer tail for a session's live
-  main shell, or `undefined` when there is none. It never spawns a
-  shell, so subagent sessions and never-opened sessions stay
-  context-free.
-- `dshell-mode` (host face) — on `agent/pre-step`, when the step's
-  message batch carries a genuine `source.kind === 'user'` message,
-  prepend a single plugin-sourced `createUserMessage` (`kind:
-  'plugin'`, `form: 'notice'`, summary "主终端最近输出") holding the
-  fenced snapshot. Bounds live in the host: 100 lines / 4 KiB, cut on a
-  UTF-8 boundary by `PtyBuffer.tail`.
+- `dshell-terminal-bridge` (host face) — the bridge now owns a per-shell
+  **absolute cursor** on top of the PtyBuffer window:
+  - `absOffset` counts every appended byte and survives window trims, so
+    an offset means the same thing after retention slides;
+  - a pure splitter (`commands.ts`) joins the two streams the bridge
+    already sees — the input it forwards to the PTY and the raw output —
+    into `{command, exitCode, output}` records. Bash's own
+    `OSC 133;D;<code>` prompt marker (already installed by the init PS1)
+    closes each record; input is assembled through backspace / Ctrl+C /
+    Ctrl+U / CSI handling. Untracked commands (history recall, an
+    external writer) still yield a record with empty `command` and real
+    output;
+  - `since(sessionId, cursor?)` returns the delta: sanitized text,
+    commands closed since the cursor, `dropped` when retention slid past
+    the request, `cleared` when the cursor belonged to an earlier
+    **generation** (respawn or `/clear` take a fresh generation);
+  - `history(sessionId, limit)` returns the latest retained commands;
+  - both never spawn a shell, so subagent and never-opened sessions stay
+    context-free.
+- `dshell-mode` (host face) — keeps a per-Agent **watermark**. On
+  `agent/pre-step`, a step carrying a genuine `source.kind === 'user'`
+  message injects one plugin-sourced (`form: 'notice'`, summary
+  "主终端增量") message with the command summary and the sanitized new
+  output, then advances the watermark. A first read (no watermark)
+  delivers the retained window once; a stale cursor (`cleared`) advances
+  and injects nothing, so a respawn never replays the seeded scrollback.
+  Output is capped at 8 KiB, kept from the newest end.
+- `dshell-commands` (host face) — `dshell_terminal_read({cursor?, limit?,
+  includeOutput?})`: without a cursor, the latest commands; with one, only
+  what happened since. The tool result ends with the new cursor so the
+  model can continue from it.
 - `dshell-mode` (browser face) — filters `user/message` events whose
   source is not `user` out of the canvas row extractor, so injected
   context and guard notices never paint as fake `┃ 你` rows.
 
-The Phase 7 client-side deviation (a `[dshell 终端上下文]` fence
-prepended to the user's own message) is gone: agent submits now travel
-the stock pipeline, so injection happens host-side at the step, where
-the message source is durable and correct.
+The old whole-tail snapshot (re-sent every turn, escaping control codes
+and prompt markers into the prompt) is gone. The Phase 7 client-side
+deviation (a fence prepended to the user's own message) stays gone:
+injection is host-side at the step, where the message source is durable.
 
-Acceptance check:
+Acceptance check (verified end-to-end with a live model):
 
-- Run `ls /tmp` in shell mode, switch to agent mode, ask "what was the
-  last command output?".
-- The model's reply references the captured output verbatim.
-- The injection respects the 100-line / 4 KiB cap; a runaway command's
-  output is truncated at a UTF-8 boundary.
+- `echo ctx-one` then `pwd` in shell mode, then an agent turn: the
+  durable log shows one injected block listing exactly those two
+  commands with exit codes and sanitized output (no `\u001b]133;D`
+  markers, no `\r`).
+- A second command + turn injects only the new command — no repetition
+  of the first block.
+- `dshell_terminal_read` called by the model returns the command records
+  plus a `g<generation>:<offset>:<seq>` cursor.
 - The injected block does not appear as a user row in the canvas.
+- 12 pure-function checks cover the splitter and window math:
+  `pnpm tsx packages/dshell/terminal-bridge/scripts/check-commands.ts`.
 
 ## Phase 8 — `dshell_get_main_terminal` tool
 
