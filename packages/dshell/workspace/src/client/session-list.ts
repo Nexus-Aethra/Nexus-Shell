@@ -47,6 +47,11 @@ export interface DeviceSeat {
   ) => Promise<void>
   /** Local mount directory for one device tree; undefined when the host refused. */
   mountFor: (deviceId: string, remoteRoot: string | null) => Promise<string | undefined>
+  /**
+   * Prove a device before a session is created: one ssh round trip plus the
+   * session's remote directory. Refuses by throwing.
+   */
+  test: (deviceId: string, remoteRoot: string | null) => Promise<void>
   /** Whether a directory is a device mount, which a local session must not adopt. */
   isMountPath: (path: string) => boolean
   /**
@@ -320,13 +325,19 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     dialogOpen
       ? createElement(NewSessionDialog, {
         key: 'dialog',
-        defaultCwd: rows.find(row => !row.blank)?.cwd,
+        // The most recent real session's directory, but never a device mount:
+        // a mount is an empty stand-in for a device tree, and dsh's own default
+        // inherits the CURRENT session's directory, so offering one here is how
+        // a session labelled "本机" ends up inside a device's mount.
+        defaultCwd: rows.find(row => !row.blank && row.cwd !== undefined
+          && deviceSeat?.isMountPath(row.cwd) !== true)?.cwd,
         createSession: props.createSession,
         listPresets: props.listPresets,
         ...deviceSeat === undefined ? {} : {
           devices: deviceSeat.devices(),
           bind: deviceSeat.bind,
           mountFor: deviceSeat.mountFor,
+          test: deviceSeat.test,
           isMountPath: deviceSeat.isMountPath,
           revealSettings: deviceSeat.revealSettings,
         },

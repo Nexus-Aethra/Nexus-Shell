@@ -84,7 +84,16 @@ export type SshRequest =
   | { readonly action: 'list' }
   | { readonly action: 'save'; readonly device: DeviceInput }
   | { readonly action: 'delete'; readonly deviceId: string }
-  | { readonly action: 'test'; readonly deviceId: string }
+  | {
+    readonly action: 'test'
+    readonly deviceId: string
+    /**
+     * Session directory to also prove creatable, so a failing `mkdir` is found
+     * before a session is created rather than after. Absent checks only the
+     * connection.
+     */
+    readonly remoteRoot?: string | null
+  }
   | {
     readonly action: 'bind'
     readonly sessionId: string

@@ -193,7 +193,10 @@ export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
             + ` · ${device.auth === 'password' ? '密码' : '密钥'}登录${device.hasSecret ? '' : '（未存凭据）'}`),
           createElement('button', {
             type: 'button', style: actionStyle, title: '测试连接',
-            onClick: () => { void props.ssh.test(device.id) },
+            // The refusal is published on the snapshot, which this card
+            // renders; catching it here keeps a deliberate refusal from also
+            // looking like an unhandled failure in the console.
+            onClick: () => { void props.ssh.test(device.id).catch(() => {}) },
           }, '测试'),
           createElement('button', {
             type: 'button', style: actionStyle, title: '编辑',

@@ -127,13 +127,28 @@ export class SshClientService extends Service {
     await this.send({ action: 'delete', deviceId })
   }
 
-  /** Open one connection and report what answered. */
-  async test(deviceId: string): Promise<void> {
-    await this.send({ action: 'test', deviceId })
+  /**
+   * Open one connection and report what answered.
+   *
+   * Throws on refusal: the caller is usually the new-session dialog, which
+   * must not create a session it cannot bind. The same failure is published on
+   * the snapshot for the settings card, which shows it instead of throwing.
+   *
+   * @param deviceId - device to connect to.
+   * @param remoteRoot - session directory to also prove creatable.
+   */
+  async test(deviceId: string, remoteRoot: string | null = null): Promise<void> {
+    await this.send({ action: 'test', deviceId, remoteRoot }, { strict: true })
   }
 
   /**
    * Assign a session to a device, or pass null to run it locally.
+   *
+   * Throws on refusal. A session that stayed unbound while its directory is a
+   * device mount is worse than a visible error: nothing routes its commands,
+   * so they would run on this machine inside an empty stand-in directory. The
+   * dialog keeps itself open on a throw instead of closing over that state.
+   *
    * @param remoteRoot - directory to run in on that device; null uses the
    *   device's own.
    * @param mount - local mount directory for that tree; null keeps the
@@ -145,7 +160,7 @@ export class SshClientService extends Service {
     remoteRoot: string | null = null,
     mount: string | null = null,
   ): Promise<void> {
-    await this.send({ action: 'bind', sessionId, deviceId, remoteRoot, mount })
+    await this.send({ action: 'bind', sessionId, deviceId, remoteRoot, mount }, { strict: true })
   }
 
   /**
@@ -156,7 +171,7 @@ export class SshClientService extends Service {
    * @returns the absolute local directory, or undefined if the host refused.
    */
   async mountFor(deviceId: string, remoteRoot: string | null): Promise<string | undefined> {
-    const body = await this.send({ action: 'mount', deviceId, remoteRoot })
+    const body = await this.send({ action: 'mount', deviceId, remoteRoot }, { strict: true })
     return body.mountPath
   }
 
@@ -166,7 +181,18 @@ export class SshClientService extends Service {
     this.publish({ ...this.snapshot, testResult: undefined, error: undefined })
   }
 
-  private async send(request: SshRequest): Promise<SshResponse> {
+  /**
+   * One route call. The refusal is always published on the snapshot so a view
+   * that renders from it (the settings card) sees it; `strict` additionally
+   * throws it, for callers whose flow must not continue — creating a session
+   * that was never bound, or closing the dialog that reported the problem.
+   * @param request - request body; `list` travels as a GET.
+   * @param options - `strict` rethrows the refusal after publishing it.
+   * @returns the response body, or a body synthesized from a transport failure.
+   */
+  private async send(request: SshRequest, options?: { strict?: boolean }): Promise<SshResponse> {
+    const strict = options?.strict === true
+    let body: SshResponse
     try {
       const response = await fetch(DSHELL_SSH_PATH, {
         method: request.action === 'list' ? 'GET' : 'POST',
@@ -174,20 +200,22 @@ export class SshClientService extends Service {
         headers: { 'content-type': 'application/json' },
         ...request.action === 'list' ? {} : { body: JSON.stringify(request) },
       })
-      const body = await response.json() as SshResponse
-      this.publish({
-        devices: body.devices,
-        bindings: body.bindings,
-        testResult: body.testResult,
-        error: body.error,
-        loaded: true,
-      })
-      return body
+      body = await response.json() as SshResponse
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       this.publish({ ...this.snapshot, error: reason })
+      if (strict) throw new Error(reason)
       return { devices: this.snapshot.devices, bindings: this.snapshot.bindings, error: reason }
     }
+    this.publish({
+      devices: body.devices,
+      bindings: body.bindings,
+      testResult: body.testResult,
+      error: body.error,
+      loaded: true,
+    })
+    if (strict && body.error !== undefined) throw new Error(body.error)
+    return body
   }
 
   private publish(snapshot: SshSnapshot): void {

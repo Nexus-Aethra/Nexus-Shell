@@ -23,7 +23,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../theme-settings.js'
-import { BlockView } from './block-view.js'
+import { BlockView, type SshSeat } from './block-view.js'
 import { DshellLeftControls } from './controls.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
@@ -141,6 +141,31 @@ export function apply(ctx: Context): void {
   const uiConversation = ctx.get('uiConversation') as unknown as {
     imageUrl: (sessionId: SessionId, attachment: Parameters<MessageImageLoader>[0]) => Promise<string>
   }
+  // The SSH plugin is a sibling row: present in the dshell bundle, absent in a
+  // composition that omits it. The block view only needs its device face for
+  // the connection screen, and a missing seat must leave the terminal intact —
+  // hence deferred injection rather than a required dependency. The seat object
+  // is built once so its identity is stable across renders (the view subscribes
+  // to it), and it is structural, so this package needs no import of the SSH
+  // bundle: only the runtime service key, which is what the cast pins down.
+  const sshHost = ctx as unknown as {
+    inject(keys: readonly string[], callback: (scope: {
+      /** The SSH client service, reduced to what the block view asks of it. */
+      dshellSsh: SshSeat & {
+        getSnapshot(): { devices: readonly { id: string; name: string }[] }
+      }
+    }) => void): unknown
+  }
+  let sshSeat: SshSeat | undefined
+  sshHost.inject(['dshellSsh'], (scope) => {
+    const ssh = scope.dshellSsh
+    sshSeat = {
+      bindingOf: sessionId => ssh.bindingOf(sessionId),
+      devices: () => ssh.getSnapshot().devices.map(device => ({ id: device.id, name: device.name })),
+      revealSettings: () => ssh.revealSettings(),
+      subscribe: listener => ssh.subscribe(listener),
+    }
+  })
   // Cast: the modelDirectories merge lives in ui-model-selection's face,
   // which this package must not take as a dependency (the model chip here
   // reads the service read-only; the declarer stays ui-model-selection).
@@ -257,6 +282,9 @@ export function apply(ctx: Context): void {
         sessionId,
         pty,
         sessions,
+        // Read at render time, so a plugin that loads after this one is still
+        // picked up.
+        ssh: sshSeat,
         // Attachments arrive as opaque refs; the conversation service owns the
         // only sanctioned way to turn one into a URL.
         loadImage: sessionId === undefined

@@ -786,6 +786,81 @@ Not routed yet:
 - Remote commands assume a POSIX/GNU userland (`stat`, `realpath`, `find`,
   `mktemp`, `chmod --reference`).
 
+## Phase 9.7 — Connection failures and reconnection
+
+Goal: a device session that cannot connect says so, in the right place, and
+offers the one action that can fix it.
+
+Before this phase the failure was silent in three separate ways: a failed
+`bind` was published on the snapshot and never thrown, so the new-session
+dialog closed over a session that had no assignment and whose directory was a
+device mount (its shell — and the agent's `bash` — then ran on the local
+machine inside an empty stand-in directory); a shell that died during startup
+lost ssh's own stderr with the discarded session and reported only "the shell
+exited"; and the browser retried the socket every two seconds forever, which
+is indistinguishable from a hang.
+
+Decisions:
+
+- **The connection is proved before the session exists.** The dialog runs one
+  real ssh round trip (`test`) *plus* the session's remote directory
+  (`ensureRemoteRoot`) before `createSession`. A device that answers but
+  cannot host the directory is therefore a refusal in the dialog, not a broken
+  session later. `SshClientService.send` gained a `strict` mode so
+  `test`/`mountFor`/`bind` throw while the settings card keeps rendering the
+  published `error` (its Test button catches, since the refusal is already on
+  screen).
+- **The host classifies the death, because only the host can.** A device
+  session's "cannot connect" is an `ssh` process that printed a line and
+  exited; node-pty reports an exit code only. So `markDead` ships
+  `{reason, detail, ready}`: the reason from the exit (signal first, since
+  node-pty calls a SIGHUP `exitCode: 0`), the last ssh diagnostic found in the
+  output (`diagnosticTail`, patterns only — a line that is not a diagnostic is
+  never presented as the cause), and `ready`, whether that shell ever reached
+  a prompt (the init send settles only once the shell answers).
+- **`ready` decides which of two presentations a failure gets.** A shell that
+  *had* reached a prompt gets a marker appended after the output the reader was
+  looking at; one that never did has nothing to append to, so it gets the
+  intermediate screen. `connectionView` in the mode client is the single place
+  that turns `{status, ready, attempt, bound}` into one of `none | panel |
+  notice`, and untested branches (a local session's first bind) render nothing
+  at all rather than flashing a panel on every session switch.
+- **Reconnection is bounded and visible.** The client spends at most three
+  automatic attempts (1s / 2s / 4s) on whichever layer is broken — a live
+  socket means the shell died, so the host is asked for a new one with a new
+  `reconnect` frame; a dead socket is reopened — and then stops and says so
+  ("自动重连已停止（3 次均失败）"). The button (`PtyStreamService.reconnect`)
+  clears the budget and tries immediately, which is also the only way out of
+  the exhausted state.
+- **A spawn failure no longer closes the socket.** `bindClient` keeps the
+  client bound and answers with an `error` frame instead of `close(1008)`;
+  closing threw away the connection the retry needs and made the client
+  reconnect into the same wall.
+- **No silent local fallback.** `interactiveShellPlan` and the shell seam's
+  `resolve` now refuse a session whose directory is under the mount base but
+  which has no assignment, naming the reason. That state is reachable by
+  deleting a device, and previously produced a local shell (or local `bash`
+  tool calls) inside an empty directory that looks like a working terminal.
+- **The dialog stops inheriting a mount.** Clearing the directory field was
+  not enough: dsh then inherits the *current* session's cwd, which can be the
+  mount the dialog just refused to prefill. The list now offers the most recent
+  non-mount directory, and a local session with an empty directory that would
+  inherit a mount is refused with the reason.
+
+Acceptance check (driven from the browser):
+
+- A device pointed at a closed port: the dialog reports
+  `ssh: connect to host 127.0.0.1 port 9: Connection refused`, stays open, and
+  no session is created.
+- A session that never connected (page reloaded while the device is down) shows
+  the centred screen — `⚠ 无法连接到 <device>`, the ssh diagnostic,
+  `已自动重试 3 次均未成功。`, 重试连接 / 去设置 — and nothing behind it.
+- A session that *had* a working terminal and lost it gets the red marker at
+  the end of its output (`连接已断开 · <reason>`, the diagnostic, the retry
+  count, then the exhausted line), with the scrollback intact above it.
+- Restarting the device and clicking 重试连接 brings the terminal back at the
+  same place in the history; a local session shows neither treatment.
+
 ## Phase 10 — Packaging
 
 Goal: `dshell-*` packages install with `pnpm add` and dsh loads them

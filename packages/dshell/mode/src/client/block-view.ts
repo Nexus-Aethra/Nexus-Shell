@@ -28,8 +28,27 @@ import { clearStream, createFold, foldEvent, noteLiveChunk, type BlockFold } fro
 import { AgentBlock, UserBubble } from './agent-block.js'
 import { assembleTimeline, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
+import { ConnectionNotice, ConnectionPanel, connectionView } from './connection-notice.js'
 import { TodoCard, injectTodoCardCss, setTodoPanelSuppressed, type TodoItem } from './todo-card.js'
 import { useDshellTheme } from './theme.js'
+
+/**
+ * The device half of a session, as the SSH plugin publishes it.
+ *
+ * Structural on purpose: this package must not depend on the SSH plugin's
+ * bundle, and a composition without it passes nothing — the terminal then has
+ * no device story to tell, while the end-of-output marker (which is about the
+ * shell itself) still works.
+ */
+export interface SshSeat {
+  /** The session's assignment, when it has one. */
+  bindingOf(sessionId: string): { deviceId: string } | undefined
+  /** Registered devices, for naming the one a session runs on. */
+  devices(): readonly { id: string; name: string }[]
+  /** Open the SSH settings card; false when the entry could not be found. */
+  revealSettings(): boolean
+  subscribe(listener: () => void): () => void
+}
 
 /**
  * One session's incremental fold.
@@ -155,6 +174,8 @@ export function BlockView(props: {
   sessionId: SessionId | undefined
   /** Turns an attachment ref into a URL (the conversation service's loader). */
   loadImage: MessageImageLoader | undefined
+  /** The SSH plugin's device face; absent in a composition without it. */
+  ssh?: SshSeat | undefined
 }): ReactElement {
   const theme = useDshellTheme()
   const seat = useRef<HTMLDivElement | null>(null)
@@ -283,6 +304,11 @@ export function BlockView(props: {
   // PTY history changes bump the service's version; re-slice the regions.
   useEffect(() => props.pty.state.subscribe(() => { repaint() }), [props.pty, repaint])
 
+  // The device mirror changes on a bind, a device deletion, or a test; the
+  // connection screen names the device, so it re-renders with it.
+  const { ssh } = props
+  useEffect(() => ssh?.subscribe(() => { repaint() }), [ssh, repaint])
+
   // Keep the PTY's cell grid in step with the column while this tab is active:
   // the shell wraps and pads its own output to the PTY's width, so that width
   // has to be the one the regions render at. Measured from the scroll
@@ -354,6 +380,24 @@ export function BlockView(props: {
     return id !== undefined && state !== undefined && state.sessionId === id ? state.todos : []
   }, [version, id])
 
+  // How this session's terminal is doing. The wire state belongs to the
+  // session it names, so a switch mid-render reads as "nothing yet" rather
+  // than as the previous session's failure.
+  const pty = props.pty.state.getSnapshot()
+  const current = pty.sessionId === id
+  const binding = id === undefined || !current ? undefined : ssh?.bindingOf(id)
+  const device = binding === undefined
+    ? undefined
+    : ssh?.devices().find(candidate => candidate.id === binding.deviceId)?.name ?? binding.deviceId
+  const connection = connectionView({
+    status: current ? pty.status : 'idle',
+    ready: pty.ready,
+    attempt: pty.attempt,
+    bound: binding !== undefined,
+  })
+  const retry = useCallback((): void => { props.pty.reconnect() }, [props.pty])
+  const openSettings = ssh === undefined ? undefined : (): boolean => ssh.revealSettings()
+
   // Follow the tail unless the reader has scrolled away.
   const pinned = useRef(true)
   useEffect(() => {
@@ -417,6 +461,42 @@ export function BlockView(props: {
             : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage })
         return [...divider, node]
       }),
+      // The connection marker closes the output, where the shell stopped. It
+      // scrolls with the content and disappears when the shell is back.
+      connection.kind === 'notice'
+        ? createElement(ConnectionNotice, {
+          key: 'connection',
+          tone: connection.tone,
+          device,
+          reason: pty.reason,
+          detail: pty.detail,
+          attempt: pty.attempt,
+          maxAttempts: pty.maxAttempts,
+          exhausted: pty.exhausted,
+          since: pty.since,
+          sessionKey: id,
+          onRetry: retry,
+          ...openSettings === undefined ? {} : { onSettings: openSettings },
+        })
+        : null,
     ),
+    // The intermediate screen is the seat's own overlay: a device session that
+    // never came up has nothing behind it worth reading.
+    connection.kind === 'panel'
+      ? createElement(ConnectionPanel, {
+        key: 'connection-panel',
+        phase: connection.phase,
+        device,
+        reason: pty.reason,
+        detail: pty.detail,
+        since: pty.since,
+        attempt: pty.attempt,
+        maxAttempts: pty.maxAttempts,
+        exhausted: pty.exhausted,
+        sessionKey: id,
+        onRetry: retry,
+        ...openSettings === undefined ? {} : { onSettings: openSettings },
+      })
+      : null,
   )
 }

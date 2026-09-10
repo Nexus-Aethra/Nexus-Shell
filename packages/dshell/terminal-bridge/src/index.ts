@@ -34,7 +34,7 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
-import { DshellPtyBackend, type DshellPtySession } from './pty.js'
+import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import {
   createSplitter, sanitizeTerminalText, sliceWindow, splitOutput, trackInput,
   type CommandSplitterState, type TerminalCommandRecord,
@@ -144,12 +144,23 @@ interface MainRecord {
   stopOutput: () => void
   stopExit: () => void
   /**
+   * Whether this shell ever reached a prompt.
+   *
+   * The init send settles only once the shell answers, so a record whose init
+   * settled with the process still alive was a working terminal. It is what
+   * tells "the connection dropped" apart from "it never came up": the client
+   * shows the first as a marker at the end of the output and the second as a
+   * full connecting/failure panel, and only the host can make that call.
+   */
+  ready: boolean
+  /**
    * Set when the PTY exited or the dsh session was disposed. The record
    * stays in `mains` briefly so a reconnecting client can receive the
    * close frame in its bindClient sequence; `disposeRecord` removes it
-   * after the grace.
+   * after the grace. The diagnostic and readiness travel with it so a client
+   * that binds after the death still gets the whole story.
    */
-  dead?: { reason: string; time: number }
+  dead?: { reason: string; detail?: string | undefined; ready: boolean; time: number }
   /** Pending dispose handle, kept so a rapid respawn can cancel it. */
   disposeTimer?: NodeJS.Timeout
 }
@@ -328,6 +339,7 @@ export class DshellTerminalBridge extends Service {
       activeSend: undefined,
       inputQueue: [],
       initializing: true,
+      ready: false,
       stopOutput: () => {},
       stopExit: () => {},
     }
@@ -366,7 +378,7 @@ export class DshellTerminalBridge extends Service {
       this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
     })
     record.stopExit = session.onExit((status) => {
-      this.markDead(record, status.kind === 'exited' ? `exit code ${String(status.exitCode)}` : status.kind)
+      this.markDead(record, status.kind === 'exited' ? exitLabel(status) : status.kind)
     })
     // Replace the stock `dsh> ` prompt with a bash-style `user@host:path$`
     // cue once the shell is ready; PS1 and PROMPT_COMMAND are rewritten in
@@ -393,9 +405,18 @@ export class DshellTerminalBridge extends Service {
     ].join('\n')
     const operation = this.ctx.terminals.startSend(record.agent, record.ptyId, { text: init, submit: false })
     record.activeSend = operation
-    void operation.done.then(() => {
+    void operation.done.then((result) => {
+      // The init send settles only once the shell answers (marker seen and
+      // quiet), so a settle with the process still alive means this shell is a
+      // working terminal — the fact the client needs to tell "connection
+      // dropped" apart from "never connected".
+      record.ready = result.sessionStatus.kind !== 'exited'
       record.activeSend = undefined
       record.initializing = false
+      // Clients already bound need this the moment it happens: until the
+      // shell has answered, they show a connecting state rather than an empty
+      // terminal, and only this frame ends it.
+      this.broadcast(record.dshSessionId, { kind: 'ready', ready: record.ready })
       // The init echo (export line + clear) never deserves screen space, but
       // the seeded scrollback does: reset the log to the snapshot instead of
       // to nothing, and hand that same text back to every client, which
@@ -592,6 +613,9 @@ export class DshellTerminalBridge extends Service {
 
   /** Serialize queued input through the exclusive `startSend` slot. */
   private pump(record: MainRecord): void {
+    // A dead PTY can never settle a send, and `startSend` on it throws — which
+    // the catch below would turn into an unbreakable 100ms retry loop.
+    if (record.dead !== undefined) return
     if (record.activeSend !== undefined || record.inputQueue.length === 0) return
     const text = record.inputQueue.join('')
     record.inputQueue.length = 0
@@ -617,15 +641,25 @@ export class DshellTerminalBridge extends Service {
    * Mark a record dead: stop listeners, broadcast the close frame, and
    * schedule disposal so a reconnecting client still receives the frame
    * in its bindClient push sequence (Phase 9 hardening).
+   *
+   * The frame carries everything the client needs to explain the death: the
+   * cause, the last connection diagnostic the output holds (a device session's
+   * ssh stderr is the only place "Connection refused" exists), and whether the
+   * shell had ever reached a prompt.
    */
   private markDead(record: MainRecord, reason: string): void {
     if (record.dead !== undefined) return
-    record.dead = { reason, time: Date.now() }
+    const detail = diagnosticTail(record.buffer.text())
+    record.dead = { reason, detail, ready: record.ready, time: Date.now() }
     record.stopOutput()
     record.stopExit()
     record.stopOutput = () => {}
     record.stopExit = () => {}
-    this.broadcast(record.dshSessionId, { kind: 'closed', reason })
+    // Queued keystrokes have nowhere to go, and a pump that keeps retrying a
+    // dead PTY is an endless 100ms loop. Dropping them is what the shell's
+    // death means anyway.
+    record.inputQueue.length = 0
+    this.broadcast(record.dshSessionId, { kind: 'closed', reason, detail, ready: record.ready })
     // Release the dsh-side name reservation NOW so a same-tick respawn
     // (via ensureLiveMain) doesn't collide with the still-resident owner.
     void this.ctx.terminals.kill(record.agent, record.ptyId, 'dshell: dead').catch(() => {})
@@ -679,6 +713,16 @@ export class DshellTerminalBridge extends Service {
         resizeRecord?.session.resize(cols, rows)
         return
       }
+      // A retry, from the client's automatic loop or its button. Handled
+      // before the bound check because the client may be the one that knows
+      // the shell is gone (its own socket survived the PTY's death).
+      if (frame.kind === 'reconnect') {
+        const session = bound ?? frame.sessionId
+        if (session === undefined) return
+        if (bound !== undefined && frame.sessionId !== undefined && frame.sessionId !== bound) return
+        this.reconnectClient(client, session)
+        return
+      }
       if (bound === undefined || (frame.sessionId !== undefined && frame.sessionId !== bound)) return
       if (frame.kind === 'input' && typeof frame.text === 'string') {
         this.feed(bound, frame.text)
@@ -708,31 +752,90 @@ export class DshellTerminalBridge extends Service {
     // so the close frame can be forwarded to a freshly reconnected client.
     const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
     const priorDead = agent === undefined ? undefined : this.mains.get(agent)?.dead
+    this.attachToSession(client, dshSessionId, priorDead)
+  }
+
+  /**
+   * Bind one client to a session and hand it that session's current state.
+   *
+   * A failure to start the shell does NOT close the socket any more. The
+   * failure is almost always the device (unreachable host, refused key) or a
+   * session whose agent has not materialized, and those are exactly what a
+   * retry is for; closing would discard the connection the retry needs and
+   * leave the client reconnecting into the same wall. The error frame says
+   * what happened and the client decides whether to try again.
+   */
+  private attachToSession(
+    client: WebSocket,
+    dshSessionId: string,
+    priorDead?: { reason: string; detail?: string | undefined; ready: boolean },
+  ): void {
     void this.ensureMainShell(dshSessionId).then((record) => {
-      let set = this.clients.get(dshSessionId)
-      if (set === undefined) {
-        set = new Set()
-        this.clients.set(dshSessionId, set)
-      }
-      set.add(client)
-      this.boundSession.set(client, dshSessionId)
+      this.adopt(client, dshSessionId)
       if (priorDead !== undefined) {
-        this.sendFrame(client, { kind: 'closed', reason: priorDead.reason })
+        this.sendFrame(client, {
+          kind: 'closed',
+          reason: priorDead.reason,
+          detail: priorDead.detail,
+          ready: priorDead.ready,
+        })
       }
-      this.sendFrame(client, { kind: 'info', user: this.promptUser, host: this.promptHost, home: homedir() })
-      this.sendFrame(client, {
-        kind: 'output',
-        chunk: record.initializing ? '' : record.buffer.text(),
-        time: Date.now(),
-        replay: true,
-        timeline: record.buffer.timelineEntries().map(entry => [entry.t, entry.n]),
-      })
-      // The host owns block order; the client renders this list as given.
-      this.sendFrame(client, { kind: 'blocks', blocks: record.blocks.snapshot() })
+      this.pushSnapshot(client, record)
     }, (error: unknown) => {
-      this.sendFrame(client, { kind: 'error', message: String(error) })
-      client.close(1008, 'bind rejected')
+      // Stay bound: the client's retry is a frame on this very socket.
+      this.adopt(client, dshSessionId)
+      this.sendFrame(client, { kind: 'error', message: describeSpawnError(error), sessionId: dshSessionId })
     })
+  }
+
+  /**
+   * Replace one session's dead shell on behalf of one client — its retry
+   * button or its automatic retry loop — then hand that client the new state.
+   *
+   * The old scrollback is not lost: a respawn seeds its buffer from the
+   * persisted log, so the replay carries the history the client already had,
+   * with the new shell's prompt appended after it.
+   */
+  private reconnectClient(client: WebSocket, dshSessionId: string): void {
+    void this.ensureMainShell(dshSessionId).then((record) => {
+      this.adopt(client, dshSessionId)
+      this.pushSnapshot(client, record)
+    }, (error: unknown) => {
+      this.sendFrame(client, { kind: 'error', message: describeSpawnError(error), sessionId: dshSessionId })
+    })
+  }
+
+  /** Register one client as a subscriber of one session. */
+  private adopt(client: WebSocket, dshSessionId: string): void {
+    let set = this.clients.get(dshSessionId)
+    if (set === undefined) {
+      set = new Set()
+      this.clients.set(dshSessionId, set)
+    }
+    set.add(client)
+    this.boundSession.set(client, dshSessionId)
+  }
+
+  /** Hand one client the session's identity, scrollback and block order. */
+  private pushSnapshot(client: WebSocket, record: MainRecord): void {
+    // `ready` rides the info frame so a client that binds (or re-binds) after
+    // the fact still knows whether this shell ever reached a prompt.
+    this.sendFrame(client, {
+      kind: 'info',
+      user: this.promptUser,
+      host: this.promptHost,
+      home: homedir(),
+      ready: record.ready,
+    })
+    this.sendFrame(client, {
+      kind: 'output',
+      chunk: record.initializing ? '' : record.buffer.text(),
+      time: Date.now(),
+      replay: true,
+      timeline: record.buffer.timelineEntries().map(entry => [entry.t, entry.n]),
+    })
+    // The host owns block order; the client renders this list as given.
+    this.sendFrame(client, { kind: 'blocks', blocks: record.blocks.snapshot() })
   }
 
   /** Send a single frame to one ws client; tolerates a closing socket. */
@@ -754,6 +857,18 @@ export class DshellTerminalBridge extends Service {
       if (client.readyState === WebSocket.OPEN) client.send(data)
     }
   }
+}
+
+/**
+ * The honest text of a failed spawn for the wire.
+ *
+ * `String(error)` would prefix "Error: ", and an Error with no message would
+ * ship an empty line; the client shows this verbatim in its connection panel,
+ * so it has to be a sentence either way.
+ */
+function describeSpawnError(error: unknown): string {
+  const text = (error instanceof Error ? error.message : String(error)).trim()
+  return text === '' ? '终端启动失败' : text
 }
 
 /** Defensive escape: drop chars that would let a quoted $PS1 leak out. */

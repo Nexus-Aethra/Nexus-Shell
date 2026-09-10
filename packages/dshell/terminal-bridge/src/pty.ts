@@ -59,6 +59,39 @@ function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '').replaceAll('\u0007', '')
 }
 
+/**
+ * What ssh says when it cannot connect, matched loosely on purpose: these
+ * strings are printed by the `ssh` client in every locale-relevant failure we
+ * care about (refused, timed out, key rejected, name not resolved).
+ */
+const SSH_DIAGNOSTIC =
+  /(ssh:|kex_exchange_identification|Connection (?:refused|timed out|closed|reset)|Permission denied|Host key verification failed|Could not resolve hostname|No route to host|Network is unreachable|Operation timed out)/i
+
+/**
+ * The last connection diagnostic in a stretch of terminal output.
+ *
+ * A device session's terminal is a local `ssh` process, so "cannot connect"
+ * arrives as that process's stderr — merged into the same PTY stream as
+ * everything else, and gone once the session is torn down. When the shell dies
+ * there is no structured error to read (node-pty reports an exit code only), so
+ * the reason has to be recovered from the text. A line that does not look like
+ * an ssh diagnostic is never returned: no match means no detail line, rather
+ * than an arbitrary last line presented as the cause.
+ *
+ * @param text - raw terminal output, ANSI included.
+ * @param maxChars - cap on the returned line, which is shown in a narrow banner.
+ * @returns the diagnostic line, or undefined when the output has none.
+ */
+export function diagnosticTail(text: string, maxChars = 240): string | undefined {
+  const lines = stripAnsi(text).split('\n')
+  for (let at = lines.length - 1; at >= 0; at -= 1) {
+    const line = lines[at]?.trim() ?? ''
+    if (line === '' || !SSH_DIAGNOSTIC.test(line)) continue
+    return line.length > maxChars ? line.slice(0, maxChars) : line
+  }
+  return undefined
+}
+
 /** node-pty reports numeric signals; map the common ones to their names. */
 function exitSignalName(signal: number | undefined): NodeJS.Signals | null {
   switch (signal) {
@@ -81,6 +114,21 @@ function exitSignalName(signal: number | undefined): NodeJS.Signals | null {
     default:
       return null
   }
+}
+
+/**
+ * How a dead PTY is named to the user: the signal that killed it, else its
+ * exit code.
+ *
+ * node-pty reports a killed process as `exitCode: 0, signal: 9`, so listing
+ * both would read as a clean exit; the signal is the true story.
+ *
+ * @param status - the `exited` status of a terminal session.
+ * @returns a short human-readable cause.
+ */
+export function exitLabel(status: Extract<TerminalSessionStatus, { kind: 'exited' }>): string {
+  if (status.signal !== null) return `signal ${status.signal}`
+  return `exit code ${status.exitCode === null ? 'unknown' : String(status.exitCode)}`
 }
 
 /** Cap to the newest `maxBytes` UTF-8 bytes without splitting a codepoint. */
@@ -247,8 +295,22 @@ class LocalRawSession implements DshellPtySession {
     const operation = this.startSend({ text: '', submit: false })
     const result = await operation.done
     signal?.throwIfAborted()
-    if (result.waitReason === 'session_exit') throw new Error('PTY shell exited during startup')
-    if (result.waitReason === 'timeout') throw new Error('PTY shell did not reach readiness before startup timeout')
+    if (result.waitReason === 'session_exit' || result.waitReason === 'timeout') {
+      // Carry the diagnostic out with the failure: this is the last moment the
+      // session exists, and the output that says WHY (ssh's own stderr) is
+      // about to be discarded with it. Without this a failed device session
+      // reports only "the shell exited", which names neither the host nor the
+      // cause.
+      const status = result.sessionStatus
+      // "before its first prompt", not "during startup": this same failure is
+      // what a respawn after a dropped connection produces, where nothing is
+      // starting up — it is the NEW shell that never got to a prompt.
+      const head = result.waitReason === 'session_exit'
+        ? `PTY shell exited before its first prompt${status.kind === 'exited' ? ` (${exitLabel(status)})` : ''}`
+        : 'PTY shell did not reach a prompt before the startup timeout'
+      const detail = diagnosticTail(this.retained)
+      throw new Error(detail === undefined ? head : `${head}：${detail}`)
+    }
     this.motd = result.viewport
   }
 

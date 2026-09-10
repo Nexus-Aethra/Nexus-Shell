@@ -264,7 +264,15 @@ export class SshRouter {
    * ssh knowledge — which options, which auth arguments, which environment the
    * askpass hook needs — lives in this package and is not copied to the bridge.
    *
+   * A session whose directory is a mount but which has no assignment is
+   * REFUSED rather than given a local shell: the mount is an empty local
+   * stand-in, so a local shell there is a dead end that looks like a working
+   * terminal, and the user has no way to tell it apart from the device shell
+   * they asked for. The failure is raised instead, and the view shows it.
+   *
    * @param sessionId - session-backed agent id, the key bindings are written under.
+   * @param sessionCwd - the session's own directory, consulted only to tell a
+   *   mid-bind session (and a broken one) from a local one.
    * @returns argv and environment for the local `ssh` process, or undefined.
    */
   async interactiveShellPlan(
@@ -282,6 +290,7 @@ export class SshRouter {
         await new Promise(resolve => setTimeout(resolve, PENDING_BIND_WAIT_MS))
         assignment = this.bindings.get(sessionId)
       }
+      if (assignment === undefined) throw new Error(unboundMountMessage(sessionCwd))
     }
     if (assignment === undefined) return undefined
     const device = this.connections.get(assignment.deviceId)
@@ -307,8 +316,21 @@ export class SshRouter {
     return mountFor(deviceId, root)
   }
 
-  /** Connect once and report what answered, for the UI's Test action. */
-  async test(deviceId: string, ctx: Context): Promise<string> {
+  /**
+   * Connect once and report what answered, for the UI's Test action.
+   *
+   * With a `remoteRoot` the test also proves the session's directory can be
+   * created, which is the other half of "can this session start here": a
+   * device can answer ssh and still refuse `mkdir` (read-only home, missing
+   * parent, no permission), and finding that out here keeps the new-session
+   * dialog from creating a session that cannot work.
+   *
+   * @param deviceId - device to connect to.
+   * @param ctx - host context holding the subprocess seam.
+   * @param remoteRoot - session directory to also create; null checks nothing.
+   * @returns the ready-to-show result line.
+   */
+  async test(deviceId: string, ctx: Context, remoteRoot: string | null = null): Promise<string> {
     await this.refreshDevices()
     const device = this.connections.get(deviceId)
     if (device === undefined) throw new Error(`未知设备：${deviceId}`)
@@ -334,7 +356,11 @@ export class SshRouter {
       throw new Error(stderr !== '' ? stderr : `ssh 退出码 ${String(outcome.exitCode ?? 'signal')}`)
     }
     const [host, user, system] = stdout.split('|')
-    return `已连接 ${user ?? ''}@${host ?? device.host}（${system ?? '未知系统'}） · ${String(Date.now() - started)}ms`
+    const line = `已连接 ${user ?? ''}@${host ?? device.host}（${system ?? '未知系统'}） · ${String(Date.now() - started)}ms`
+    // Same order the session's own start uses: connect, then make the
+    // directory. A refusal here throws with ssh's own words.
+    if (remoteRoot !== null) await this.ensureRemoteRoot(ctx, deviceId, remoteRoot)
+    return line
   }
 
   /**
@@ -391,6 +417,24 @@ export class SshRouter {
 }
 
 /**
+ * Why a session that sits in a mount directory but has no assignment is
+ * refused instead of being given a local shell.
+ *
+ * A mount directory is an empty local stand-in for a device tree, so a local
+ * shell (or a local `bash` tool call) there produces a terminal that looks
+ * alive and answers nothing. The refusal is the honest outcome, and the message
+ * names the two situations that actually produce it.
+ *
+ * @param sessionCwd - the session's own directory, for the message.
+ * @returns the refusal text.
+ */
+function unboundMountMessage(sessionCwd: string): string {
+  return `该会话没有绑定设备，但它的目录是设备挂载目录（${sessionCwd}）：`
+    + '在这里本机执行只会落在一个空目录里，因此已拒绝。'
+    + '请检查该设备是否已被删除；若设备仍在，请在会话里重试连接或新建会话。'
+}
+
+/**
  * Redirect a bound session's shell commands to its device.
  *
  * Only `resolve` is wrapped: it is the single funnel every caller passes
@@ -429,7 +473,14 @@ export function installShellRouting(ctx: Context, router: SshRouter): () => void
     const spec = original.call(this, request)
     const agent = ctx.agents.currentInitiator()
     const target = agent === undefined ? undefined : router.targetForSession(String(agent.id))
-    if (target === undefined) return spec
+    if (target === undefined) {
+      // A session whose directory is a mount belongs to a device even when the
+      // assignment is missing — the device may have been deleted, or a bind may
+      // have failed. Running the command here would execute it on this machine
+      // inside an empty stand-in directory, so refuse in ssh's place instead.
+      if (isUnder(mountBase(), spec.workdir)) throw new Error(unboundMountMessage(spec.workdir))
+      return spec
+    }
     const { device, remoteRoot, mount } = target
     ctx.logger.info(`dshell-ssh: session "${String(agent?.id)}" runs on device "${device.name}"`)
     // The directory the command runs in follows the caller's, translated: a

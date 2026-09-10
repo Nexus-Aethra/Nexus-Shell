@@ -49,7 +49,13 @@ export function createSshRoute(deps: SshRouteDeps): ConnectionFetchRoute {
         await deps.router.removeDevice(input.deviceId)
         return await state()
       case 'test':
-        return { ...await state(), testResult: await deps.router.test(input.deviceId, deps.ctx) }
+        // With a remote directory the test also creates it: the dialog runs
+        // this before creating the session, so a device that answers but
+        // cannot host the directory is reported here, not after.
+        return {
+          ...await state(),
+          testResult: await deps.router.test(input.deviceId, deps.ctx, input.remoteRoot ?? null),
+        }
       case 'mount':
         return { ...await state(), mountPath: await deps.router.mountPath(input.deviceId, input.remoteRoot ?? null) }
       case 'bind':

@@ -302,6 +302,7 @@ export function apply(ctx: Context): void {
       bind: (sessionId, deviceId, remoteRoot, mount) =>
         ssh.bind(String(sessionId), deviceId, remoteRoot ?? null, mount ?? null),
       mountFor: (deviceId, remoteRoot) => ssh.mountFor(deviceId, remoteRoot),
+      test: (deviceId, remoteRoot) => ssh.test(deviceId, remoteRoot),
       revealSettings: () => ssh.revealInSettings(),
       isMountPath: (path) => ssh.isMountPath(path),
     }

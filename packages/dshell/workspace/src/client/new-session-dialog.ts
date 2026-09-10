@@ -1,8 +1,10 @@
 /**
  * The new-session dialog (design 4.7 naming paragraph): optional name, a run
- * target, and the directory that target starts in. Confirm creates the
- * session, assigns the device when one was chosen, and opens it; failures
- * surface inline and keep the dialog up.
+ * target, and the directory that target starts in. Confirm proves the device
+ * when one was chosen (one real ssh round trip, plus the session's remote
+ * directory), then creates the session, assigns the device and opens it;
+ * failures surface inline and keep the dialog up, so a session that cannot
+ * reach its device is never created at all.
  *
  * The two targets ask for different directories, and neither question is
  * interchangeable. A LOCAL session starts in a directory on this machine. An
@@ -93,6 +95,13 @@ export interface NewSessionDialogProps {
     remoteRoot?: string | null,
     mount?: string | null,
   ) => Promise<void>) | undefined
+  /**
+   * Probe a device before anything is created: one real ssh round trip, plus
+   * the session's remote directory. Refuses by throwing, which keeps this
+   * dialog open — the point is that a session which cannot reach its device is
+   * never created, so no unbound session is left pointing at a mount directory.
+   */
+  test?: ((deviceId: string, remoteRoot: string | null) => Promise<void>) | undefined
   /** Local mount directory for a device tree; absent disables SSH sessions. */
   mountFor?: ((deviceId: string, remoteRoot: string | null) => Promise<string | undefined>) | undefined
   /**
@@ -115,9 +124,8 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   // is only a sensible default when it is a real working directory. An SSH
   // session's directory is a mount standing in for a device tree, and adopting
   // it here is what made a new "local" session run on that device.
-  const [dir, setDir] = useState(
-    props.defaultCwd !== undefined && props.isMountPath?.(props.defaultCwd) === true ? '' : props.defaultCwd ?? '',
-  )
+  const inheritedMount = props.defaultCwd !== undefined && props.isMountPath?.(props.defaultCwd) === true
+  const [dir, setDir] = useState(inheritedMount ? '' : props.defaultCwd ?? '')
   const [preset, setPreset] = useState('')
   const [target, setTarget] = useState<SessionTarget>('local')
   const [deviceId, setDeviceId] = useState('')
@@ -126,6 +134,8 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const [remoteTyped, setRemoteTyped] = useState(false)
   const [presets, setPresets] = useState<PresetChoice[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  /** Which half of a submit is running, so the button can say what it is doing. */
+  const [phase, setPhase] = useState<'idle' | 'testing' | 'creating'>('idle')
   const [error, setError] = useState<string | null>(null)
   // The roster is read once per dialog open; a failure just hides the field
   // (the host default still applies). The dialog is mounted fresh each open,
@@ -163,6 +173,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const submit = async (): Promise<void> => {
     if (busy) return
     setBusy(true)
+    setPhase('idle')
     setError(null)
     try {
       // A chosen target with nothing to run on must not fall back to local:
@@ -173,8 +184,26 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       if (target === 'local' && dir.trim() !== '' && props.isMountPath?.(dir.trim()) === true) {
         throw new Error('该目录是设备的挂载目录，本机会话不能使用；请换一个目录或改选 SSH')
       }
+      // An empty directory is not "no choice": dsh then inherits the current
+      // session's directory, which can be the mount this dialog just refused
+      // to prefill. Asking for one is the only way to keep a local session
+      // local, so it is a refusal rather than a silent inherited mount.
+      if (target === 'local' && dir.trim() === '' && inheritedMount) {
+        throw new Error('上一个会话的目录是设备挂载目录，本机会话不能沿用它；请填写一个本机目录')
+      }
       const remote = target === 'ssh' && deviceId !== ''
       const remoteRoot = remote ? remoteDir.trim() === '' ? null : remoteDir.trim() : null
+      // The connection is proved BEFORE the session exists. A device that
+      // cannot be reached (or cannot host the directory) is a refusal here,
+      // which leaves this dialog open with the reason on it; creating first
+      // would leave a session whose commands run locally in an empty mount
+      // directory, which is exactly the state that looks like a working
+      // remote session and is not one.
+      if (remote && props.test !== undefined) {
+        setPhase('testing')
+        await props.test(deviceId, remoteRoot)
+      }
+      setPhase('creating')
       // The mount is the session's directory here, so the session cannot be
       // created without it: a device-bound session whose cwd were a normal
       // local directory would look plausible and quietly point nowhere.
@@ -193,6 +222,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setBusy(false)
+      setPhase('idle')
     }
   }
   // Adding a device from inside the dialog leaves the select empty, and no
@@ -308,7 +338,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
           style: createButtonStyle,
           disabled: busy,
           onClick: () => { void submit() },
-        }, busy ? '创建中…' : '创建'),
+        }, busy ? phase === 'testing' ? '连接测试…' : '创建中…' : '创建'),
       ),
     ))
 }

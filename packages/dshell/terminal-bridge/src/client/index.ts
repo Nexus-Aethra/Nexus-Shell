@@ -63,12 +63,43 @@ export interface PtyStreamState {
   status: 'idle' | 'connecting' | 'open' | 'closed' | 'error'
   /** Bumped on every history change; read the text via {@link read}. */
   version: number
+  /** Why the shell (or the wire) ended, as the host reported it. */
+  reason: string | undefined
+  /** The last connection diagnostic the output held, when the host found one. */
+  detail: string | undefined
+  /**
+   * Whether the bound shell ever reached a prompt.
+   *
+   * Host-reported, because only the host sees the shell's own output: the
+   * difference between a connection that dropped and one that never came up is
+   * invisible from the wire alone, and the two need opposite presentations
+   * (a marker appended to a working terminal vs. a full failure screen).
+   */
+  ready: boolean
+  /** Automatic reconnect attempts spent since this connection last worked. */
+  attempt: number
+  /** How many automatic attempts are allowed before the client stops. */
+  maxAttempts: number
+  /** True once the automatic budget is gone: only a manual retry remains. */
+  exhausted: boolean
+  /** When the current connection attempt started, for the view's elapsed count. */
+  since: number
 }
 
 /** Browser render-buffer cap per session: the canvas replays from this store. */
 const HISTORY_MAX_BYTES = 256 * 1024
 const HISTORY_MAX_FRAMES = 1000
-const RECONNECT_DELAY_MS = 2000
+
+/**
+ * Automatic reconnect budget, and the backoff between attempts.
+ *
+ * Bounded on purpose. An unbounded retry loop is indistinguishable from a hang
+ * — the view would sit in "connecting" forever against a host that is simply
+ * gone — so after this many attempts the client stops and hands the decision
+ * back to the user, who gets a button and a stated reason.
+ */
+const MAX_AUTO_ATTEMPTS = 3
+const RETRY_BASE_DELAY_MS = 1000
 
 /**
  * Drop `count` characters from the front of a history's arrival timeline,
@@ -99,7 +130,11 @@ interface WireFrame {
   time?: number
   replay?: boolean
   reason?: string
+  /** `closed`/`error` frames: the connection diagnostic found in the output. */
+  detail?: string
   message?: string
+  /** `info`/`ready` frames: whether the shell has reached a prompt. */
+  ready?: boolean
   /** `info` frames: OS identity the dock uses to build bash prompts. */
   user?: string
   host?: string
@@ -133,6 +168,13 @@ export class PtyStreamService extends Service {
     sessionId: undefined,
     status: 'idle',
     version: 0,
+    reason: undefined,
+    detail: undefined,
+    ready: false,
+    attempt: 0,
+    maxAttempts: MAX_AUTO_ATTEMPTS,
+    exhausted: false,
+    since: Date.now(),
   })
 
   /** OS identity from the server's `info` frame (bash prompt material). */
@@ -170,6 +212,8 @@ export class PtyStreamService extends Service {
    * shell wraps and pads its output to a width the view does not have.
    */
   private desiredSize: { cols: number; rows: number } | undefined
+  /** Automatic attempts spent since this connection last carried output. */
+  private attempt = 0
 
   constructor(ctx: Context) {
     super(ctx, 'dshellPtyStream')
@@ -228,6 +272,22 @@ export class PtyStreamService extends Service {
   }
 
 
+  /**
+   * Retry the bound session's connection now, from the user's button.
+   *
+   * The automatic loop has a budget; this spends a fresh one, which is the
+   * whole point of the button existing — including the case where the budget
+   * ran out hours ago.
+   */
+  reconnect(): void {
+    const id = this.desiredId
+    if (id === undefined) return
+    this.clearRetryTimer()
+    this.attempt = 0
+    this.patch({ attempt: 0, exhausted: false })
+    this.performReconnect(id)
+  }
+
   /** Switch the connection to one session (undefined disconnects). */
   bind(dshSessionId: string | undefined): void {
     this.desiredId = dshSessionId
@@ -271,6 +331,76 @@ export class PtyStreamService extends Service {
   }
 
   /**
+   * Spend one automatic reconnect attempt, or stop when the budget is gone.
+   *
+   * Only the session the UI still wants is retried, and only one timer runs at
+   * a time: a superseded socket's death must not start a loop for a session
+   * nobody is looking at. When the budget runs out the state says so
+   * (`exhausted`), which is what turns the view's marker into a manual button
+   * instead of an endless "connecting".
+   */
+  private scheduleRetry(): void {
+    const id = this.desiredId
+    if (id === undefined) return
+    if (this.reconnectTimer !== undefined) return
+    if (this.attempt >= MAX_AUTO_ATTEMPTS) {
+      this.patch({ exhausted: true, attempt: this.attempt })
+      return
+    }
+    this.attempt += 1
+    this.patch({
+      attempt: this.attempt,
+      maxAttempts: MAX_AUTO_ATTEMPTS,
+      exhausted: false,
+      status: 'connecting',
+      since: Date.now(),
+    })
+    const delay = RETRY_BASE_DELAY_MS * 2 ** (this.attempt - 1)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined
+      const current = this.desiredId
+      if (current !== undefined) this.performReconnect(current)
+    }, delay)
+  }
+
+  /**
+   * One reconnect attempt, by whichever layer is actually broken: a live
+   * socket means the session's shell is what died, so the host is asked to
+   * replace it; a dead socket means the wire itself is gone, so it is reopened.
+   */
+  private performReconnect(id: string): void {
+    const socket = this.socket
+    if (socket !== undefined && this.socketSession === id) {
+      if (socket.readyState === WebSocket.CONNECTING) return
+      if (socket.readyState === WebSocket.OPEN && this.boundId === id) {
+        this.patch({ status: 'connecting', since: Date.now() })
+        socket.send(JSON.stringify({ kind: 'reconnect', sessionId: id }))
+        return
+      }
+    }
+    this.openSocket(id)
+  }
+
+  /**
+   * A live shell answered: the connection works, so the budget and the failure
+   * report both go. Called on every non-replay output frame — the one signal
+   * that means the shell is truly there.
+   */
+  private resetRetry(): void {
+    this.clearRetryTimer()
+    if (this.attempt === 0 && !this.state.getSnapshot().exhausted
+      && this.state.getSnapshot().reason === undefined) return
+    this.attempt = 0
+    this.patch({ attempt: 0, exhausted: false, reason: undefined, detail: undefined })
+  }
+
+  private clearRetryTimer(): void {
+    if (this.reconnectTimer === undefined) return
+    clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
+  }
+
+  /**
    * Subscribe to every ingested chunk, tagged with its session — the
    * canvas renderer streams frames into the xterm buffer incrementally.
    */
@@ -287,7 +417,26 @@ export class PtyStreamService extends Service {
 
   private openSocket(dshSessionId: string): void {
     this.closeSocket()
-    this.patch({ sessionId: dshSessionId, status: 'connecting' })
+    if (this.state.getSnapshot().sessionId !== dshSessionId) {
+      // A different session starts from a clean slate: the retry budget, the
+      // failure report and the readiness all belong to the session that earned
+      // them, and carrying them over would show session B's view the state of
+      // session A.
+      this.attempt = 0
+      this.patch({
+        sessionId: dshSessionId,
+        status: 'connecting',
+        reason: undefined,
+        detail: undefined,
+        ready: false,
+        attempt: 0,
+        maxAttempts: MAX_AUTO_ATTEMPTS,
+        exhausted: false,
+        since: Date.now(),
+      })
+    } else {
+      this.patch({ sessionId: dshSessionId, status: 'connecting', since: Date.now() })
+    }
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${location.host}/dshell/pty`)
     this.socket = socket
@@ -295,6 +444,7 @@ export class PtyStreamService extends Service {
     socket.onopen = () => {
       socket.send(JSON.stringify({ kind: 'bind', sessionId: dshSessionId }))
       this.boundId = dshSessionId
+      this.patch({ status: 'connecting' })
       // Replay the grid this session's view already asked for: a request made
       // while the socket was still connecting was remembered, not lost, and
       // the shell about to be spawned must start at it.
@@ -313,6 +463,7 @@ export class PtyStreamService extends Service {
       }
       if (frame.kind === 'output' && typeof frame.chunk === 'string') {
         this.boundId = dshSessionId
+        if (frame.replay !== true) this.resetRetry()
         this.patch({ status: 'open' })
         this.ingest(dshSessionId, {
           text: frame.chunk,
@@ -349,16 +500,34 @@ export class PtyStreamService extends Service {
           host: typeof frame.host === 'string' ? frame.host : '',
           home: typeof frame.home === 'string' ? frame.home : '',
         })
+        if (typeof frame.ready === 'boolean') this.patch({ ready: frame.ready })
+        return
+      }
+      if (frame.kind === 'ready') {
+        // The shell reached its prompt. Until this arrives the view shows a
+        // connecting state rather than an empty terminal.
+        this.patch({ ready: frame.ready !== false })
         return
       }
       if (frame.kind === 'closed') {
-        this.patch({ status: 'closed' })
-        console.warn('[dshell-pty] main shell closed:', frame.reason)
+        // Kept, not just logged: this is what the end-of-terminal marker says,
+        // and what tells "the link dropped" apart from "it never came up".
+        this.patch({
+          status: 'closed',
+          reason: typeof frame.reason === 'string' ? frame.reason : undefined,
+          detail: typeof frame.detail === 'string' ? frame.detail : undefined,
+          ...typeof frame.ready === 'boolean' ? { ready: frame.ready } : {},
+        })
+        this.scheduleRetry()
         return
       }
       if (frame.kind === 'error') {
-        this.patch({ status: 'error' })
-        console.warn('[dshell-pty] server error:', frame.message)
+        this.patch({
+          status: 'error',
+          reason: typeof frame.message === 'string' ? frame.message : undefined,
+          detail: undefined,
+        })
+        this.scheduleRetry()
       }
     }
     socket.onclose = () => {
@@ -370,12 +539,9 @@ export class PtyStreamService extends Service {
       this.socketSession = undefined
       this.boundId = undefined
       if (this.desiredId === undefined) return
-      this.patch({ status: 'closed' })
-      if (this.reconnectTimer !== undefined) return
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = undefined
-        if (this.desiredId !== undefined) this.openSocket(this.desiredId)
-      }, RECONNECT_DELAY_MS)
+      const reason = this.state.getSnapshot().reason ?? '与服务端的连接已断开'
+      this.patch({ status: 'closed', reason })
+      this.scheduleRetry()
     }
     socket.onerror = () => {
       if (this.socket !== socket) return
@@ -470,8 +636,12 @@ export class PtyStreamService extends Service {
 export interface DshellPtyDebug {
   session(): string | undefined
   status(): PtyStreamState['status']
+  /** The whole connection state, for inspecting retries and failures. */
+  state(): PtyStreamState
   send(text: string): void
   signal(signal: 'SIGINT' | 'SIGTERM' | 'SIGTSTP'): void
+  /** Retry the connection now, exactly like the view's button. */
+  reconnect(): void
   text(): string
 }
 
@@ -506,8 +676,10 @@ export function apply(ctx: Context): void {
   window.__DSHELL_PTY__ = {
     session: () => stream.state.getSnapshot().sessionId,
     status: () => stream.state.getSnapshot().status,
+    state: () => stream.state.getSnapshot(),
     send: (text) => { stream.send(text) },
     signal: (signal) => { stream.sendSignal(signal) },
+    reconnect: () => { stream.reconnect() },
     text(): string {
     const sessionId = stream.state.getSnapshot().sessionId
     return sessionId === undefined ? '' : stream.read(sessionId)
