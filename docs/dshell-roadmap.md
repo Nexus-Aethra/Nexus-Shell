@@ -422,6 +422,30 @@ Plugins touched:
   `block-test`: shell output injected between two turns keeps its place
   across a reload.
 
+Blocks as the view's primary unit (in progress). The single-canvas
+surface caps presentation at the character grid — per-cell colour, no
+rounded corners, no element-level type, no hover states. The block view
+(`block-view.ts`, registered as a sibling `conversation.view` tab
+labelled 块视图) makes a DOM column the surface instead, with one card
+per shell command run or agent task:
+
+- A shell run is sliced from the PTY stream on the shell's own
+  `OSC 133 ; D ; <exit>` markers and rendered by its own xterm instance
+  (`block-terminal.ts`), so colours, carriage-return redraws and
+  full-screen programs keep working without re-implementing ANSI. The
+  header carries the command, the exit chip and the run's own
+  timestamp; a run taller than ten rows folds to its tail.
+- An agent task reuses the block fold and renders as a card: header plus
+  a two-line preview folded, every row expanded.
+- Both kinds sort on one timeline (`block-model.ts`), so the merge the
+  canvas performed is preserved.
+
+Still open: terminal input parity (the canvas owns `onData` for Tab,
+arrows and Ctrl+C, so interactive shell work still needs that tab), PTY
+sizing while the block tab is active, per-row folding inside an expanded
+task card, and virtualizing long sessions (blocks older than the last
+forty render sanitized text rather than a live terminal).
+
 Notes:
 
 - Terminal-context injection was originally client-side (a fenced block

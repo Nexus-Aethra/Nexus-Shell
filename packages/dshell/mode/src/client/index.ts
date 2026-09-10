@@ -20,6 +20,7 @@ import type {
 import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { BlockView } from './block-view.js'
 import { DshellLeftControls, DshellTerminalView } from './controls.js'
 import { THEMES, setTheme, themeStore } from './theme.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
@@ -292,6 +293,25 @@ export function apply(ctx: Context): void {
       }),
     },
     DshellTerminalView,
+  ))
+  // The block view renders the same merged timeline through DOM blocks: a
+  // shell command run and an agent task are peer cards, and shell fidelity
+  // comes from a real terminal per block (see `block-terminal`). Registered as
+  // a sibling tab rather than a replacement while it grows input parity with
+  // the canvas — the tab strip is dsh's, so switching needs no extra chrome.
+  ctx.slots.inject('conversation.view', () => ctx.slots.register(
+    {
+      id: 'blocks',
+      name: 'conversation.view',
+      order: 10,
+      label: () => '块视图',
+      inject: (sessionId: SessionId | undefined) => ({
+        sessionId,
+        pty,
+        sessions,
+      }),
+    },
+    BlockView,
   ))
 }
 

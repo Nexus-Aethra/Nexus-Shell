@@ -123,9 +123,15 @@ export function statusOfReason(reason: { kind: string }): TurnBlock['status'] {
   return 'failed'
 }
 
-/** One-line closing notice for a finished block. */
-export function noticeOf(block: TurnBlock, reason: { kind: string; error?: { message?: string } }): string {
-  const at = new Date().toTimeString().slice(0, 5)
+/**
+ * One-line closing notice for a finished block.
+ * @param block - the block that just closed.
+ * @param reason - its turn-end reason.
+ * @param time - the closing event's timestamp; not the fold's wall clock, so a
+ *   replayed session shows when the turn actually ended.
+ */
+export function noticeOf(block: TurnBlock, reason: { kind: string; error?: { message?: string } }, time: number): string {
+  const at = new Date(time).toTimeString().slice(0, 5)
   const facts = [`${String(block.steps)} 步`]
   if (block.tokens > 0) facts.push(`${(block.tokens / 1000).toFixed(1)}k tok`)
   facts.push(at)
@@ -185,7 +191,7 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
       fold.open = undefined
       fold.phase = undefined
     }
-    fold.notices.push({ time, text: noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }) })
+    fold.notices.push({ time, text: noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }, time) })
     return
   }
   const rows = sessionRowsOf(event, fold.toolNames)
