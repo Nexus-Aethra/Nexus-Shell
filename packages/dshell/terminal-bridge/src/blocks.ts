@@ -82,6 +82,14 @@ export class BlockLog {
   /**
    * Append terminal output to the open block, opening a shell block if the
    * list is empty or the previous one has closed.
+   *
+   * A turn's agent block never absorbs main-PTY bytes: while a turn runs, the
+   * agent's own commands execute on its private PTY and never pass through
+   * this log, so every byte arriving here during a turn is the user's
+   * parallel shell work. It closes the turn's carrier block and opens a shell
+   * block for the user's output — otherwise the bytes would land in a block
+   * whose display content comes from the session fold and the user's `ls`
+   * would execute perfectly and render nowhere.
    * @param text - the bytes as they arrived.
    * @param time - their arrival time.
    * @returns the block they landed in.
@@ -89,6 +97,10 @@ export class BlockLog {
   append(text: string, time: number = Date.now()): PtyBlock {
     if (text.length === 0) return this.open('shell', undefined, time)
     let current = this.blocks.at(-1)
+    if (current !== undefined && current.kind === 'agent' && current.endedAt === undefined) {
+      current.endedAt = time
+      current = undefined
+    }
     if (current === undefined || current.endedAt !== undefined) current = this.open('shell', undefined, time)
     current.text += text
     this.scheduleSave()
