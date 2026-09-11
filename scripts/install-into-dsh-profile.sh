@@ -45,4 +45,15 @@ done
 echo "  + dshell-bundle (as patch layer)"
 ( cd "$HERE/dsh" && $DSH_PKG plugin --profile "$PROFILE" add -w "$HERE/packages/dshell/bundle" )
 
+# The dshell agent preset (standard's tool surface with the persistent bash
+# pointed at dshell's own terminal backend) installs into the harness-home
+# user root, where the agent-presets roster discovers it alongside the
+# shipped presets. Idempotent: an existing copy is refreshed.
+PRESET_HOME="${DSH_HOME:-$HOME/.dsh}/.agent-presets/dshell"
+mkdir -p "$PRESET_HOME"
+cp "$HERE/packages/dshell/bundle/presets/dshell/preset.yml" \
+   "$HERE/packages/dshell/bundle/presets/dshell/agent.cordis.yml" \
+   "$PRESET_HOME/"
+echo "  + dshell agent preset -> $PRESET_HOME"
+
 echo "Done. Run 'pnpm dsh web --profile $PROFILE' to verify."

@@ -495,6 +495,15 @@ export class DshellPtyBackend implements TerminalBackend {
     private readonly rows: number,
     /** Optional redirect: a session whose cwd is a device mount gets that device's shell. */
     private readonly planFor: PtySpawnPlanResolver | undefined = undefined,
+    /**
+     * Optional claim hook for spawns dshell did not issue itself. Bridge
+     * spawns always carry a name (`main` / `agent`); an unnamed spawn through
+     * this backend — dsh's persistent-bash pointed here via `backendType`, or
+     * a `terminal_open` — is another party creating the agent's shell inside
+     * dshell's world, and the bridge is told so it can attach the agent
+     * stream (status card, watch panel) to it instead of leaving it invisible.
+     */
+    private readonly onForeign: ((owner: unknown, sessionId: TerminalSessionId) => void) | undefined = undefined,
   ) {}
 
   /** The rich handle for a session this backend spawned (bridge wiring). */
@@ -519,6 +528,12 @@ export class DshellPtyBackend implements TerminalBackend {
       plan ?? LOCAL_SHELL,
     )
     this.sessions.set(spec.sessionId as TerminalSessionId, session)
+    // Unnamed spawns are other plugins creating shells in dshell's world; the
+    // bridge may want to claim them as the agent's shell. Fired after the
+    // session is registered so the claimant can look it up immediately.
+    if (spec.name === undefined) {
+      this.onForeign?.(spec.owner, session.id as TerminalSessionId)
+    }
     try {
       await session.initialize(spec.signal)
       return session

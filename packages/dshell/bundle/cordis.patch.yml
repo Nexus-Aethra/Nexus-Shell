@@ -113,6 +113,18 @@
 - id: ui-chat
   disabled: true
 
+# ── default agent preset ────────────────────────────────────────────────────
+# New sessions follow the dshell preset (installed into the user preset root
+# by scripts/install-into-dsh-profile.sh) unless the user picks another in the
+# new-session dialog. The dshell preset keeps standard's full tool surface and
+# runs every shell command in the agent's own watched terminal: the persistent
+# bash spawns through dshell's `dshell-pty` backend, the bridge claims it as
+# the agent shell, and the status card shows it live. The `standard` preset
+# remains selectable; only the follow-default changes.
+- id: agent-presets
+  config:
+    default: dshell
+
 # ── dev-only hot reload (skip in non-dev sessions) ─────────────────────
 # dsh's web profile mounts @deepseek-ai/dsh-client-hmr as a client
 # roster row that stays idle until a `pnpm run dev:web` rebuild watcher

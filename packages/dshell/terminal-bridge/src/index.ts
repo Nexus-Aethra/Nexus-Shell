@@ -273,6 +273,13 @@ export class DshellTerminalBridge extends Service {
       }
       | undefined
     return routing?.interactiveShellPlan(sessionId, cwd)
+  }, (owner, sessionId) => {
+    // An unnamed spawn through dshell's backend is another plugin creating a
+    // shell for this agent — dsh's persistent-bash when the bundle points its
+    // backendType here. Claim it as the agent's shell so every path the model
+    // can run commands through (its `bash` tool, terminal_send) lands on the
+    // one terminal the user can watch.
+    void this.claimForeignAgent(owner, sessionId)
   })
 
   constructor(ctx: Context) {
@@ -677,6 +684,60 @@ export class DshellTerminalBridge extends Service {
   private agentRecordFor(dshSessionId: string): AgentRecord | undefined {
     for (const record of this.agents.values()) if (record.dshSessionId === dshSessionId) return record
     return undefined
+  }
+
+  /**
+   * Adopt a shell another plugin spawned through dshell's backend as the
+   * agent's own.
+   *
+   * Only sessions of agents dshell already knows (they have a main shell) are
+   * claimed, and only when no agent record exists yet — the bridge's own
+   * spawns carry names and never reach the hook, and a claimed shell makes
+   * later `dshell_get_agent_terminal` calls reuse it, so `bash`, `terminal_send`
+   * and the watched panel all converge on this one PTY. No init runs here:
+   * the creator (persistent bash) has already configured the shell to its own
+   * protocol, and injected setup bytes would corrupt its marker parsing. The
+   * record simply attaches pushes and announces the shell as live.
+   */
+  private async claimForeignAgent(owner: unknown, sessionId: TerminalSessionId): Promise<void> {
+    if (!(owner instanceof Object) || !('id' in owner)) return
+    const agent = owner as Agent
+    if (!this.mains.has(agent) || this.agents.has(agent)) return
+    const session = this.backend.session(sessionId)
+    if (session === undefined) return
+    const dshSessionId = String(this.mains.get(agent)?.dshSessionId ?? agent.id)
+    const logPath = join(ptyLogDir(), `${dshSessionId}.agent.log`)
+    const buffer = await PtyBuffer.open(logPath)
+    if (this.agents.has(agent)) return
+    const settled = Promise.withResolvers<void>()
+    const record: AgentRecord = {
+      agent,
+      dshSessionId,
+      ptyId: sessionId,
+      session,
+      buffer,
+      generation: nextShellGeneration++,
+      activeSend: undefined,
+      initializing: false,
+      ready: true,
+      stopOutput: () => {},
+      stopExit: () => {},
+      initSettled: settled.promise,
+    }
+    this.agents.set(agent, record)
+    record.stopOutput = session.onOutput((chunk) => {
+      record.buffer.append(chunk)
+      this.broadcastAgent(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
+    })
+    record.stopExit = session.onExit((status) => {
+      this.markAgentDead(record, status.kind === 'exited' ? exitLabel(status) : status.kind)
+    })
+    settled.resolve()
+    // Announce the claimed shell so an open status card flips to 运行中
+    // without waiting for its next poll — there is no poll; this is the push.
+    this.broadcastAgent(record.dshSessionId, {
+      kind: 'agent-info', stream: 'agent', live: true, ready: true,
+    })
   }
 
   /**
