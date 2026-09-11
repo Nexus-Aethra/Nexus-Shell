@@ -177,13 +177,6 @@ export function BlockView(props: {
   loadImage: MessageImageLoader | undefined
   /** The SSH plugin's device face; absent in a composition without it. */
   ssh?: SshSeat | undefined
-  /**
-   * Optional side effect after a successful jump — typically used to hide
-   * the sidebar so the new turn lands in a fully open reading surface.
-   * The user reopens the sidebar from the toolbar; the next click closes
-   * it again, so the side effect is naturally idempotent across clicks.
-   */
-  onAfterJump?: (() => void) | undefined
 }): ReactElement {
   const theme = useDshellTheme()
   const seat = useRef<HTMLDivElement | null>(null)
@@ -529,7 +522,6 @@ export function BlockView(props: {
       bookmarks,
       scrollContainer: scroll.current,
       onJump: handleJump,
-      ...props.onAfterJump === undefined ? {} : { onAfterJump: props.onAfterJump },
     }),
   )
 }

@@ -157,15 +157,9 @@ export function apply(ctx: Context): void {
       }
     }) => void): unknown
   }
-  // `ctx.layout` is the cross-plugin panel-action face dsh's layout plugin
-  // publishes. Mode does not take ui-layout as a dependency, so the merge
-  // is structural: a `get('layout')` returns whatever the loader bound.
-  // `toggleSidebar` flips the sidebar between its full width and its
-  // compact rail — used by the bookmark rail so a click lands in a
-  // narrower reading surface.
-  const layout = ctx.get('layout') as unknown as
-    | { toggleSidebar: () => void }
-    | undefined
+  // The sidebar's open/close state belongs to dsh's layout service, but
+  // dshell must not change it from a bookmark click — the user owns
+  // that toggle via the toolbar's "打开/收起侧边栏" button.
   let sshSeat: SshSeat | undefined
   sshHost.inject(['dshellSsh'], (scope) => {
     const ssh = scope.dshellSsh
@@ -303,11 +297,6 @@ export function apply(ctx: Context): void {
         // Read at render time, so a plugin that loads after this one is still
         // picked up.
         ssh: sshSeat,
-        // After a successful bookmark jump, toggle the sidebar to its
-        // compact rail so the destination lands in a wider reading surface.
-        // The next click toggles again; the user reopens the sidebar from
-        // the toolbar's existing "打开侧边栏" affordance.
-        ...layout === undefined ? {} : { onAfterJump: () => layout.toggleSidebar() },
         // Attachments arrive as opaque refs; the conversation service owns the
         // only sanctioned way to turn one into a URL.
         loadImage: sessionId === undefined
