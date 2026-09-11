@@ -21,9 +21,6 @@ import type { Theme } from './theme.js'
  */
 const FAIL_COLOR = '#cc0000'
 
-/** Kind marker style: fixed width, so labels line up down the transcript. */
-const MARK_STYLE = { flex: '0 0 auto', width: '14px', textAlign: 'center' } as const
-
 /** A foldable row: one hover target, so the whole line reads as the control. */
 const FOLD_STYLE = { margin: '0 -6px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer' } as const
 
@@ -65,14 +62,18 @@ function injectFoldCss(): void {
     '  animation:dshell-running-shimmer 1.8s linear infinite;',
     '}',
     '@keyframes dshell-running-shimmer{to{background-position:0 0}}',
-    // A slow breath on the active thinking marker, so the reader can see
-    // a thinking row is still live without re-reading the label.
+    // A slow breath on the live thinking label, so the reader can see a
+    // thinking row is still in flight without re-reading the label.
     '[data-dshell-thinking-glyph]{animation:dshell-thinking-breathe 1.4s ease-in-out infinite}',
     '@keyframes dshell-thinking-breathe{0%,100%{opacity:.35}50%{opacity:1}}',
     // The running fish mark shares the same brand colour as the running text
     // so the row reads as one piece, not two; reduced-motion takes it back
     // to a flat static brand colour.
     '[data-dshell-running-fish]{color:var(--dsw-static-deepseek-500)}',
+    // Internal steps (thinking, tool, tool-group) use a smaller 12px fish
+    // mark, still in the brand colour, so the agent block reads as a single
+    // branded surface top to bottom.
+    '[data-dshell-step-fish]{color:var(--dsw-static-deepseek-500)}',
     // Honour the OS-level reduced-motion preference: stop the shimmer and
     // breath, fall back to the static brand colour.
     '@media (prefers-reduced-motion:reduce){',
@@ -208,8 +209,17 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; 
         ...FOLD_STYLE,
       },
     },
-      createElement('span', { style: { ...MARK_STYLE, color: theme.muted } }, '▤'),
-      createElement('span', { style: { color: theme.muted, flex: '0 0 auto' } }, step.label),
+      createElement(StepMark),
+      createElement('span', {
+        style: {
+          // Same family as the fold header's running text but muted for
+          // archived steps, so the row reads as "the same brand, lower volume"
+          // instead of a different palette.
+          color: 'var(--dsw-static-deepseek-500)',
+          opacity: 0.78,
+          flex: '0 0 auto',
+        },
+      }, step.label),
       createElement('span', {
         style: { color: theme.text, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       }, preview),
@@ -318,8 +328,15 @@ function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme
         ...FOLD_STYLE,
       },
     },
-      createElement('span', { style: MARK_STYLE }, '▤'),
-      createElement('span', null, `${step.label} · ${String(step.items.length)} 个命令`),
+      createElement(StepMark),
+      createElement('span', null, `${step.label} · `),
+      // The count is the only fresh fact in the row, so it's the only part
+      // that earns the brand colour; the rest stays muted so the rest of
+      // the transcript doesn't lose its quiet baseline.
+      createElement('span', {
+        style: { color: 'var(--dsw-static-deepseek-500)', fontWeight: 500 },
+      }, String(step.items.length)),
+      createElement('span', null, ' 个命令'),
       createElement(Chevron, { open, theme }),
     ),
     ...(open
@@ -343,13 +360,25 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; 
       createElement('div', {
         style: { display: 'flex', alignItems: 'baseline', gap: '6px', color: theme.muted, fontSize: 12 },
       },
-        // A live thinking row has no measured duration; the breath on the
-        // marker signals "still working" without re-reading the label.
+        // Thinking rows get the same fish mark as tool rows, in the same
+        // brand colour, so the transcript reads as one surface. The breath
+        // attribute still rides on a separate target (`data-dshell-thinking-
+        // glyph`) so a future marker redesign doesn't have to re-derive
+        // which children animate.
+        createElement(StepMark),
         createElement('span', {
-          style: MARK_STYLE,
-          ...(step.duration === undefined ? { 'data-dshell-thinking-glyph': '' } : {}),
-        }, '◌'),
-        createElement('span', null, SESSION_ROW_LABEL.reasoning),
+          'data-dshell-thinking-glyph': step.duration === undefined ? '' : undefined,
+          style: {
+            color: 'var(--dsw-static-deepseek-500)',
+            opacity: 0.78,
+            // Live thinking rows still want the breathing marker; the data
+            // attribute also lives on the label here so a label redesign
+            // doesn't lose the running signal.
+            ...(step.duration === undefined
+              ? { animation: 'dshell-thinking-breathe 1.4s ease-in-out infinite' }
+              : {}),
+          },
+        }, SESSION_ROW_LABEL.reasoning),
         step.duration === undefined ? null : createElement('span', null, `· 持续了 ${formatDuration(step.duration)}`),
         createElement(Chevron, { open, theme }),
       ),
@@ -404,6 +433,28 @@ function FishMark(_props: { tone: 'shimmer' }): ReactElement {
     // shimmer text gradients through, so the fish and the label read as one.
     'data-dshell-running-fish': '',
     style: { flex: '0 0 auto', alignSelf: 'center' },
+  },
+    createElement('path', { d: FISH_PATH }),
+  )
+}
+
+/**
+ * A 12px fish used as the leading mark on internal steps (thinking rows, tool
+ * calls, grouped runs). Same dsh brand path as the fold header, smaller so
+ * the visual weight doesn't compete with the running shimmer on the parent
+ * row; every internal step is brand-coloured so the transcript reads as one
+ * branded surface, not "agent header in colour, body in grey".
+ */
+function StepMark(): ReactElement {
+  const h = (12 * FISH_VB_H) / FISH_VB_W
+  return createElement('svg', {
+    width: 12,
+    height: h,
+    viewBox: `0 0 ${FISH_VB_W} ${FISH_VB_H}`,
+    fill: 'currentColor',
+    'aria-hidden': 'true',
+    'data-dshell-step-fish': '',
+    style: { flex: '0 0 auto', alignSelf: 'center', opacity: 0.85 },
   },
     createElement('path', { d: FISH_PATH }),
   )
