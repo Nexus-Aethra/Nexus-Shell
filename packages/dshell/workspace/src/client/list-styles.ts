@@ -149,13 +149,30 @@ export const fieldLabelStyle: CSSProperties = { fontSize: 12, opacity: 0.7, marg
 export const fieldInputStyle: CSSProperties = {
   width: '100%',
   boxSizing: 'border-box',
-  background: '#101013',
-  border: '1px solid #3a3a42',
-  borderRadius: 6,
-  color: 'inherit',
+  // dsh's input tokens (ui-primitives Input.module.css): the same fill, border,
+  // and focus the stock settings forms draw with, so the dialog's fields don't
+  // read as a different surface. Selects additionally carry `colorScheme:
+  // 'dark'` (set where they render) — the opened option list is OS-rendered,
+  // and without the scheme hint it pops up in the system's light theme.
+  background: 'var(--dsw-alias-bg-layer-1)',
+  border: '0.5px solid var(--dsw-alias-border-l4)',
+  borderRadius: 8,
+  color: 'var(--dsw-alias-label-primary)',
   padding: '7px 9px',
   fontSize: 13,
   outline: 'none',
+}
+/** Focus twin of {@link fieldInputStyle} for the dialog's fields. */
+export const fieldInputFocusStyle: CSSProperties = {
+  borderColor: 'var(--dsw-alias-brand-primary)',
+}
+/** A native select rendered with {@link fieldInputStyle}: the opened list is
+ *  OS-drawn, and `color-scheme: dark` is what keeps it dark instead of white. */
+export const fieldSelectStyle: CSSProperties = {
+  ...fieldInputStyle,
+  colorScheme: 'dark',
+  appearance: 'auto',
+  cursor: 'pointer',
 }
 export const dialogErrorStyle: CSSProperties = { color: '#f87171', fontSize: 12 }
 /** Empty-registry line in the dialog: the statement plus the way out of it. */

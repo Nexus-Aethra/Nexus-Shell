@@ -25,7 +25,7 @@ import type { PresetChoice } from './rows.js'
 import {
   backdropStyle, cancelButtonStyle, createButtonStyle, dialogActionsStyle, dialogErrorStyle,
   dialogStyle, dialogTitleStyle, emptyDeviceStyle, fieldInputStyle, fieldLabelStyle,
-  linkButtonStyle,
+  fieldSelectStyle, linkButtonStyle,
 } from './list-styles.js'
 
 /** Where a new session runs. */
@@ -239,7 +239,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
     : createElement('div', null,
       createElement('div', { style: fieldLabelStyle }, 'Agent 预设'),
       createElement('select', {
-        style: fieldInputStyle,
+        style: fieldSelectStyle,
         value: preset,
         disabled: busy,
         onChange: (event: ChangeEvent<HTMLSelectElement>) => { setPreset(event.target.value) },
@@ -282,7 +282,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
         : createElement('div', null,
           createElement('div', { style: fieldLabelStyle }, 'SSH 设备'),
           createElement('select', {
-            style: fieldInputStyle,
+            style: fieldSelectStyle,
             value: deviceId,
             disabled: busy,
             onChange: (event: ChangeEvent<HTMLSelectElement>) => {
