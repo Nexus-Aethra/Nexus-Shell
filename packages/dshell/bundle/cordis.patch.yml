@@ -65,6 +65,13 @@
     - id: dshell-buffer
       name: '@deepseek-ai/dsh-dshell-buffer'
 
+    # Right-sidebar file navigator: takes over the `files` tab kind (dsh's
+    # registry keeps one builtin and one extension per kind, and the extension
+    # is the one in force) so the pane can walk — `..`, clickable crumbs,
+    # back/forward — through the session's own execution world.
+    - id: dshell-files
+      name: '@deepseek-ai/dsh-dshell-files'
+
 # ── workspace removal (design 4.7) ────────────────────────────────────
 # dshell has no use for dsh's directory-workspace grouping: a terminal's
 # workspace is its current directory. The four stock web-app rows are

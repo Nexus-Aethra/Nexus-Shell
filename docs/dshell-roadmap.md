@@ -933,6 +933,69 @@ Acceptance check (driven from the browser, two local sessions):
   without a write right is refused.
 - Settling the ticket removes the grant from `grants` and from the panel.
 
+## Phase 9.9 — Unbounded file navigator
+
+Goal: the right sidebar's file pane moves like a file browser — up with
+`..`, sideways through clickable path segments, back and forward through
+visited directories, and on a device session through the **device's**
+tree, all the way to `/`.
+
+Shipped:
+
+- `dshell-files` (new host+client package). The host face adds one
+  connection route, `/api/dshell/files`, action `list`: it resolves the
+  session's agent, then inside `withInitiator` — so a device session
+  lists over its own SSH route with no new transport — resolves the
+  target, requires it to be a directory, and answers with the canonical
+  absolute path in that world plus the entries and a `truncated` flag.
+- Why a dshell route rather than dsh's `workspaceFiles.list`: that
+  endpoint is deliberately fenced to the session's workspace root
+  (`workspace-file/outside-workspace`), and the request was to walk to
+  `/`. `ctx.fs` is the same seam underneath without the fence, the
+  sandbox fences only writes, and `toRemotePath` passes an absolute path
+  outside the mount through unchanged, so `..` out of the mount on a
+  device means the device's own `/`. Listing is therefore at the same
+  trust level as the `read` tool, which already reaches outside the
+  workspace.
+- The browser face registers its own `SidebarRightTabDefinition` for the
+  `files` kind at `priority: 'extension'`. dsh is built for this: an
+  extension-band definition shadows the builtin of the same kind, the
+  pane's keyed seat switches to the extension's id, and removing the row
+  restores the stock body. The definition also contributes the required
+  guide entry, which is what keeps the pane's default page — the seed
+  takes the sole guide entry's kind.
+- Interaction: a `..` row drawn like a folder (hidden at `/`), single
+  click on a folder still expands or collapses it, double click on a
+  folder makes it the new root, double click on `..` goes to the parent
+  as an ordinary navigation (so back returns), a file click still opens
+  the preview, clickable path crumbs jump anywhere on the path, and
+  `←` / `→` / `⟳` drive history and reload. Two clicks on a folder
+  cancel out, so no double-click delay is imposed on expand.
+- Navigation state (root, history stack and index, per-path level cache,
+  expanded set) lives in a declared per-session store bucketed by tab
+  id, because the pane mounts only the active tab's body while the store
+  outlives tab switches. Forward history is truncated on a new
+  navigation, browser-style; a revisited level draws from the cache.
+- Listings are generation-guarded per (tab, path) so the latest request
+  wins, and the tab record's abort signal ends a bucket: no request is
+  made for a dead tab and no late settlement writes to one.
+- One listing is capped at 1000 entries with a `truncated` notice, and
+  failures are graded by cause (missing / not a directory / permission /
+  other). Read-only: no delete, rename, or create.
+
+Acceptance check (driven from the browser):
+
+- The right sidebar's file tab draws the new pane with its chip and its
+  guide capsule, and the stock file tree is not reachable.
+- `..` walks from the session's working directory to `/`; the row is
+  absent at `/`; a path crumb jumps to that ancestor; double-clicking a
+  folder inside current root makes it the root, and `←` returns.
+- Single click still expands a folder, a file click still opens the
+  preview, `⟳` re-lists the current root, and switching to another tab
+  and back keeps the current directory.
+- In a device session the same pane lists the device's tree — entering
+  `/etc` proves the listing was inherited from the session's routing.
+
 ## Phase 10 — Packaging
 
 Goal: `dshell-*` packages install with `pnpm add` and dsh loads them

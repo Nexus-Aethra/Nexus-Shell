@@ -64,7 +64,12 @@ interface RemoteStat {
 }
 
 const STAT_FORMAT = '%F|%s|%d|%i|%y|%z'
-const FIND_FORMAT = '%f\0%y\0%s\0%d\0%i\0%T@\0'
+// The separators are spelled `\0` (backslash, zero) rather than embedded NUL
+// bytes on purpose: this string travels as one argv element of the local `ssh`
+// process, and a real NUL cannot cross that boundary at all — Node refuses the
+// spawn. The remote login shell passes the two characters through its single
+// quotes untouched, and GNU `find -printf` turns `\0` into the NUL it emits.
+const FIND_FORMAT = '%f\\0%y\\0%s\\0%d\\0%i\\0%T@\\0'
 
 /**
  * One device's filesystem.
@@ -265,7 +270,7 @@ export class RemoteFileSystem {
   async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
     const remote = String(target.targetKey)
     const result = await this.runOrThrow(
-      `find -- ${quote(remote)} -mindepth 1 -maxdepth 1 -printf ${quote(FIND_FORMAT)}`,
+      `LC_ALL=C find -- ${quote(remote)} -mindepth 1 -maxdepth 1 -printf ${quote(FIND_FORMAT)}`,
       target.displayPath,
       { signal },
     )

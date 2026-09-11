@@ -63,7 +63,15 @@ export function dshellClientBundle(
     // injected require instead of inlining. Extend when a face gains
     // another runtime import; type-only imports are erased by tsc before
     // this bundler runs.
-    external: ['react', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store'],
+    external: [
+      'react',
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/dsh-client-store',
+      // The icon/primitive set dsh's own panes draw with (dshell-files uses it);
+      // present in PLATFORM_MODULES, so the loader serves it rather than us
+      // bundling a second copy.
+      '@deepseek-ai/dsh-client-ui-primitives',
+    ],
     noExternal: inline,
     outputOptions: {
       entryFileNames: 'client.js',

@@ -11,6 +11,7 @@
     { "path": "./packages/dshell/mode" },
     { "path": "./packages/dshell/ssh" },
     { "path": "./packages/dshell/buffer" },
+    { "path": "./packages/dshell/files" },
     { "path": "./packages/dshell/workspace" }
   ]
 }

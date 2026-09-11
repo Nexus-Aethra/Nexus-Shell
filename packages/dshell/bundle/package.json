@@ -34,6 +34,7 @@
     "@deepseek-ai/dsh-dshell-commands": "link:../commands",
     "@deepseek-ai/dsh-dshell-buffer": "link:../buffer",
     "@deepseek-ai/dsh-dshell-conversation": "link:../conversation",
+    "@deepseek-ai/dsh-dshell-files": "link:../files",
     "@deepseek-ai/dsh-dshell-mode": "link:../mode",
     "@deepseek-ai/dsh-dshell-ssh": "link:../ssh",
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
