@@ -49,14 +49,15 @@
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
     "@deepseek-ai/dsh-shell": "link:../../../dsh/packages/shell/shell",
     "@deepseek-ai/dsh-system-prompt": "link:../../../dsh/packages/core/system-prompt",
-    "@deepseek-ai/dsh-tools": "link:../../../dsh/packages/core/tools"
+    "@deepseek-ai/dsh-tools": "link:../../../dsh/packages/core/tools",
+    "@xyflow/react": "^12.11.6"
   },
   "devDependencies": {
     "@types/node": "^24",
     "@types/react": "~18.3.1",
     "react": "^18.2.0",
-    "typescript": "^6.0.3",
-    "tsdown": "^0.22.14"
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"

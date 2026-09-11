@@ -23,6 +23,7 @@ interface DshellClientBundleConfig {
   dts: false
   sourcemap: boolean
   clean: false
+  define: Record<string, string>
   external: string[]
   /** Dependency specifiers to force-inline (rolldown auto-externals deps). */
   noExternal: string[]
@@ -58,6 +59,10 @@ export function dshellClientBundle(
     dts: false,
     sourcemap: true,
     clean: false,
+    // Inlined libraries reference Node's `process.env.NODE_ENV` for their
+    // dev/prod switches; the closure bundle runs in a browser with no
+    // `process`, so the reference is baked to production at build time.
+    define: { 'process.env.NODE_ENV': '"production"' },
     // Module-table specifiers (dsh packages/client/web/src/platform.ts
     // PLATFORM_MODULES) that dshell client faces resolve through the
     // injected require instead of inlining. Extend when a face gains

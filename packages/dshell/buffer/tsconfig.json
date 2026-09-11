@@ -1,12 +1,22 @@
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["es2024", "dom"],
-    "types": ["node"],
+    "lib": [
+      "es2024",
+      "dom"
+    ],
+    "types": [
+      "node"
+    ],
     "outDir": "lib",
     "rootDir": "src",
-    "declarationDir": "lib/types"
+    "declarationDir": "lib/types",
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*"],
-  "exclude": ["lib"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "lib"
+  ]
 }

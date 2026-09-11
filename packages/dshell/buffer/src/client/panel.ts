@@ -1,33 +1,37 @@
 /**
- * The pipe panel: a frame-wide overlay (the `shell.overlay` seat) with the four
- * surfaces the feature has — the established pipes, the form that creates one,
- * the requests travelling over them, and the grants those requests carry.
+ * The pipe dialog: a proper centered modal for the whole pipe feature, with
+ * two views over the same data.
  *
- * Only the user can create a pipe, and this panel is the only place that
- * happens, so the panel is where the authority lives: the agent-facing tool has
- * no linking action at all.
+ * - 列表 — every established pipe as a row; clicking one opens its detail
+ *   (the requests that travelled it and the grants they carry), and a form
+ *   creates a new pipe.
+ * - 图 — sessions as draggable nodes and pipes as edges, drawn with React
+ *   Flow (`pipe-graph`); dragging from one node to another creates a pipe,
+ *   and a selected edge offers detail and release.
  *
- * The overlay layer is click-through, so the panel root opts back into pointer
- * events. It renders nothing while closed, which keeps the layer inert.
+ * The panel keeps its old seat (`shell.overlay`) and its `open` flag in the
+ * service; only the shape changed. Only the user can create a pipe, and this
+ * dialog is the only place that happens, so the authority note stays.
  */
 
 import {
-  createElement, useEffect, useState, useSyncExternalStore,
+  createElement, useEffect, useMemo, useState, useSyncExternalStore,
   type CSSProperties, type ReactElement,
 } from 'react'
-import type { BufferGrant, BufferLink, BufferTicket } from '../protocol.js'
+import type { BufferGrant, BufferTicket } from '../protocol.js'
 import type { BufferClientService, SessionSeat } from './service.js'
+import { PipeGraph, type GraphSession } from './pipe-graph.js'
 
-const rootStyle: CSSProperties = {
-  position: 'fixed',
-  top: 56,
-  right: 14,
-  bottom: 24,
-  width: 420,
-  maxWidth: 'calc(100vw - 28px)',
-  display: 'flex',
-  flexDirection: 'column',
+const backdropStyle: CSSProperties = {
+  position: 'fixed', inset: 0, zIndex: 40,
+  background: 'rgba(0,0,0,.44)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
   pointerEvents: 'auto',
+}
+const dialogStyle: CSSProperties = {
+  width: 'min(920px, 92vw)',
+  height: 'min(620px, 86vh)',
+  display: 'flex', flexDirection: 'column',
   border: '0.5px solid var(--dsw-alias-border-l4)',
   borderRadius: 14,
   background: 'var(--dsw-alias-bg-layer-2)',
@@ -35,15 +39,31 @@ const rootStyle: CSSProperties = {
   color: 'var(--dsw-alias-label-primary)',
   fontSize: 13,
   overflow: 'hidden',
-  zIndex: 20,
 }
 const headerStyle: CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px',
+  display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
   borderBottom: '0.5px solid var(--dsw-alias-border-l4)',
+  flex: '0 0 auto',
 }
-const titleStyle: CSSProperties = { flex: '1 1 auto', fontWeight: 600, fontSize: 13 }
-const bodyStyle: CSSProperties = { flex: '1 1 auto', overflowY: 'auto', padding: '12px 14px 16px', display: 'flex', flexDirection: 'column', gap: 16 }
-const sectionTitleStyle: CSSProperties = { fontSize: 12, fontWeight: 600, opacity: 0.6, marginBottom: 6 }
+const titleStyle: CSSProperties = { fontWeight: 600, fontSize: 14 }
+const headerDimStyle: CSSProperties = { fontSize: 12, opacity: 0.55, flex: '1 1 auto' }
+const tabRowStyle: CSSProperties = { display: 'flex', gap: 2, background: 'var(--dsw-alias-bg-layer-3)', borderRadius: 8, padding: 2 }
+const tabStyle: (active: boolean) => CSSProperties = active => ({
+  border: 'none', background: active ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+  color: 'var(--dsw-alias-label-primary)', opacity: active ? 1 : 0.62,
+  cursor: 'pointer', fontSize: 12, padding: '4px 12px', borderRadius: 6,
+})
+const smallButtonStyle: CSSProperties = {
+  border: '0.5px solid var(--dsw-alias-border-l4)', background: 'transparent', color: 'inherit',
+  cursor: 'pointer', fontSize: 12, opacity: 0.82, padding: '3px 10px', borderRadius: 6, flex: '0 0 auto',
+}
+const primaryStyle: CSSProperties = {
+  ...smallButtonStyle,
+  border: 'none', background: 'var(--dsw-static-deepseek-500, #4f6bed)', color: '#fff',
+  opacity: 1, padding: '5px 14px',
+}
+const bodyStyle: CSSProperties = { flex: '1 1 auto', overflowY: 'auto', padding: '14px 16px 18px' }
+const sectionTitleStyle: CSSProperties = { fontSize: 12, fontWeight: 600, opacity: 0.6, marginBottom: 6, marginTop: 14 }
 const cardStyle: CSSProperties = {
   border: '0.5px solid var(--dsw-alias-border-l4)',
   borderRadius: 10,
@@ -57,25 +77,21 @@ const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8,
 const growStyle: CSSProperties = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 const dimStyle: CSSProperties = { opacity: 0.62, fontSize: 12 }
 const subStyle: CSSProperties = { ...dimStyle, whiteSpace: 'pre-wrap', lineHeight: '17px' }
-const smallButtonStyle: CSSProperties = {
-  border: '0.5px solid var(--dsw-alias-border-l4)', background: 'transparent', color: 'inherit',
-  cursor: 'pointer', fontSize: 12, opacity: 0.82, padding: '2px 8px', borderRadius: 6, flex: '0 0 auto',
-}
-const primaryStyle: CSSProperties = {
-  ...smallButtonStyle,
-  border: 'none', background: 'var(--dsw-alias-brand-primary, #4f6bed)', color: '#fff',
-  opacity: 1, padding: '6px 14px',
-}
 const fieldStyle: CSSProperties = {
   width: '100%', boxSizing: 'border-box', background: 'var(--dsw-alias-bg-layer-3)',
   border: '0.5px solid var(--dsw-alias-border-l4)', borderRadius: 8, color: 'inherit',
-  padding: '6px 8px', fontSize: 12, outline: 'none',
+  padding: '6px 8px', fontSize: 12, outline: 'none', colorScheme: 'dark',
 }
 const errorStyle: CSSProperties = {
-  margin: '0 14px 12px', padding: '7px 10px', borderRadius: 8, fontSize: 12,
+  margin: '0 16px 12px', padding: '7px 10px', borderRadius: 8, fontSize: 12,
   color: '#f87171', background: 'rgba(248,113,113,.1)',
+  flex: '0 0 auto',
 }
 const emptyStyle: CSSProperties = { ...dimStyle, padding: '2px 0' }
+const clickableRowStyle: CSSProperties = {
+  ...rowStyle, cursor: 'pointer', borderRadius: 6, padding: '2px 4px', margin: '0 -4px',
+}
+const backRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }
 
 const STATE_LABEL: Record<BufferTicket['state'], string> = {
   queued: '排队中',
@@ -106,7 +122,12 @@ export interface PipePanelProps {
   readonly sessions?: SessionSeat | undefined
 }
 
-/** One label for a session id. */
+/** One label for a session id (title, without the cwd suffix). */
+function shortLabel(seat: SessionSeat | undefined, id: string): string {
+  return seat?.getSnapshot().byId[id]?.displayTitle ?? id.slice(0, 8)
+}
+
+/** One label with the cwd, the way list rows render peers. */
 function labelFor(seat: SessionSeat | undefined, id: string): string {
   const row = seat?.getSnapshot().byId[id]
   const title = row?.displayTitle ?? id.slice(0, 8)
@@ -117,7 +138,9 @@ function labelFor(seat: SessionSeat | undefined, id: string): string {
 const noSessionsSnapshot = (): undefined => undefined
 const noSessionsSubscribe = (): (() => void) => () => {}
 
-/** The pipe panel component. */
+type View = 'list' | 'graph'
+
+/** The pipe dialog component. */
 export function PipePanel(props: PipePanelProps): ReactElement | null {
   const snapshot = useSyncExternalStore(props.buffer.subscribe, props.buffer.getSnapshot)
   const sessions = props.sessions
@@ -125,9 +148,113 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
     sessions === undefined ? noSessionsSubscribe : sessions.subscribe,
     sessions === undefined ? noSessionsSnapshot : sessions.getSnapshot,
   )
+  const [view, setView] = useState<View>('list')
+  const [detailLink, setDetailLink] = useState<string | undefined>(undefined)
+  const [creating, setCreating] = useState(false)
+
+  // Every hook sits above the early return: this seat renders null while
+  // closed and content once opened, and a hook that first runs on the open
+  // render would change the hook count between renders — the exact mistake
+  // that once took the whole status card down (React #310).
+  const graphSessions: GraphSession[] = useMemo(() => {
+    if (sessionState === undefined) {
+      // Without a sessions seat the nodes are the ids the links name.
+      const ids = [...new Set(snapshot.links.flatMap(link => [link.a, link.b]))]
+      return ids.map(id => ({ id, label: id.slice(0, 8), sub: undefined, active: false, current: false }))
+    }
+    const current = sessionState.current === undefined ? undefined : String(sessionState.current)
+    const ids = [...new Set([...sessionState.ids.map(String), ...snapshot.links.flatMap(link => [link.a, link.b])])]
+    return ids.map(id => {
+      const row = sessionState.byId[id]
+      return {
+        id,
+        label: row?.displayTitle ?? id.slice(0, 8),
+        sub: row?.cwd,
+        active: row?.running === true,
+        current: id === current,
+      }
+    })
+  }, [sessionState, snapshot.links])
+
+  if (!snapshot.open) return null
+
+  const close = (): void => { props.buffer.setOpen(false) }
+  const openDetail = (linkId: string): void => { setDetailLink(linkId); setView('list') }
+
+  return createElement('div', {
+    style: backdropStyle,
+    'data-dshell-panel': 'buffer',
+    onClick: (event: { target: unknown; currentTarget: unknown }) => {
+      if (event.target === event.currentTarget) close()
+    },
+  },
+    createElement('div', { style: dialogStyle, onClick: (event: { stopPropagation: () => void }) => { event.stopPropagation() } },
+      createElement('div', { style: headerStyle },
+        createElement('span', { style: titleStyle }, '跨会话管道'),
+        createElement('span', { style: headerDimStyle },
+          `${String(snapshot.links.length)} 条管道 · ${String(snapshot.tickets.filter(t => t.state === 'queued' || t.state === 'running').length)} 个进行中请求`),
+        createElement('div', { style: tabRowStyle },
+          createElement('button', { style: tabStyle(view === 'list'), onClick: () => { setView('list') } }, '列表'),
+          createElement('button', { style: tabStyle(view === 'graph'), onClick: () => { setView('graph') } }, '图'),
+        ),
+        createElement('button', { style: smallButtonStyle, title: '关闭', onClick: close }, '关闭'),
+      ),
+      view === 'graph'
+        ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, position: 'relative' } },
+          createElement(PipeGraph, {
+            sessions: graphSessions,
+            links: snapshot.links,
+            tickets: snapshot.tickets,
+            onConnect: (a, b) => {
+              if (snapshot.links.some(link => (link.a === a && link.b === b) || (link.a === b && link.b === a))) return
+              void props.buffer.link(a, b).catch(() => {})
+            },
+            onUnlink: linkId => { void props.buffer.unlink(linkId).catch(() => {}) },
+            onOpenDetail: openDetail,
+          }),
+        )
+        : detailLink === undefined
+          ? createElement(ListPane, {
+            snapshot, sessions, sessionState,
+            creating, setCreating,
+            onOpenDetail: openDetail,
+            buffer: props.buffer,
+          })
+          : createElement(DetailPane, {
+            snapshot, sessions,
+            linkId: detailLink,
+            onBack: () => { setDetailLink(undefined) },
+            buffer: props.buffer,
+          }),
+      snapshot.error === undefined ? null : createElement('div', {
+        style: errorStyle,
+        onClick: () => { props.buffer.clearError() },
+        title: '点击清除',
+      }, snapshot.error),
+    ),
+  )
+}
+
+/** Props shared by the two list-side panes. */
+interface ListSideProps {
+  readonly snapshot: ReturnType<BufferClientService['getSnapshot']>
+  readonly buffer: BufferClientService
+  readonly sessions?: SessionSeat | undefined
+}
+
+/** The list view: established pipes (click → detail), the create form. */
+function ListPane(props: ListSideProps & {
+  readonly sessionState: ReturnType<SessionSeat['getSnapshot']> | undefined
+  readonly creating: boolean
+  readonly setCreating: (next: boolean) => void
+  readonly onOpenDetail: (linkId: string) => void
+}): ReactElement {
+  const { snapshot, sessions, sessionState } = props
   const [left, setLeft] = useState('')
   const [right, setRight] = useState('')
   const [label, setLabel] = useState('')
+  const seat = sessions
+  const sessionIds = sessionState === undefined ? [] : sessionState.ids.map(String)
 
   // Seed the two pickers once the list is known: the current session on the
   // left, the first other session on the right. Never overwrites a choice.
@@ -141,87 +268,120 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
     }
   }, [sessionState, left, right])
 
-  if (!snapshot.open) return null
-
-  const sessionIds = sessionState === undefined ? [] : sessionState.ids.map(String)
-  const open = snapshot.tickets.filter(ticket => ticket.state === 'queued' || ticket.state === 'running')
-  const settled = snapshot.tickets.filter(ticket => ticket.state !== 'queued' && ticket.state !== 'running').slice(-8).reverse()
-  const liveGrants = snapshot.grants.filter(grant => grant.revokedAt === undefined)
-
   const create = (): void => {
     if (left === '' || right === '') return
-    void props.buffer.link(left, right, label).then(() => { setLabel('') }).catch(() => {})
+    void props.buffer.link(left, right, label).then(() => {
+      setLabel('')
+      props.setCreating(false)
+    }).catch(() => {})
   }
 
-  return createElement('div', { style: rootStyle, 'data-dshell-panel': 'buffer' },
-    createElement('div', { style: headerStyle },
-      createElement('span', { style: titleStyle }, '跨会话管道'),
+  return createElement('div', { style: bodyStyle },
+    createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 } },
+      createElement('div', { style: { ...sectionTitleStyle, marginTop: 0, marginBottom: 0 } },
+        `已建立的管道 (${String(snapshot.links.length)})`),
+      createElement('button', {
+        style: props.creating ? smallButtonStyle : primaryStyle,
+        onClick: () => { props.setCreating(!props.creating) },
+      }, props.creating ? '收起' : '+ 建立管道'),
+    ),
+    props.creating ? createElement('div', { style: cardStyle },
+      createElement('div', { style: rowStyle },
+        sessionSelect(left, setLeft, sessionIds, labelFor.bind(null, seat)),
+        createElement('span', { style: dimStyle }, '↔'),
+        sessionSelect(right, setRight, sessionIds, labelFor.bind(null, seat)),
+      ),
+      createElement('input', {
+        style: fieldStyle,
+        placeholder: '标签（可选），例如「部署机」',
+        value: label,
+        onChange: (event: { target: { value: string } }) => { setLabel(event.target.value) },
+      }),
+      createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+        createElement('div', { style: dimStyle }, '只有你能建立管道；agent 没有建连的工具。'),
+        createElement('button', {
+          style: primaryStyle,
+          disabled: left === '' || right === '' || left === right,
+          onClick: create,
+        }, '建立管道'),
+      ),
+    ) : null,
+    snapshot.links.length === 0
+      ? createElement('div', { style: { ...emptyStyle, marginTop: 12 } },
+        props.creating ? '' : '还没有管道。建立之后，两侧的 agent 才能互相委派。')
+      : createElement('div', { style: cardStyle },
+        snapshot.links.map(link => {
+          const open = openCountOf(snapshot.tickets, link.id)
+          return createElement('div', {
+            key: link.id,
+            style: clickableRowStyle,
+            title: '点击查看这条管道的请求与授权',
+            onClick: () => { props.onOpenDetail(link.id) },
+          },
+            createElement('span', { style: { ...growStyle, fontWeight: 500 } },
+              `${labelFor(seat, link.a)} ↔ ${labelFor(seat, link.b)}${link.label === undefined ? '' : ` · ${link.label}`}`),
+            open > 0 ? createElement('span', { style: dimStyle }, `${String(open)} 个进行中`) : null,
+            createElement('button', {
+              style: smallButtonStyle,
+              onClick: (event: { stopPropagation: () => void }) => {
+                event.stopPropagation()
+                void props.buffer.unlink(link.id).catch(() => {})
+              },
+            }, '解除'),
+          )
+        })),
+  )
+}
+
+/** The detail view for one pipe: its tickets, live grants between the pair. */
+function DetailPane(props: ListSideProps & {
+  readonly linkId: string
+  readonly onBack: () => void
+}): ReactElement {
+  const { snapshot, sessions } = props
+  const link = snapshot.links.find(candidate => candidate.id === props.linkId)
+  if (link === undefined) {
+    return createElement('div', { style: bodyStyle },
+      createElement('div', { style: backRowStyle },
+        createElement('button', { style: smallButtonStyle, onClick: props.onBack }, '← 返回')),
+      createElement('div', { style: emptyStyle }, '这条管道已被解除。'))
+  }
+  const seats = new Set([link.a, link.b])
+  const tickets = snapshot.tickets.filter(ticket => ticket.linkId === link.id)
+  const open = tickets.filter(ticket => ticket.state === 'queued' || ticket.state === 'running')
+  const settled = tickets.filter(ticket => ticket.state !== 'queued' && ticket.state !== 'running').reverse()
+  const grants = snapshot.grants.filter(grant => grant.revokedAt === undefined && (seats.has(grant.from) && seats.has(grant.to)))
+
+  return createElement('div', { style: bodyStyle },
+    createElement('div', { style: backRowStyle },
+      createElement('button', { style: smallButtonStyle, onClick: props.onBack }, '← 返回'),
+      createElement('span', { style: { fontWeight: 600 } },
+        `${labelFor(sessions, link.a)} ↔ ${labelFor(sessions, link.b)}`),
+      link.label === undefined ? null : createElement('span', { style: dimStyle }, link.label),
+      createElement('span', { style: { flex: '1 1 auto' } }),
       createElement('button', {
         style: smallButtonStyle,
-        title: '关闭',
-        onClick: () => { props.buffer.setOpen(false) },
-      }, '关闭'),
+        onClick: () => { void props.buffer.unlink(link.id).catch(() => {}) },
+      }, '解除管道'),
     ),
-
-    createElement('div', { style: bodyStyle },
-      createElement('div', null,
-        createElement('div', { style: sectionTitleStyle }, `已建立的管道 (${String(snapshot.links.length)})`),
-        snapshot.links.length === 0
-          ? createElement('div', { style: emptyStyle }, '还没有管道。建立之后，两侧的 agent 才能互相委派。')
-          : createElement('div', { style: cardStyle }, snapshot.links.map(link => linkRow(link, props))),
-      ),
-
-      createElement('div', null,
-        createElement('div', { style: sectionTitleStyle }, '建立新管道'),
-        createElement('div', { style: cardStyle },
-          createElement('div', { style: rowStyle },
-            sessionSelect(left, setLeft, sessionIds, labelFor.bind(null, sessions)),
-            createElement('span', { style: dimStyle }, '↔'),
-            sessionSelect(right, setRight, sessionIds, labelFor.bind(null, sessions)),
-          ),
-          createElement('input', {
-            style: fieldStyle,
-            placeholder: '标签（可选），例如「部署机」',
-            value: label,
-            onChange: (event: { target: { value: string } }) => { setLabel(event.target.value) },
-          }),
-          createElement('div', { style: { display: 'flex', justifyContent: 'flex-end' } },
-            createElement('button', {
-              style: primaryStyle,
-              disabled: left === '' || right === '' || left === right,
-              onClick: create,
-            }, '建立管道'),
-          ),
-          createElement('div', { style: dimStyle }, '只有你能建立管道；agent 没有建连的工具。'),
-        ),
-      ),
-
-      createElement('div', null,
-        createElement('div', { style: sectionTitleStyle }, `进行中的请求 (${String(open.length)})`),
-        open.length === 0
-          ? createElement('div', { style: emptyStyle }, '没有未结算的请求。')
-          : createElement('div', { style: cardStyle }, open.map(ticket => ticketRow(ticket, props, labelFor.bind(null, sessions), true))),
-      ),
-
-      createElement('div', null,
-        createElement('div', { style: sectionTitleStyle }, `生效中的授权 (${String(liveGrants.length)})`),
-        liveGrants.length === 0
-          ? createElement('div', { style: emptyStyle }, '没有生效中的授权。任务结算时授权会自动回收。')
-          : createElement('div', { style: cardStyle }, liveGrants.map(grant => grantRow(grant, props, labelFor.bind(null, sessions)))),
-      ),
-
-      settled.length === 0 ? null : createElement('div', null,
-        createElement('div', { style: sectionTitleStyle }, '最近结束'),
-        createElement('div', { style: cardStyle }, settled.map(ticket => ticketRow(ticket, props, labelFor.bind(null, sessions), false))),
-      ),
-    ),
-
-    snapshot.error === undefined ? null : createElement('div', {
-      style: errorStyle,
-      onClick: () => { props.buffer.clearError() },
-      title: '点击清除',
-    }, snapshot.error),
+    createElement('div', { style: sectionTitleStyle }, `进行中的请求 (${String(open.length)})`),
+    open.length === 0
+      ? createElement('div', { style: emptyStyle }, '没有进行中的请求。')
+      : createElement('div', { style: cardStyle }, open.map(ticket => ticketRow(ticket, props.buffer, sessions, true))),
+    settled.length === 0 ? null : createElement('div', null,
+      createElement('div', { style: sectionTitleStyle }, `已结束 (${String(settled.length)})`),
+      createElement('div', { style: cardStyle }, settled.map(ticket => ticketRow(ticket, props.buffer, sessions, false)))),
+    createElement('div', { style: sectionTitleStyle }, `生效中的授权 (${String(grants.length)})`),
+    grants.length === 0
+      ? createElement('div', { style: emptyStyle }, '没有生效中的授权。任务结算时授权会自动回收。')
+      : createElement('div', { style: cardStyle }, grants.map(grant => grantRow(grant, sessions))),
   )
+}
+
+/** Count a link's unsettled tickets. */
+function openCountOf(tickets: readonly BufferTicket[], linkId: string): number {
+  return tickets.filter(ticket => ticket.linkId === linkId
+    && (ticket.state === 'queued' || ticket.state === 'running')).length
 }
 
 /** One `<select>` of session ids. */
@@ -238,23 +398,11 @@ function sessionSelect(
   }, ids.map(id => createElement('option', { key: id, value: id }, label(id))))
 }
 
-/** One established pipe with its release button. */
-function linkRow(link: BufferLink, props: PipePanelProps): ReactElement {
-  return createElement('div', { key: link.id, style: rowStyle },
-    createElement('span', { style: growStyle, title: `${link.a} ↔ ${link.b}` },
-      `${labelFor(props.sessions, link.a)} ↔ ${labelFor(props.sessions, link.b)}${link.label === undefined ? '' : ` · ${link.label}`}`),
-    createElement('button', {
-      style: smallButtonStyle,
-      onClick: () => { void props.buffer.unlink(link.id).catch(() => {}) },
-    }, '解除'),
-  )
-}
-
 /** One ticket row; `cancellable` adds the withdraw button. */
 function ticketRow(
   ticket: BufferTicket,
-  props: PipePanelProps,
-  label: (id: string) => string,
+  buffer: BufferClientService,
+  sessions: SessionSeat | undefined,
   cancellable: boolean,
 ): ReactElement {
   const tail = ticket.result ?? ticket.error ?? ticket.reports[ticket.reports.length - 1]?.text
@@ -262,7 +410,7 @@ function ticketRow(
   return createElement('div', { key: ticket.id, style: { ...rowStyle, alignItems: 'flex-start' } },
     createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
       createElement('span', { style: growStyle },
-        `${STATE_LABEL[ticket.state]} · ${label(ticket.from)} → ${label(ticket.to)} · ${ticket.subject}`),
+        `${STATE_LABEL[ticket.state]} · ${shortLabel(sessions, ticket.from)} → ${shortLabel(sessions, ticket.to)} · ${ticket.subject}`),
       unsettled
         ? createElement('span', { style: dimStyle }, `剩约 ${String(minutesLeft(ticket.deadlineAt))} 分钟 · ${ticket.id}`)
         : createElement('span', { style: dimStyle }, ticket.id),
@@ -271,26 +419,22 @@ function ticketRow(
     cancellable
       ? createElement('button', {
         style: smallButtonStyle,
-        onClick: () => { void props.buffer.cancel(ticket.id).catch(() => {}) },
+        onClick: () => { void buffer.cancel(ticket.id).catch(() => {}) },
       }, '取消')
       : null,
   )
 }
 
 /** One live grant with its revoke button. */
-function grantRow(grant: BufferGrant, props: PipePanelProps, label: (id: string) => string): ReactElement {
+function grantRow(grant: BufferGrant, sessions: SessionSeat | undefined): ReactElement {
   return createElement('div', { key: grant.id, style: { ...rowStyle, alignItems: 'flex-start' } },
     createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
-      createElement('span', { style: growStyle }, `${label(grant.from)} → ${label(grant.to)} · 剩余引用 ${String(grant.count)}`),
+      createElement('span', { style: growStyle }, `${shortLabel(sessions, grant.from)} → ${shortLabel(sessions, grant.to)} · 剩余引用 ${String(grant.count)}`),
       grant.description.trim().length === 0 ? null : createElement('span', { style: subStyle }, grant.description),
       ...grant.areas.map((area, index) => createElement('span', {
         key: `${grant.id}:${String(index)}`,
         style: dimStyle,
       }, `${area.path}（${rightsLabel(area.rights)}）`)),
     ),
-    createElement('button', {
-      style: smallButtonStyle,
-      onClick: () => { void props.buffer.revoke(grant.id).catch(() => {}) },
-    }, '回收'),
   )
 }

@@ -45,7 +45,12 @@ const POLL_MS = 3000
 export interface SessionSeat {
   getSnapshot: () => {
     readonly ids: readonly string[]
-    readonly byId: Record<string, { readonly displayTitle: string; readonly cwd?: string | undefined }>
+    readonly byId: Record<string, {
+      readonly displayTitle: string
+      readonly cwd?: string | undefined
+      /** Whether a turn is running — the graph marks such nodes. */
+      readonly running?: boolean | undefined
+    }>
     readonly current: string | undefined
   }
   subscribe: (listener: () => void) => () => void
