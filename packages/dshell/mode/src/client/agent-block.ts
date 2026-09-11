@@ -414,10 +414,14 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; 
  * icon (see ThinkMark, ToolMark), not the fish.
  *
  * `tone: 'shimmer'` lets the surrounding text shimmer paint the fish via
- * `currentColor`; `tone: 'error'` is the failed-block variant, which is
- * the same shape painted with the dsw error alias.
+ * `currentColor`; on a non-running fold (done or failed) the mark is just
+ * the muted silhouette. Error affordance lives on the row's left rail and
+ * the "已中断" word, not on the mark — dsh's stock rule is "colour on the
+ * part the reader has to act on, not on the whole row, and never on the
+ * mark" (IconApiOutline14 with StateDot(state=error) overlays the dot,
+ * the mark itself stays neutral).
  */
-function FishMark(props: { tone: 'shimmer' | 'muted' | 'error' }): ReactElement {
+function FishMark(props: { tone: 'shimmer' | 'muted' }): ReactElement {
   const h = (16 * FISH_VB_H) / FISH_VB_W
   const style: Record<string, string | number> = { flex: '0 0 auto', alignSelf: 'center' }
   if (props.tone === 'shimmer') {
@@ -425,8 +429,6 @@ function FishMark(props: { tone: 'shimmer' | 'muted' | 'error' }): ReactElement 
     // the same animation hook can re-paint the fish when the running state
     // changes; a future palette swap is one rule change.
     style['data-dshell-running-fish'] = ''
-  } else if (props.tone === 'error') {
-    style.color = 'var(--dsw-alias-state-error-primary)'
   }
   return createElement('svg', {
     width: 16,
@@ -470,11 +472,13 @@ function ThinkMark(): ReactElement {
  * Internal-row mark for a generic tool call: the dsh official
  * `IconApiOutline14` glyph (the same `</api>`-style API plugin icon dsh's
  * stock `GenericCommandCard` uses), inlined for the same reason as
- * ThinkMark. The error-tone variant draws the same path with the dsw error
- * alias and overlays a small red dot, mirroring dsh's "StateDot state=error"
- * affordance.
+ * ThinkMark. The mark stays neutral on every row — dsh overlays a
+ * `StateDot(state=error)` red dot on the rare errored tool row, but
+ * dshell's fold body collapses error detail into the parent fold
+ * header's left rail and "已中断" word, so the per-row mark never
+ * needs an error tone here.
  */
-function ToolMark(props: { tone?: 'muted' | 'error' }): ReactElement {
+function ToolMark(): ReactElement {
   return createElement('span', {
     style: {
       flex: '0 0 auto',
@@ -482,7 +486,7 @@ function ToolMark(props: { tone?: 'muted' | 'error' }): ReactElement {
       position: 'relative',
       display: 'inline-flex',
       width: 14, height: 14,
-      color: props.tone === 'error' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-tertiary)',
+      color: 'var(--dsw-alias-label-tertiary)',
     },
   },
     createElement('svg', {
@@ -636,7 +640,7 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
     },
       running
         ? createElement(FishMark, { tone: 'shimmer' })
-        : createElement(FishMark, { tone: failed ? 'error' : 'muted' }),
+        : createElement(FishMark, { tone: 'muted' }),
       running
         ? createElement('span', { 'data-dshell-running-text': '' },
             `深度求索中 · ${formatDuration(endedAt - block.startedAt)}`)
