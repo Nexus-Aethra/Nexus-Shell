@@ -83,12 +83,13 @@ when it contributes to model-visible state.
   `/agent` and `/shell` prefix parsing. On agent-mode submit, injects
   the truncated PTY context block before the user message. Its view
   also carries the status card (Phase 9.11): a permanent one-line head,
-  with plan / AI terminal / subagents / sessions / link rows whose
-  details open on click.
+  with plan / AI terminal / subagents / breakpoint / pipe-task / link
+  rows whose details open on click.
 - dsh services depended on: `ctx.uiSession`, `ctx.agents.inject`,
   `dshell-terminal-bridge` (for main PTY id, the agent stream and
-  context buffer read), `ctx.sessions` (the status card's session and
-  subagent rows).
+  context buffer read), `ctx.sessions` (the status card's session
+  titles, running bit and subagent catalog), `dshell-buffer` (its pipe
+  rows; optional, reached through a late-binding seat).
 - Introduced in: Phase 5 (state and dispatch); expanded in Phase 7
   (injection), Phase 9.11 (status card).
 - Touches decisions: 4.5 (mode state and prefix handling), 4.6
@@ -305,7 +306,11 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.sandboxPolicy` — resolved against the granter's session to fence a
   granted write; optional (in `dshell-buffer`, host face).
 - `ctx.sessions` — peer labels in the pipe panel (in `dshell-buffer`,
-  browser face).
+  browser face) and the status card's session titles / running bit
+  (in `dshell-mode`, browser face).
+- `ctx.dshellBuffer` — the pipe snapshot, its load poll, ticket cancel
+  and panel toggle, read by the status card's 中断点 / 管道任务 rows (in
+  `dshell-mode`, browser face; absent without `dshell-buffer`).
 - `ctx.connection.fetch` — registers the `/api/dshell/files` listing
   route and the `/api/dshell/transfer` job route (in `dshell-files`, host
   face).

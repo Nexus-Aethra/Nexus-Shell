@@ -24,11 +24,15 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../theme-settings.js'
 import { BlockView, type SshSeat } from './block-view.js'
+import type { PipeSeat, PipeTicket } from './status-card.js'
 import { injectSidebarCompactCss } from './sidebar-compact.js'
 import { DshellLeftControls } from './controls.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
+
+/** The pipe's state before (or without) a buffer service to read it from. */
+const EMPTY_PIPE_STATE = { links: [], tickets: [] } as const
 
 export const name = '@deepseek-ai/dsh-dshell-mode/client'
 
@@ -170,6 +174,52 @@ export function apply(ctx: Context): void {
       subscribe: listener => ssh.subscribe(listener),
     }
   })
+  // The cross-session pipe is the same story one package over: reached by
+  // service key, reduced to the reads the status card's pipe rows need. A
+  // composition without `dshell-buffer` simply leaves those rows absent.
+  //
+  // The seat object is built NOW and forwards to the service whenever it
+  // arrives, instead of being captured at the moment the service happens to be
+  // available: a view registration memoizes its injected props per session
+  // binding, so a seat filled in later would never reach the card that asked
+  // for it. Subscribe is forwarded the same way, and subscribers already
+  // waiting are woken when the service lands.
+  type PipeService = {
+    getSnapshot(): { links: readonly { id: string; a: string; b: string }[]; tickets: readonly PipeTicket[] }
+    subscribe(listener: () => void): () => void
+    load(): Promise<void>
+    cancel(ticketId: string): Promise<void>
+    setOpen(open: boolean): void
+  }
+  const pipeListeners = new Set<() => void>()
+  let pipeService: PipeService | undefined
+  const pipeSeat: PipeSeat = {
+    getSnapshot: () => pipeService?.getSnapshot() ?? EMPTY_PIPE_STATE,
+    subscribe: (listener) => {
+      pipeListeners.add(listener)
+      return () => { pipeListeners.delete(listener) }
+    },
+    load: async () => { await pipeService?.load() },
+    cancel: async (ticketId) => { await pipeService?.cancel(ticketId) },
+    setOpen: (open) => { pipeService?.setOpen(open) },
+  }
+  const pipeHost = ctx as unknown as {
+    inject(keys: readonly string[], callback: (scope: { dshellBuffer: PipeService }) => unknown): unknown
+  }
+  pipeHost.inject(['dshellBuffer'], (scope) => {
+    pipeService = scope.dshellBuffer
+    // Read once AS SOON as the service exists. A card that mounted before it
+    // arrived already spent its effect with no service behind the seat, and its
+    // dependencies do not change when the service lands — so without this first
+    // read the pipe would stay visibly empty until the next unrelated render.
+    void pipeService.load()
+    const stop = pipeService.subscribe(() => { for (const listener of [...pipeListeners]) listener() })
+    for (const listener of [...pipeListeners]) listener()
+    return () => {
+      stop()
+      pipeService = undefined
+    }
+  })
   // Cast: the modelDirectories merge lives in ui-model-selection's face,
   // which this package must not take as a dependency (the model chip here
   // reads the service read-only; the declarer stays ui-model-selection).
@@ -305,6 +355,7 @@ export function apply(ctx: Context): void {
         // Read at render time, so a plugin that loads after this one is still
         // picked up.
         ssh: sshSeat,
+        pipe: pipeSeat,
         // Attachments arrive as opaque refs; the conversation service owns the
         // only sanctioned way to turn one into a URL.
         loadImage: sessionId === undefined

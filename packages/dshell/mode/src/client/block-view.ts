@@ -29,7 +29,10 @@ import { AgentBlock, UserBubble } from './agent-block.js'
 import { assembleTimeline, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
 import { ConnectionNotice, ConnectionPanel, connectionView } from './connection-notice.js'
-import { StatusCard, StatusCardBoundary, STATUS_CARD_RESERVE, injectTodoCardCss, setTodoPanelSuppressed, type TodoItem } from './status-card.js'
+import {
+  StatusCard, StatusCardBoundary, STATUS_CARD_RESERVE, injectTodoCardCss, setTodoPanelSuppressed,
+  type PipeSeat, type TodoItem,
+} from './status-card.js'
 import { BookmarkRail, bookmarksOf } from './bookmark-rail.js'
 import { useDshellTheme } from './theme.js'
 
@@ -178,6 +181,8 @@ export function BlockView(props: {
   loadImage: MessageImageLoader | undefined
   /** The SSH plugin's device face; absent in a composition without it. */
   ssh?: SshSeat | undefined
+  /** The cross-session pipe's face; absent in a composition without it. */
+  pipe?: PipeSeat | undefined
 }): ReactElement {
   const theme = useDshellTheme()
   const seat = useRef<HTMLDivElement | null>(null)
@@ -509,6 +514,7 @@ export function BlockView(props: {
       pty: props.pty,
       sessionId: id,
       sessions: props.sessions,
+      pipe: props.pipe,
     })),
     createElement('div', {
       ref: scroll,

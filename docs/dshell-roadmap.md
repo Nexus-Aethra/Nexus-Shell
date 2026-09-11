@@ -1245,14 +1245,25 @@ Shipped:
 - **The task card became the status card** (`dshell-mode` browser): an
   integrated status list rather than a terminal window. It is
   permanent — idle says so and stays openable — one narrow line while
-  collapsed (the phase of the running plan, else the shell/agent/link
-  state, else `空闲`), and rows when expanded: 计划, AI 终端 (its detail
-  is the live read-only terminal), 智能体 (dsh's subagent catalog,
-  fetched when the row opens), 会话 (dsh's session list, click to
-  switch) and 连接. A row opens its detail; nothing opens by itself.
-  The column reserves the collapsed card's height, so a floating pill
-  never sits on the terminal's first line, and a `StatusCardBoundary`
-  contains any fault to the card instead of the view.
+  collapsed (the phase of the running plan, else the parked/pipe/shell/
+  link state, else `空闲`), and rows when expanded: 计划, AI 终端 (its
+  detail is the live read-only terminal), 智能体 (dsh's subagent
+  catalog, fetched when the row opens), 中断点 and 管道任务 (the
+  cross-session pipe's effect on this session) and 连接. A row opens
+  its detail; nothing opens by itself. The column reserves the
+  collapsed card's height, so a floating pill never sits on the
+  terminal's first line, and a `StatusCardBoundary` contains any fault
+  to the card instead of the view.
+- **中断点 is the pipe's parked state, made visible.** A ticket this
+  session asked for and did not get an answer to is a breakpoint: the
+  agent delegated, ended its turn on purpose and waits for the reply
+  that reopens it — without this row the session looks idle while it is
+  in fact suspended. The row's detail lists each outstanding ticket with
+  its peer, state, remaining deadline, progress count and a 撤回; 管道任务
+  is the other direction, the work another session handed to this one,
+  and its detail opens the pipe panel. Both read the same pipe snapshot
+  the panel does, polled by the card only while this session actually
+  has a pipe.
 - **The fake agent block is gone.** A turn whose rows are all command
   echoes — what `/permission <preset>` produces, since it submits a real
   turn with no model work in it — renders as one quiet line
@@ -1285,6 +1296,10 @@ Acceptance check:
 - The status card is present on every session (collapsed ~35 px tall,
   ≤330 px wide), and expanding it lists the rows without opening any
   detail.
+- With a delegate outstanding and the worker still busy, the requester's
+  card reads `⏸ 等待 <peer> 回信` (row detail: peers, state, remaining
+  deadline, progress, 撤回) and the worker's reads `⇄ N 个管道任务待处理`;
+  once the worker finishes, both rows are gone.
 
 ## Phase 10 — Packaging
 

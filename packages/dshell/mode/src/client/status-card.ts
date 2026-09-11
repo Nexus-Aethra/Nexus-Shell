@@ -41,6 +41,69 @@ const STATUS_GLYPH: Record<TodoItem['status'], string> = {
 }
 
 /**
+ * The cross-session pipe, as `dshell-buffer` publishes it.
+ *
+ * Structural on purpose: this package must not depend on the buffer plugin's
+ * bundle, and a composition without it passes nothing — the pipe rows then
+ * simply never appear.
+ */
+export interface PipeSeat {
+  getSnapshot(): {
+    readonly links: readonly { readonly id: string; readonly a: string; readonly b: string }[]
+    readonly tickets: readonly PipeTicket[]
+  }
+  subscribe(listener: () => void): () => void
+  /** Re-read the committed pipe state from the host. */
+  load(): Promise<void>
+  /** Withdraw an outstanding ticket. */
+  cancel(ticketId: string): Promise<void>
+  /** Open the pipe panel (the frame-wide overlay). */
+  setOpen(open: boolean): void
+}
+
+/** One deferred request, reduced to what a status row shows. */
+export interface PipeTicket {
+  readonly id: string
+  readonly from: string
+  readonly to: string
+  readonly subject: string
+  readonly state: 'queued' | 'running' | 'done' | 'failed' | 'timeout' | 'cancelled'
+  readonly createdAt: number
+  readonly deadlineAt: number
+  readonly reports: readonly { readonly time: number; readonly text: string }[]
+}
+
+/** The card renders without a pipe in a composition that has no buffer. */
+const EMPTY_PIPE_STATE = { links: [], tickets: [] } as const
+const getEmptyPipeState = (): typeof EMPTY_PIPE_STATE => EMPTY_PIPE_STATE
+const NO_PIPE_SUBSCRIBE = (): (() => void) => () => {}
+
+/** Ticket states that are still running; everything else is settled. */
+const SETTLED: readonly PipeTicket['state'][] = ['done', 'failed', 'timeout', 'cancelled']
+
+/** How a ticket's state reads in a row. */
+const STATE_LABEL: Record<PipeTicket['state'], string> = {
+  queued: '待领取',
+  running: '对方处理中',
+  done: '已完成',
+  failed: '失败',
+  timeout: '已超时',
+  cancelled: '已撤回',
+}
+
+/** How long a ticket has left before the host's watchdog settles it. */
+function remaining(deadlineAt: number): string {
+  const left = deadlineAt - Date.now()
+  if (!Number.isFinite(left)) return ''
+  if (left <= 0) return '已到期限'
+  const minutes = Math.floor(left / 60_000)
+  return minutes >= 1 ? `剩 ${String(minutes)} 分钟` : `剩 ${String(Math.max(1, Math.round(left / 1000)))} 秒`
+}
+
+/** How often the card re-reads the pipe while this session has one. */
+const PIPE_POLL_MS = 5000
+
+/**
  * Vertical space the collapsed card occupies, reserved at the top of the
  * column so the transcript never starts underneath it.
  */
@@ -227,13 +290,19 @@ export function StatusCard(props: {
   pty: PtyStreamService
   sessionId: string | undefined
   sessions: ISessions
+  /** The cross-session pipe's face; absent in a composition without it. */
+  pipe?: PipeSeat | undefined
 }): ReactElement | null {
-  const { todos, activity, theme, pty, sessionId, sessions } = props
+  const { todos, activity, theme, pty, sessionId, sessions, pipe } = props
   // Subscribed before any early return: hooks cannot be conditional, and the
   // state they carry is what decides whether the card exists at all.
   const agent = useSyncExternalStore(pty.agent.subscribe, pty.agent.getSnapshot)
   const link = useSyncExternalStore(pty.state.subscribe, pty.state.getSnapshot)
   const list = useSyncExternalStore(sessions.list.subscribe, sessions.list.getSnapshot)
+  const pipeState = useSyncExternalStore(
+    pipe?.subscribe ?? NO_PIPE_SUBSCRIBE,
+    pipe?.getSnapshot ?? getEmptyPipeState,
+  )
   const [openCard, setOpenCard] = useState(false)
   const [openRow, setOpenRow] = useState<string | undefined>(undefined)
 
@@ -258,6 +327,19 @@ export function StatusCard(props: {
     return () => { catalog.call(sessions, parent, false) }
   }, [openRow, sessionId, sessions])
 
+  // The pipe's state is pulled, not pushed, and its own poll only runs while
+  // the panel is open. The card therefore reads it itself — once at mount, then
+  // only while this session actually has a pipe: a composition or a session
+  // without one costs a single request.
+  const pipeActive = pipeState.links.length > 0 || pipeState.tickets.length > 0
+  useEffect(() => {
+    if (pipe === undefined) return
+    void pipe.load()
+    if (!pipeActive) return
+    const timer = setInterval(() => { void pipe.load() }, PIPE_POLL_MS)
+    return () => { clearInterval(timer) }
+  }, [pipe, pipeActive])
+
   const agentHere = sessionId !== undefined && agent.sessionId === sessionId
   const live = agentHere && agent.live
   const dead = agentHere && agent.reason !== undefined
@@ -265,8 +347,6 @@ export function StatusCard(props: {
   // field it has not populated yet must degrade to "nothing to report" — a
   // throw here would take the whole view down with the card.
   const byId = list.byId ?? {}
-  const ids = list.ids ?? []
-  const current = list.current
   // Whether a turn is running comes from the session list, not from the fold:
   // a turn that died with the host leaves a permanently "running" block behind,
   // and a status line that keeps claiming work is worse than no status line.
@@ -282,6 +362,18 @@ export function StatusCard(props: {
   const activeTodo = todos.find(item => item.status === 'in_progress')
   const pendingTodo = todos.find(item => item.status === 'pending')
 
+  // The pipe's effect on this session, computed before the head line because
+  // it is part of that line. A ticket the current session *asked for* and did
+  // not get an answer to is a breakpoint: the agent delegated, ended its turn
+  // on purpose and is parked until the reply reopens it, which is a state the
+  // reader must see — otherwise the session looks idle while it is waiting.
+  // Work another session handed *to* this one is the pipe's other half.
+  const peerTitle = (id: string): string => byId[id as SessionId]?.displayTitle ?? id.slice(0, 12)
+  const waiting = pipeState.tickets.filter(ticket =>
+    ticket.from === sessionId && !SETTLED.includes(ticket.state))
+  const owed = pipeState.tickets.filter(ticket =>
+    ticket.to === sessionId && !SETTLED.includes(ticket.state))
+
   // The one line the collapsed card shows: the newest thing that is happening,
   // in the order a reader would ask about it — the phase of a written plan
   // first, since it is short and is what the reader last saw the agent do. A
@@ -289,15 +381,17 @@ export function StatusCard(props: {
   // surface, and its rows are worth reaching even when nothing is running.
   const headline =
     running ? `◐ ${activeTodo?.content ?? activity ?? 'AI 正在工作'}`
-      : activeTodo !== undefined ? `◐ ${activeTodo.content}`
-        : live ? '▚ AI 终端运行中'
-          : runningChildren > 0 ? `⎇ ${String(runningChildren)} 个智能体运行中`
-            : pendingTodo !== undefined ? `○ ${pendingTodo.content}`
-              : dead ? 'AI 终端已结束'
-                : linkBroken ? '终端连接中断'
-                  : idleHeadline()
+      : waiting.length > 0 ? `⏸ 等待 ${peerTitle(waiting[0]?.to ?? '')} 回信`
+        : activeTodo !== undefined ? `◐ ${activeTodo.content}`
+          : owed.length > 0 ? `⇄ ${String(owed.length)} 个管道任务待处理`
+            : live ? '▚ AI 终端运行中'
+              : runningChildren > 0 ? `⎇ ${String(runningChildren)} 个智能体运行中`
+                : pendingTodo !== undefined ? `○ ${pendingTodo.content}`
+                  : dead ? 'AI 终端已结束'
+                    : linkBroken ? '终端连接中断'
+                      : idleHeadline()
   const idle = !running && activeTodo === undefined && !live && runningChildren === 0
-    && pendingTodo === undefined && !dead && !linkBroken
+    && pendingTodo === undefined && !dead && !linkBroken && waiting.length === 0 && owed.length === 0
 
   const rows: StatusRow[] = []
   if (todos.length > 0) {
@@ -370,26 +464,62 @@ export function StatusCard(props: {
         ),
     })
   }
-  if (ids.length > 0) {
+  // The pipe rows. A breakpoint is the wait for an answer (the agent ended its
+  // turn on purpose); a pipe task is work another session handed to this one.
+  if (waiting.length > 0) {
     rows.push({
-      id: 'sessions', glyph: '❐', label: '会话', active: false,
-      value: `${String(ids.length)} 个 · ${byId[current ?? ids[0] as SessionId]?.displayTitle ?? ''}`,
-      detail: createElement('div', { style: { display: 'grid', gap: '2px' } },
-        ...ids.map(id => createElement('div', {
-          key: String(id),
-          onClick: () => { sessions.open(id) },
-          style: {
-            display: 'grid', gridTemplateColumns: '10px 1fr auto', gap: '6px',
-            color: id === current ? theme.accentText : theme.text,
-            fontSize: 11.5, lineHeight: '17px', cursor: 'pointer',
-          },
+      id: 'breakpoint', glyph: '⏸', label: '中断点', active: true,
+      value: `等待 ${peerTitle(waiting[0]?.to ?? '')} 回信${waiting.length > 1 ? ` · ${String(waiting.length)} 个` : ''}`,
+      detail: createElement('div', { style: { display: 'grid', gap: '3px' } },
+        line('已把活交给别的会话并结束本轮，对方回信后会自动唤醒。', theme),
+        ...waiting.map(ticket => createElement('div', {
+          key: ticket.id,
+          style: { display: 'grid', gap: '1px', marginTop: '2px' },
         },
-          createElement('span', { style: { color: byId[id]?.running === true ? theme.accent : theme.borderStrong } }, '●'),
-          createElement('span', {
-            style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-          }, byId[id]?.displayTitle ?? String(id)),
-          createElement('span', { style: { color: theme.muted, opacity: 0.7 } }, id === current ? '当前' : ''),
+          createElement('div', {
+            style: { color: theme.text, fontSize: 11.5, lineHeight: '16px', whiteSpace: 'pre-wrap' },
+          }, `→ ${peerTitle(ticket.to)}：${ticket.subject}`),
+          createElement('div', {
+            style: { display: 'flex', gap: '8px', color: theme.muted, fontSize: 11 },
+          },
+            createElement('span', null, `${STATE_LABEL[ticket.state]} · ${remaining(ticket.deadlineAt)}`),
+            ticket.reports.length === 0 ? null : createElement('span', null, `${String(ticket.reports.length)} 条进展`),
+            createElement('span', {
+              onClick: (event: { stopPropagation: () => void }) => {
+                event.stopPropagation()
+                void pipe?.cancel(ticket.id)
+              },
+              style: { color: theme.accentText, textDecoration: 'underline', cursor: 'pointer' },
+            }, '撤回'),
+          ),
         )),
+      ),
+    })
+  }
+  if (owed.length > 0) {
+    rows.push({
+      id: 'pipe', glyph: '⇄', label: '管道任务', active: true,
+      value: `${String(owed.length)} 个待处理 · ${peerTitle(owed[0]?.from ?? '')}`,
+      detail: createElement('div', { style: { display: 'grid', gap: '3px' } },
+        ...owed.map(ticket => createElement('div', {
+          key: ticket.id,
+          style: { display: 'grid', gap: '1px', marginTop: '2px' },
+        },
+          createElement('div', {
+            style: { color: theme.text, fontSize: 11.5, lineHeight: '16px', whiteSpace: 'pre-wrap' },
+          }, `← ${peerTitle(ticket.from)}：${ticket.subject}`),
+          createElement('div', { style: { color: theme.muted, fontSize: 11 } },
+            `${STATE_LABEL[ticket.state]} · ${remaining(ticket.deadlineAt)}`),
+        )),
+        pipe === undefined
+          ? null
+          : createElement('div', {
+            onClick: (event: { stopPropagation: () => void }) => {
+              event.stopPropagation()
+              pipe.setOpen(true)
+            },
+            style: { color: theme.accentText, textDecoration: 'underline', cursor: 'pointer', fontSize: 11.5, marginTop: '3px' },
+          }, '打开管道面板'),
       ),
     })
   }
