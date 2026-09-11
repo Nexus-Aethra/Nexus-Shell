@@ -248,6 +248,31 @@ export function createSpanTerminal(host: HTMLElement, theme: Theme, text: string
     theme: xtermTheme(theme),
   })
   term.open(host)
+  // xterm's default key handling ignores Ctrl+Shift+C — with `disableStdin`
+  // every key is dropped, including the chord a user expects to copy the
+  // highlighted selection. The browser's default copy binding is also
+  // short-circuited because the focused element is xterm's helper
+  // textarea, not a real text node. Install one handler that listens for
+  // Ctrl+Shift+C / Ctrl+Insert and writes xterm's own selection string to
+  // the clipboard. Other chords (Ctrl+C, Ctrl+V, Shift+Insert, …) keep
+  // their default behaviour — `disableStdin` already drops anything that
+  // would type a character, and the shell-mode composer is the one that
+  // owns those chords anyway.
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== 'keydown') return true
+    const mod = event.ctrlKey || event.metaKey
+    if (mod && event.shiftKey && (event.key === 'C' || event.code === 'KeyC')) {
+      const text = term.getSelection()
+      if (text.length === 0) return false
+      if (typeof navigator !== 'undefined' && navigator.clipboard !== undefined) {
+        void navigator.clipboard.writeText(text)
+      }
+      // Returning false tells xterm not to forward the chord to the PTY;
+      // the chord has been handled here.
+      return false
+    }
+    return true
+  })
   let last = ''
   // Geometry follows the text and the column: the grid spans the column, and
   // widens only as far as a redraw needs. Growing it cannot move a redraw's
@@ -272,11 +297,24 @@ export function createSpanTerminal(host: HTMLElement, theme: Theme, text: string
     last = next
   }
   update(text)
+  // Debug handle: `window.__DSHELL_TERMS__` lists the live xterm instances
+  // for headless verification. Cleared on dispose so closed terminals do
+  // not pile up.
+  if (typeof window !== 'undefined') {
+    const handle = ((window as unknown as { __DSHELL_TERMS__?: Set<unknown> }).__DSHELL_TERMS__ ??= new Set()) as Set<unknown>
+    handle.add(term)
+  }
   return {
     update,
     // A container resize is not a text change: re-run the geometry pass only,
     // which reflows what is already in the buffer instead of rewriting it.
     fit: () => { update(last) },
-    dispose: () => { term.dispose() },
+    dispose: () => {
+      term.dispose()
+      if (typeof window !== 'undefined') {
+        const handle = (window as unknown as { __DSHELL_TERMS__?: Set<unknown> }).__DSHELL_TERMS__
+        if (handle !== undefined) handle.delete(term)
+      }
+    },
   }
 }
