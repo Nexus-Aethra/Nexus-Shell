@@ -373,6 +373,46 @@ export function apply(ctx: Context): void {
       // content width, which dshell's full-bleed canvas and composer ignore —
       // in a terminal surface they read as a stray sliding light column.
       '[class*="widthHandle"] { display: none !important; }',
+      // The submit affordance is a RETURN KEY, not a chat bubble. Stock draws
+      // a 34px filled blue circle with an up arrow, which reads as "send a
+      // chat message" — the wrong promise for a composer whose text goes
+      // straight into a shell. Transparency plus the key glyph says what the
+      // Enter key already does, so the button and the keyboard agree.
+      //
+      // Send and Stop share the `primary` class, so the glyph is selected by
+      // SHAPE, not by the aria-label (which is translated): the stop icon is
+      // an svg `rect`, the send icon an svg `path`. `:has()` keeps this
+      // language-independent, so a locale switch cannot move the styles.
+      '[class*="primary"]:has(svg path) {',
+      '  width: 28px !important;',
+      '  height: 28px !important;',
+      '  background: transparent !important;',
+      '  border-radius: 6px !important;',
+      '  color: var(--dsw-alias-label-tertiary) !important;',
+      // The stock circle lifts itself 2px to clear the row's top padding;
+      // a bare glyph belongs on the row's own baseline.
+      '  transform: none !important;',
+      '}',
+      '[class*="primary"]:has(svg path):hover:not(:disabled) {',
+      '  background: var(--dsw-alias-interactive-bg-hover) !important;',
+      '  color: var(--dsw-alias-label-primary) !important;',
+      '}',
+      '[class*="primary"]:has(svg path):disabled {',
+      '  background: transparent !important;',
+      '  opacity: 0.4 !important;',
+      '}',
+      '[class*="primary"]:has(svg path) > svg { display: none !important; }',
+      // The keycap: a return arrow (down, along, then back to the left). Drawn
+      // as a mask so `currentColor` still drives it and the disabled/hover
+      // colors above keep working — a background-image could not be recolored.
+      '[class*="primary"]:has(svg path)::after {',
+      '  content: \'\' !important;',
+      '  width: 15px;',
+      '  height: 15px;',
+      '  background-color: currentColor;',
+      '  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M12.7 2.7v4.9a2.5 2.5 0 0 1-2.5 2.5H3.4\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3Cpath d=\'M6.1 7.5 3.4 10.1l2.7 2.6\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3C/svg%3E") center / contain no-repeat;',
+      '  mask: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M12.7 2.7v4.9a2.5 2.5 0 0 1-2.5 2.5H3.4\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3Cpath d=\'M6.1 7.5 3.4 10.1l2.7 2.6\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3C/svg%3E") center / contain no-repeat;',
+      '}',
     ].join('\n')
     document.head.appendChild(style)
     return () => { style.remove() }

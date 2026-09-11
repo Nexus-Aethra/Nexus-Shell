@@ -240,6 +240,13 @@ Plugins touched:
   the composer's input-line restyle: the stock card's 22px radius,
   surface fill, elevation shadow, and hairline stroke are stripped and
   replaced with a single bottom rule spanning the column (design 4.8).
+  The submit button is restyled the same way: the stock 34px filled blue
+  circle with an up arrow promises "send a chat message", which is the
+  wrong reading for a composer whose text goes into a shell, so it
+  becomes a transparent return-key glyph that agrees with the Enter key
+  that actually submits. Send and Stop share the `primary` class, so the
+  glyph is selected by SVG shape (`:has(svg path)` — the stop icon is a
+  `rect`) rather than by the aria-label, keeping it locale-independent.
   The old `[data-phase="active"]` overrides (including `viewArea
   { display: none }`) are gone: the stock active layout is where the
   canvas and composer belong. The `uiWorkspace` stub also implements
