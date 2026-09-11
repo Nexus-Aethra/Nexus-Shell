@@ -15,7 +15,7 @@
  */
 
 import {
-  createElement, useEffect, useState, useSyncExternalStore,
+  Fragment, createElement, useEffect, useState, useSyncExternalStore,
   type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -29,7 +29,7 @@ import {
   archivedRowStyle, backdropStyle, cancelButtonStyle, dangerButtonStyle, dialogActionsStyle,
   dialogBodyStyle, dialogErrorStyle, dialogStyle, dialogTitleStyle, emptyStyle, groupCountStyle,
   groupHeaderStyle, headerStyle, listStyle, newButtonStyle, noticeStyle, rowActionStyle, rowActionsStyle,
-  rowStyle, rowTitleStyle, scrollStyle,
+  rowStyle, rowTitleStyle, scrollStyle, sshBadgeStyle,
 } from './list-styles.js'
 
 /** The device face another plugin provides, when the SSH plugin is composed. */
@@ -178,18 +178,37 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     deviceSeat?.getSnapshot ?? (() => NO_DEVICES),
   )
   /**
-   * The device a session runs on, as a row suffix; local sessions get none.
+   * Whether a session runs on a device rather than on this machine.
    *
-   * The remote directory is always shown, because the session's own directory
-   * is a local mount standing in for it — printing that path would say nothing
-   * about where the session actually works.
+   * A missing device row counts as local: a binding that names a device the
+   * registry no longer holds is a dangling assignment, not an ssh session, and
+   * marking it would tell the user to expect a remote shell that cannot come up.
    */
-  const deviceLabel = (sessionId: SessionId): string => {
+  const isDeviceSession = (sessionId: SessionId): boolean => {
     const binding = ssh.bindings.find(entry => entry.sessionId === String(sessionId))
-    if (binding === undefined) return ''
-    const device = ssh.devices.find(candidate => candidate.id === binding.deviceId)
-    if (device === undefined) return ''
-    return ` ⌁ ${device.name}:${binding.remoteRoot ?? device.remoteRoot}`
+    if (binding === undefined) return false
+    return ssh.devices.some(candidate => candidate.id === binding.deviceId)
+  }
+
+  /**
+   * A row's leading content: the `SSH` badge for a device session, then the
+   * title. A fragment, so both become direct children of the row — which is
+   * already the flex line that spaces them — rather than nesting a second flex
+   * box inside it. Both sections use this, so an archived ssh session stays
+   * recognisable as one.
+   *
+   * The badge is the whole marking: no device name and no path. The row's job
+   * is to identify the session and say which kind it is, and a host plus a
+   * remote root is neither — it is a fact about the device, which the SSH
+   * settings card and the connection screen already own.
+   */
+  const rowMain = (row: SessionRow, suffix = ''): ReactElement => {
+    return createElement(Fragment, null,
+      isDeviceSession(row.id)
+        ? createElement('span', { style: sshBadgeStyle }, 'SSH')
+        : null,
+      createElement('span', { style: rowTitleStyle }, `${rowLabel(row)}${suffix}`),
+    )
   }
   const [archivedOpen, setArchivedOpen] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<{ id: SessionId; title: string } | undefined>(undefined)
@@ -272,7 +291,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           style: { ...rowStyle, fontWeight: selected ? 600 : 400, opacity: selected ? 1 : 0.8 },
           onClick: () => { props.open(row.id) },
         },
-          createElement('span', { style: rowTitleStyle }, `${rowLabel(row)}${deviceLabel(row.id)}`),
+          rowMain(row),
           createElement('span', { 'data-dshell-row-actions': 'archive', style: rowActionsStyle },
             createElement('button', {
               style: rowActionStyle,
@@ -304,9 +323,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
               style: { ...archivedRowStyle, fontWeight: state.current === row.id ? 600 : 400 },
               onClick: () => { props.open(row.id) },
             },
-              createElement('span', { style: rowTitleStyle }, pending
-                ? `${rowLabel(row)} · 重启后清除`
-                : rowLabel(row)),
+              rowMain(row, pending ? ' · 重启后清除' : ''),
               createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
                 createElement('button', {
                   style: rowActionStyle,

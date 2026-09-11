@@ -427,9 +427,15 @@ export function BlockView(props: {
   // How this session's terminal is doing. The wire state belongs to the
   // session it names, so a switch mid-render reads as "nothing yet" rather
   // than as the previous session's failure.
+  //
+  // The DEVICE BINDING is a property of the session, not of the wire, so it is
+  // read without that gate: whether this is an ssh session decides which
+  // connection UI the session is even eligible for, and that answer must not
+  // depend on the PTY having caught up. Only the wire facts are gated, and a
+  // stale `status` reads as `idle` — which draws nothing either way.
   const pty = props.pty.state.getSnapshot()
   const current = pty.sessionId === id
-  const binding = id === undefined || !current ? undefined : ssh?.bindingOf(id)
+  const binding = id === undefined ? undefined : ssh?.bindingOf(id)
   const device = binding === undefined
     ? undefined
     : ssh?.devices().find(candidate => candidate.id === binding.deviceId)?.name ?? binding.deviceId

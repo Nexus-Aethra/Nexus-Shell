@@ -51,14 +51,23 @@ export interface ConnectionFacts {
 /**
  * Turn the wire state into the one thing to draw.
  *
+ * Everything here turns on one fact: whether the session is BOUND to a device.
+ * A bound session's terminal is an `ssh` process — a handshake over a network
+ * that takes seconds, that can stall, and that has a host on the far end worth
+ * naming — so its startup is an event the user needs a screen for. A local
+ * session's terminal is a fork of this very process, up in milliseconds, with
+ * nothing to narrate and nobody to blame.
+ *
  * The rules, in order:
  *  - a bound session that has never reached a prompt keeps the intermediate
  *    screen while it is connecting, and switches it to the failure form once
  *    the host says the shell is gone;
- *  - a session that HAD reached a prompt shows only the end-of-output marker,
- *    so the output the user was reading stays where it is;
- *  - a local session gets no intermediate screen at all — its shell comes up
- *    in milliseconds, and a panel flashing on every session switch is noise.
+ *  - a bound session that HAD reached a prompt shows only the end-of-output
+ *    marker, so the output the user was reading stays where it is;
+ *  - a local session never gets the intermediate screen, and its first bind is
+ *    not announced either — a notice flashing on every session switch is noise.
+ *    A local RETRY is announced, because that only happens after something
+ *    failed, and the notice is where the failure and its count stay readable.
  *
  * @param facts - the session's connection state.
  * @returns what to render.
@@ -67,16 +76,23 @@ export function connectionView(facts: ConnectionFacts): ConnectionView {
   const { status, ready, attempt, bound } = facts
   if (status === 'idle') return { kind: 'none' }
   if (status === 'connecting') {
-    if (bound && !ready) return { kind: 'panel', phase: 'connecting' }
-    if (ready) return { kind: 'notice', tone: 'failed' }
-    // A local session's first bind, or one with no failure to report.
+    if (bound) {
+      // Never answered: this is the handshake the intermediate screen exists
+      // for. Already answered once: the user was reading output, so say it at
+      // the end of that output instead of covering it — and say "connecting",
+      // not "exited", because a rebind of a live shell is not a death.
+      return ready
+        ? { kind: 'notice', tone: 'connecting' }
+        : { kind: 'panel', phase: 'connecting' }
+    }
     return attempt > 0 ? { kind: 'notice', tone: 'connecting' } : { kind: 'none' }
   }
   if (status === 'open') {
     // The wire is up but the shell has not answered: a device that accepts the
     // connection and then stalls — the usual shape of a half-dead host, or of
-    // a ControlMaster sitting in front of a dead sshd.
-    return !ready && bound ? { kind: 'notice', tone: 'connecting' } : { kind: 'none' }
+    // a ControlMaster sitting in front of a dead sshd. A local shell that has
+    // not answered yet is simply still starting.
+    return bound && !ready ? { kind: 'notice', tone: 'connecting' } : { kind: 'none' }
   }
   // closed | error
   if (bound && !ready) return { kind: 'panel', phase: 'failed' }

@@ -117,6 +117,11 @@ export function ptyLogDir(): string {
 const DEFAULT_PTY_COLS = 160
 const DEFAULT_PTY_ROWS = 40
 
+/** How long a PTY bind waits for its session's Agent before reporting failure. */
+const AGENT_WAIT_MS = 4000
+/** Poll interval while waiting for that Agent. */
+const AGENT_WAIT_POLL_MS = 50
+
 interface MainRecord {
   agent: Agent
   /** dsh session id this main shell belongs to. */
@@ -268,15 +273,39 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
+   * The session's live Agent, waiting briefly for it to materialize.
+   *
+   * A PTY bind can legitimately arrive before the session has an agent: the
+   * browser opens a session and binds its shell in the same tick, while the
+   * host is still composing the agent, and a session SWITCH publishes the new
+   * current session one tick before anything is built for it. Throwing on
+   * `undefined` turned that ordinary race into a connection error: the client
+   * drew a "reconnecting (1/3)" line, spent a retry attempt, and waited out a
+   * backoff before opening the shell it was always going to get. Waiting for
+   * the agent here is both quieter and faster than letting the client retry.
+   * @param dshSessionId - the session whose agent to resolve.
+   * @returns the live agent.
+   * @throws when none appears within {@link AGENT_WAIT_MS}.
+   */
+  private async awaitAgent(dshSessionId: string): Promise<Agent> {
+    const deadline = Date.now() + AGENT_WAIT_MS
+    for (;;) {
+      const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
+      if (agent !== undefined) return agent
+      if (Date.now() >= deadline) {
+        throw new Error(`dshell-bridge: no live agent for session "${dshSessionId}"`)
+      }
+      await new Promise(resolve => { setTimeout(resolve, AGENT_WAIT_POLL_MS) })
+    }
+  }
+
+  /**
    * The bridge-owned `main` PTY for one dsh session, spawning it lazily.
    * The PtyBuffer seeds from the persisted log tail (4.9) and the tail
    * loop starts streaming backend scrollback into buffer and clients.
    */
   async ensureMainShell(dshSessionId: string): Promise<MainRecord> {
-    const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
-    if (agent === undefined) {
-      throw new Error(`dshell-bridge: no live agent for session "${dshSessionId}"`)
-    }
+    const agent = await this.awaitAgent(dshSessionId)
     const existing = this.mains.get(agent)
     if (existing !== undefined && existing.dead === undefined) return existing
     if (existing !== undefined) {

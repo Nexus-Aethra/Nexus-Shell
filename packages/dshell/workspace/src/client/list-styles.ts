@@ -49,8 +49,32 @@ export const rowStyle: CSSProperties = {
 }
 export const rowTitleStyle: CSSProperties = {
   flex: '1 1 auto',
+  // Without this the flex child refuses to shrink below its content width and
+  // the ellipsis below never engages.
+  minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+}
+/**
+ * The `SSH` badge: a session that runs on a device, not on this machine.
+ *
+ * Deliberately a different colour from the title it sits beside — the whole
+ * point is that a glance down the list separates the sessions whose shell is a
+ * local fork from the ones whose shell is an ssh process. An outline pill in
+ * the theme's info colour reads as a classification rather than as an alert,
+ * and `currentColor` on the border keeps the two in step in either theme.
+ */
+export const sshBadgeStyle: CSSProperties = {
+  flex: '0 0 auto',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: 9,
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  lineHeight: '14px',
+  padding: '0 4px',
+  borderRadius: 3,
+  color: 'var(--dsw-alias-state-business-primary, #679efe)',
+  border: '1px solid currentColor',
 }
 /** Row actions stay invisible until the row is hovered (CSS drives it). */
 export const rowActionsStyle: CSSProperties = {

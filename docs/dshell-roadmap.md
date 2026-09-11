@@ -692,7 +692,14 @@ Shipped:
   are separate 0600 files under `$DSH_HOME/dshell/ssh/keys/`, a card in
   the Plugins settings section to add/edit/test/delete them, and a durable
   session→device assignment chosen in the new-session dialog (the row then
-  reads `名称 ⌁ 设备:远端目录`). The dialog asks for the run target first —
+  wears an `SSH` badge ahead of its title). The badge is the whole marking:
+  no device name and no remote path, because the row's job is to identify the
+  session and say which kind it is, and a host plus a path is a fact about the
+  device — the SSH settings card and the connection screen already own those,
+  and printing them squeezed the session's own title down to `pipe-…`. The
+  badge is the theme's info colour rather than the row's inherited text colour,
+  so a glance down the list separates local shells from ssh ones. The dialog
+  asks for the run target first —
   a 本机 / SSH 设备 slider — and only shows the device list once SSH is
   chosen, with a 远端目录 field beside it (it follows the device until the
   user types their own). An SSH session's local directory is not the user's
@@ -851,8 +858,26 @@ Decisions:
   looking at; one that never did has nothing to append to, so it gets the
   intermediate screen. `connectionView` in the mode client is the single place
   that turns `{status, ready, attempt, bound}` into one of `none | panel |
-  notice`, and untested branches (a local session's first bind) render nothing
-  at all rather than flashing a panel on every session switch.
+  notice`.
+- **`bound` is what separates remote from local, and it is read from the
+  session, not the wire.** A bound session's terminal is an `ssh` process: a
+  handshake that takes seconds, can stall, and has a host worth naming, so its
+  startup is an event the user gets a screen for. A local shell is a fork of
+  this very process — up in milliseconds — so it never gets the panel, and its
+  first bind is not narrated either; only a *retry* is, because that only
+  follows a real failure. The binding comes from `ssh.bindingOf(sessionId)`
+  without the "is the PTY on this session yet" gate the wire facts carry: which
+  connection UI a session is even eligible for must not depend on the PTY
+  having caught up. A rebind of a shell that had already answered reports
+  `connecting`, not `exited` — a live shell being re-attached is not a death.
+- **A bind can arrive before its session's agent exists.** The browser opens a
+  session and binds its shell in the same tick, while the host is still
+  composing the agent, and a session *switch* publishes the new current session
+  one tick before anything is built for it. The bridge waits (50ms poll, 4s
+  budget) for the agent instead of throwing: erroring turned that ordinary race
+  into a reported connection failure, which cost the client a retry attempt and
+  a 1s backoff before opening the shell it was always going to get — and drew a
+  "正在自动重连（第 1/3 次）" line on plain local session switches.
 - **Reconnection is bounded and visible.** The client spends at most three
   automatic attempts (1s / 2s / 4s) on whichever layer is broken — a live
   socket means the shell died, so the host is asked for a new one with a new
