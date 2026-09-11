@@ -304,6 +304,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-settings-plugins':
         specifier: link:../../../dsh/packages/client/ui-settings-plugins
         version: link:../../../dsh/packages/client/ui-settings-plugins
+      '@deepseek-ai/dsh-client-ui-sidebar':
+        specifier: link:../../../dsh/packages/client/ui-sidebar
+        version: link:../../../dsh/packages/client/ui-sidebar
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge

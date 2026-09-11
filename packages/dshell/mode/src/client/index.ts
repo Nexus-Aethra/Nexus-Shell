@@ -7,6 +7,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the renderer-owned slots service (ctx.slots) and the
 // generic SlotMap interface that constrains the `inject` name string.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Type-only: pulls the `sidebar.brand.*` SlotMap so `sidebar.brand.name` is
+// accepted as a registration name string.
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 // Type-only: pulls the settings SlotMap and the ctx.settingsScope merge.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the plugin-card SlotMap (`settings.plugin.item`).
@@ -364,6 +367,20 @@ export function apply(ctx: Context): void {
       }),
     },
     BlockView,
+  ))
+  // Hide the dsh local-build product label + version pill that sit to the
+  // right of the logo in the expanded brand row. The slot is `kind: 'single'`,
+  // and any registration shadows the shell's fallback (which would otherwise
+  // render `DSH 本地构建` + `0.1.5-rc.1-<sha>-dirty`). Rendering an empty
+  // fragment leaves just the mark, since `.brandIdentity` is `inline-flex` and
+  // collapses cleanly when the name child is empty. We do not migrate the
+  // metadata into Settings: the product name and the build SHA live in the
+  // same place the user already knows about (the dsh web footer and the
+  // package version), and the user only asked to remove them from the
+  // sidebar's most prominent row.
+  ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register(
+    { name: 'sidebar.brand.name' },
+    function DshellBrandNamePlaceholder() { return null },
   ))
 }
 
