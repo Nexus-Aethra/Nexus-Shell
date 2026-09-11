@@ -74,8 +74,15 @@ export function apply(ctx: Context): void {
   // session-list and view-slot change — our subscriptions are registered
   // after ui-conversation's, so our activation runs last and wins the
   // tick. `activate` is idempotent (the assembler ignores a target already
-  // active), and the dshell shell hides the view-tab strip, so there is no
-  // user view choice to preserve.
+  // active).
+  //
+  // This asserts the terminal *target* (which snapshots the conversation
+  // assembles), not the user's tab choice — the strip's selection is a
+  // separate per-session preference the store owns, and `activate` never
+  // touches it. So the strip can offer `会话` / `轨迹` and a click on
+  // `轨迹` stays put: it writes the preference through the stock
+  // selectView path, and the reconcile that follows a session switch only
+  // re-adds `terminal` to a monotonic active set.
   ctx.effect(() => {
     const reconcile = (): void => {
       const current = sessions.list.getSnapshot().current

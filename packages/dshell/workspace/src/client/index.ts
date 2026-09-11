@@ -338,11 +338,13 @@ export function apply(ctx: Context): void {
     style.textContent = [
       '[class*="heroWorkspaceRow"] { display: none !important; }',
       '[class*="headline"] { display: none !important; }',
-      // dshell has ONE surface: the terminal view interleaves PTY output and
-      // session records, so the stock view-tab strip (对话/轨迹/终端) only
-      // splits the shell in two. The stock views stay registered and the
-      // terminal target stays activated — only the switcher row is hidden.
-      '[data-slot="conversation.session.header"] [role="tablist"] { display: none !important; }',
+      // The view-tab strip stays visible: the terminal is one surface, but the
+      // trajectory ledger (`轨迹`, ui-trajectory) is a second reading of the
+      // same session worth switching to, and the strip dsh draws is exactly
+      // that switcher. It shows `会话` (dshell's block view) and `轨迹`; the
+      // stock `ui-chat` view is disabled in the bundle patch so it cannot add
+      // a third tab beside them. Nothing else about the strip is restyled —
+      // dsh owns its geometry and active-tab marking.
       // Hero phase (no open session): pin the composer stack to the bottom of
       // the scroll column instead of the stock vertical center. data-phase is
       // a stable stock attribute on the conversation root.

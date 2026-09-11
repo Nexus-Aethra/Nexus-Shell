@@ -231,9 +231,10 @@ Plugins touched:
 - `dshell-conversation` (browser face) — registers the no-renderer
   `ConversationViewDefinition` on target `terminal` (`isActive` →
   `true`) and re-asserts `terminal` activation on every sessions-list
-  and view-slot change. The shell hides the view-tab strip, so there is
-  no user view choice to preserve and activation must not race the
-  stock `chat` fallback.
+  and view-slot change. Activation must not race the stock `chat`
+  fallback: the strip offers the user a real choice between `会话` and
+  `轨迹`, but `会话` is the default, so the terminal target is asserted
+  rather than merely offered.
 - `dshell-workspace` (browser face) — hero chrome hiding
   (`heroWorkspaceRow`, `headline`), the hero composer bottom-pin, and
   the composer's input-line restyle: the stock card's 22px radius,
@@ -452,8 +453,19 @@ The block view occupies the stock `chat` view cell (same id, lower
 priority), which is `DEFAULT_VIEW_ID` in
 `ui-conversation/src/client/view-selection.ts`. That placement is
 load-bearing, not cosmetic: a sibling tab is reachable only through a
-stored view selection, and dshell hides the tab strip, so while the
-canvas held `chat` a fresh session silently opened the old surface.
+stored view selection, so while the canvas held `chat` a fresh session
+silently opened the old surface.
+
+The strip is visible again, because a session has two worthwhile
+readings — the terminal (`会话`) and the trajectory ledger (`轨迹`,
+`ui-trajectory`) — and dsh already draws that switcher. One dsh detail
+had to be worked around: `viewTabs()` in `ui-conversation/apply.ts`
+builds the tab list from the RAW slot entries rather than the shadowed
+ones, so a shadowing registration shows up as a *second* tab instead of
+replacing the first. The stock `ui-chat` row is therefore disabled in
+`packages/dshell/bundle/cordis.patch.yml`; its two child slots
+(`conversation.chat.node`, `conversation.message.images`) go with it,
+which costs nothing because the block view renders neither.
 
 The canvas is now deleted — `canvas.ts`, its `DshellTerminalView`, the
 ANSI block renderers in `blocks.ts` (`blockSegments`, `renderNotice`, the

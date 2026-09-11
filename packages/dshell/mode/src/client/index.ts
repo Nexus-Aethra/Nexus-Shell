@@ -279,17 +279,25 @@ export function apply(ctx: Context): void {
   // The block view owns the stock `chat` cell (same id, lower priority
   // shadows it). `chat` is dsh's DEFAULT_VIEW_ID, so taking that cell — not a
   // sibling tab — is what makes it the surface every session opens with; a
-  // sibling is only reachable through a stored view selection, and dshell
-  // hides the tab strip, so a fresh session would silently fall back to
-  // whatever else holds `chat`. The shadowed stock entry stays registered, so
-  // the child slots it declares (`conversation.chat.node` rows) remain
-  // available to other plugins.
+  // sibling is only reachable through a stored view selection, so a fresh
+  // session would silently fall back to whatever else holds `chat`.
+  //
+  // The tab strip is visible again (dsh shows it whenever more than one view
+  // is registered), and it is built from the RAW entry list rather than the
+  // shadowed one — so the stock `ui-chat` entry would appear beside this one,
+  // both named `chat`. That row is therefore disabled in the bundle patch
+  // (packages/dshell/bundle/cordis.patch.yml): dshell's block view replaces
+  // it, and leaving it registered only duplicated the tab. Its two child
+  // slots went with it, which costs nothing here — dshell's view renders
+  // neither a chat turn node nor `conversation.message.images`, so the
+  // plugins that register into them (`ui-goal`, `ui-workflow-run`,
+  // `ui-attachment`) would never have been asked to draw anything.
   ctx.slots.inject('conversation.view', () => ctx.slots.register(
     {
       id: 'chat',
       name: 'conversation.view',
       priority: -1,
-      label: () => '对话',
+      label: () => '会话',
       inject: (sessionId: SessionId | undefined) => ({
         sessionId,
         pty,

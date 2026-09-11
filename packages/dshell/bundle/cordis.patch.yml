@@ -96,6 +96,23 @@
 - id: ui-workspace
   disabled: true
 
+# ── the view tab strip ─────────────────────────────────────────────────
+# dsh shows the conversation view tabs as soon as more than one view is
+# registered, and it builds that list from the RAW slot entries rather than
+# the shadowed ones — so a shadowing registration appears as a second tab
+# instead of replacing the first. dshell's block view already shadows
+# `ui-chat`'s `chat` entry for rendering; disabling the stock row is what
+# stops it from also contributing a duplicate tab, leaving the strip with
+# exactly two: `会话` (dshell's block view) and `轨迹` (ui-trajectory).
+#
+# The two child slots ui-chat declared go with it: `conversation.chat.node`
+# and `conversation.message.images`. Nothing is lost — dshell's view renders
+# neither, so `ui-goal`, `ui-workflow-run` and `ui-attachment` simply never
+# get asked to draw into them (the `slots.inject` wait for a declaration that
+# never arrives, which is silent by design).
+- id: ui-chat
+  disabled: true
+
 # ── dev-only hot reload (skip in non-dev sessions) ─────────────────────
 # dsh's web profile mounts @deepseek-ai/dsh-client-hmr as a client
 # roster row that stays idle until a `pnpm run dev:web` rebuild watcher
