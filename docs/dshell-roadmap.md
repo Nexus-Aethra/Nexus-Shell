@@ -993,6 +993,18 @@ Shipped:
   listing carries `canCd` so a composition without the bridge draws no button
   rather than a dead one, and a refused jump says why in the pane, because the
   shell moves off-pane and would otherwise look like a dead click.
+- Directory rows and the `..` row are also drag sources: dropping one on the
+  terminal runs the same jump. The pane installs one document-level listener
+  while it is on screen and decides by where the pointer landed — the block
+  view's own seat, `data-dshell-terminal-view` — rather than asking the
+  terminal to know about the pane; the whole area is outlined while the pointer
+  is over it, because a gesture with no feedback is indistinguishable from one
+  that is not supported. Files are not drag sources (there is no directory to
+  jump to), and the path travels under a private drag type rather than
+  `text/plain`, so no other drop target — the composer, the terminal's own
+  textarea — can receive a stray path. `dragover` and `drop` are both defaulted
+  over the terminal for that same reason; without it the browser would type the
+  payload into the shell.
 
 Acceptance check (driven from the browser):
 
@@ -1011,6 +1023,10 @@ Acceptance check (driven from the browser):
   device session the device's shell — the prompt's own `cwd` report moves with
   it — while the command shows up in the session's terminal record like a typed
   one.
+- Dragging a directory row onto the terminal moves the shell there too, with
+  the drop area outlined while the pointer is over it; dropping the same row on
+  the sidebar or the composer does nothing at all — no `cd`, no text inserted —
+  and file rows cannot be dragged.
 
 ## Phase 10 — Packaging
 

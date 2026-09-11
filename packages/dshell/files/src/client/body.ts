@@ -22,7 +22,7 @@
  * yet — the single effect below turns that into exactly one listing.
  */
 
-import { createElement, Fragment, useEffect, type ReactNode } from 'react'
+import { createElement, Fragment, useEffect, type DragEvent as ReactDragEvent, type ReactNode } from 'react'
 import {
   FileTypeIcon, IconChevronLeftOutline14, IconChevronRightOutline14, IconFolderClose16, IconFolderOpen16,
   IconRefreshOutline16, IconRightUpOutline16, classifyFileType,
@@ -34,6 +34,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { DshellFileEntry } from '../protocol.js'
 import { parentOf, pathSegments, sessionFileAddress } from './address.js'
+import { installDirectoryDrop, startDirectoryDrag } from './drop.js'
 import type { FilesInjected } from './face.js'
 import type {} from './locales.js'
 import * as styles from './styles.js'
@@ -97,7 +98,16 @@ function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry
   const path = `${parent.replace(/[/\\]+$/u, '')}/${entry.name}`
   if (entry.kind === 'directory') {
     const expanded = tree.state.expanded.includes(path)
-    return createElement('li', { key: entry.name, 'data-dshell-file-entry': 'directory', 'data-dshell-file-path': path },
+    return createElement('li', {
+      key: entry.name,
+      'data-dshell-file-entry': 'directory',
+      'data-dshell-file-path': path,
+      // The row is the drag source, not the button inside it: a directory can
+      // be dragged to the terminal to move the shell there, and a button is
+      // also the click target that expands it.
+      draggable: true,
+      onDragStart: (event: ReactDragEvent<HTMLLIElement>) => { startDirectoryDrag(event.dataTransfer, path) },
+    },
       createElement('button', {
         type: 'button',
         style: styles.rowStyle,
@@ -174,6 +184,9 @@ export function DshellFilesBody({
   const { signal, actions: tabActions } = tab
   const cwd = useSessions(sessions => sessions.byId[sessionId]?.cwd)
   const state = useStore(store => store.byTab[tab.id])
+  // The level the tab stands on, read here rather than at the draw so the drop
+  // effect below can be declared with the other hooks, before any early return.
+  const rootLevel = state === undefined ? undefined : state.levels[state.root]
 
   useEffect(injectHoverCss, [])
 
@@ -193,6 +206,13 @@ export function DshellFilesBody({
     load(tab.id, state.root, signal)
   }, [state, tab.id, signal, load])
 
+  // Dropping a directory on the terminal is the jump button by another gesture,
+  // so it goes through the same call and needs the same capability.
+  useEffect(() => {
+    if (rootLevel === undefined || rootLevel.kind !== 'ready' || !rootLevel.level.canCd) return undefined
+    return installDirectoryDrop((path) => { cd(tab.id, path) })
+  }, [rootLevel, cd, tab.id])
+
   if (cwd === undefined) {
     return createElement('div', { style: styles.noteStyle, 'data-dshell-files-state': 'no-workspace' }, t('noWorkspace'))
   }
@@ -209,7 +229,6 @@ export function DshellFilesBody({
 
   const atStart = state.history.index <= 0
   const atEnd = state.history.index >= state.history.stack.length - 1
-  const rootLevel = state.levels[state.root]
   // The host says whether it can drive a shell at all; without one the button
   // is absent rather than dead.
   const canCd = rootLevel !== undefined && rootLevel.kind === 'ready' && rootLevel.level.canCd
@@ -239,7 +258,13 @@ export function DshellFilesBody({
     }, t('error.cd', { message: state.notice })))
   }
   if (parent !== undefined) {
-    rows.push(createElement('li', { key: '__parent__', 'data-dshell-file-entry': 'parent', 'data-dshell-file-path': parent },
+    rows.push(createElement('li', {
+      key: '__parent__',
+      'data-dshell-file-entry': 'parent',
+      'data-dshell-file-path': parent,
+      draggable: true,
+      onDragStart: (event: ReactDragEvent<HTMLLIElement>) => { startDirectoryDrag(event.dataTransfer, parent) },
+    },
       createElement('button', {
         type: 'button',
         style: styles.rowStyle,

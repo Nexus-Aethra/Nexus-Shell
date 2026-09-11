@@ -183,9 +183,13 @@ when it contributes to model-visible state.
     draws a `..` row, clickable path crumbs, back/forward history and a
     reload button, plus a jump button that moves the session's shell
     into the directory on screen — drawn only when the host reports it
-    can (no terminal bridge, no button). Navigation state lives in a
-    declared per-session store bucketed by tab id, because the pane
-    unmounts the inactive tab's body but the store survives.
+    can (no terminal bridge, no button). Directory rows and the `..` row
+    are drag sources for the same jump, dropped on the terminal view the
+    block view mounts (one document-level listener, installed while the
+    pane is on screen, which decides by where the pointer landed and
+    outlines that area). Navigation state lives in a declared
+    per-session store bucketed by tab id, because the pane unmounts the
+    inactive tab's body but the store survives.
 - dsh services depended on: host — `ctx.connection.fetch`,
   `ctx.agents`, `ctx.sessionController`, `ctx.fs`, and optionally
   `ctx.dshellTerminalBridge` for the shell jump; browser —
