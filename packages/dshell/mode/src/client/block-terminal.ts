@@ -11,8 +11,16 @@
  * redraw line that does not fit gets wrapped: `\r` then returns to column 0 of
  * the *continuation* row, so every repaint consumes a row and a progress bar
  * stacks down the screen instead of overwriting itself. A region that contains
- * bare carriage returns therefore renders at least as wide as its widest line,
- * and scales its font down when that grid is wider than the column.
+ * bare carriage returns therefore renders at least as wide as its widest line.
+ *
+ * The FONT, unlike the grid, is one size for every region: the PTY's width
+ * changes over a session's life (it starts at the backend's default and is
+ * resized to the column once the view measures one), so historical stretches
+ * legitimately hold lines printed at a different width than today's. Scaling
+ * each region's font to fit its own widest line made those stretches render at
+ * different sizes in the same view — which reads as a broken terminal, not as
+ * history. A region whose grid is wider than the column scrolls horizontally
+ * instead; `ShellRegion` already gives the host `overflow-x: auto` for it.
  */
 
 import { Terminal as XtermTerminal } from '@xterm/xterm'
@@ -26,9 +34,8 @@ export const SPAN_MAX_COLS = 500
 
 /** Font the regions render in. */
 export const SPAN_FONT = "'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas, 'Courier New', monospace"
+/** The one size every region renders at, whatever grid it needs. */
 export const SPAN_FONT_SIZE = 13
-/** Smallest font a too-wide region is scaled down to before it scrolls instead. */
-export const SPAN_FONT_MIN_SIZE = 9
 export const SPAN_LINE_HEIGHT = 16
 
 /**
@@ -155,11 +162,28 @@ export function regionMetrics(text: string): RegionMetrics {
  * Counting `\n` alone undercounts a region whose lines are wider than the
  * grid, and a terminal sized to that undercount scrolls the region's own head
  * out of view.
+ *
+ * Trailing zero-width rows are dropped. The bash readline emits an empty echo
+ * after each command (`\r\n`) before the new prompt lands on its own line, so
+ * a shell session that ran many commands (or that respawned several times,
+ * each adding an echo pair to the seeded scrollback) ends with a long run of
+ * blank rows. xterm renders every row its buffer holds, so those rows become
+ * a visible empty block that grows with every reconnect; shrinking them here
+ * keeps the viewport to the rows that actually carry ink.
  */
 export function renderedRows(metrics: RegionMetrics, cols: number): number {
   const width = Math.max(1, cols)
+  let lastNonEmpty = -1
+  for (let index = 0; index < metrics.widths.length; index += 1) {
+    if ((metrics.widths[index] ?? 0) > 0) lastNonEmpty = index
+  }
+  // Keep one trailing empty row so a region whose last line was empty still
+  // shows the cursor where the shell left it, but no more.
+  const end = lastNonEmpty + 1
   let rows = 0
-  for (const cells of metrics.widths) rows += Math.max(1, Math.ceil(cells / width))
+  for (let index = 0; index < end; index += 1) {
+    rows += Math.max(1, Math.ceil((metrics.widths[index] ?? 0) / width))
+  }
   return Math.max(1, rows)
 }
 
@@ -198,17 +222,6 @@ function containerColsOf(host: HTMLElement, cell: number): number {
   return Math.min(SPAN_MAX_COLS, Math.max(20, Math.floor(width / cell)))
 }
 
-/**
- * Font size a region renders at: the base size, scaled down only when its grid
- * is wider than the column. Never larger than the base, never below the floor
- * (below which the region scrolls horizontally instead).
- */
-function fontSizeFor(cols: number, containerCols: number): number {
-  if (cols <= containerCols) return SPAN_FONT_SIZE
-  const scaled = SPAN_FONT_SIZE * (containerCols / cols)
-  return Math.max(SPAN_FONT_MIN_SIZE, Math.round(scaled * 10) / 10)
-}
-
 /** One shell region's terminal. */
 export interface SpanTerminal {
   /** Show the region's current text; appends in place when it only grew. */
@@ -238,7 +251,7 @@ export function createSpanTerminal(host: HTMLElement, theme: Theme, text: string
   const cols = regionCols(metrics, containerCols)
   const term = new XtermTerminal({
     fontFamily: SPAN_FONT,
-    fontSize: fontSizeFor(cols, containerCols),
+    fontSize: SPAN_FONT_SIZE,
     convertEol: true,
     cursorBlink: false,
     disableStdin: true,
@@ -277,14 +290,13 @@ export function createSpanTerminal(host: HTMLElement, theme: Theme, text: string
   // Geometry follows the text and the column: the grid spans the column, and
   // widens only as far as a redraw needs. Growing it cannot move a redraw's
   // origin and shrinking it stops at that redraw's width, so a `\r` line stays
-  // on one row in both directions.
+  // on one row in both directions. The font never follows — a wider grid
+  // scrolls rather than shrinking this region out of step with its neighbours.
   const update = (next: string): void => {
     const available = containerColsOf(host, cell)
     const nextMetrics = regionMetrics(next)
     const nextCols = regionCols(nextMetrics, available)
-    const nextFont = fontSizeFor(nextCols, available)
     const nextRows = Math.min(SPAN_MAX_ROWS, renderedRows(nextMetrics, nextCols))
-    if (nextFont !== term.options.fontSize) term.options.fontSize = nextFont
     if (nextCols !== term.cols || nextRows !== term.rows) term.resize(nextCols, nextRows)
     if (last.length > 0 && next.startsWith(last)) {
       // The region only grew (a command is still printing): append, so the

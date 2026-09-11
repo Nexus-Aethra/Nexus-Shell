@@ -157,12 +157,13 @@ function ShellRegion(props: {
   return createElement('div', {
     ref: host,
     'data-dshell-shell-region': '',
-    // Font size and line height belong to the terminal, which scales them when
-    // its grid is wider than the column; setting them here too would fight it.
+    // Font size and line height belong to the terminal; setting them here too
+    // would fight it, and every region renders at the one size regardless of
+    // the grid it needs.
     style: {
       fontFamily: SPAN_FONT,
-      // A region whose grid is wider than the column scales down to fit; if
-      // even the floor is not enough, this is where the rest becomes reachable.
+      // A region whose grid is wider than the column keeps its text size and
+      // scrolls instead, so this is where the rest becomes reachable.
       overflowX: 'auto',
     },
   })
@@ -187,22 +188,49 @@ export function BlockView(props: {
   const pendingRef = useRef<readonly { key: string; rpcId: string; time: number; text: string }[]>([])
   const [version, setVersion] = useState(0)
   const frame = useRef<number | undefined>(undefined)
+  /**
+   * Fallback timer for the frame throttle.
+   *
+   * `requestAnimationFrame` is gated on the page being composited: an IAB tab
+   * that is not the foreground window can sit with its RAFs queued indefinitely
+   * (Chromium throttles to 1Hz, Firefox pauses outright), which strands any
+   * coalesced repaint on `frame.current` and leaves the column showing nothing
+   * — the fold populates, the queue grows, but no setVersion ever fires. The
+   * timer is the backstop: it always runs and clears `frame.current` when the
+   * frame does, so neither half can leave the other waiting forever.
+   */
+  const fallback = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const id = props.sessionId === undefined ? undefined : String(props.sessionId)
 
-  // One render per animation frame at most. A streaming turn publishes a delta
-  // per token and a printing shell a chunk per write; rendering either one per
-  // event is what makes the column feel stuck.
+  // One render per animation frame at most, with a short-interval fallback for
+  // when RAF is throttled. A streaming turn publishes a delta per token and a
+  // printing shell a chunk per write; rendering either one per event is what
+  // makes the column feel stuck.
   const repaint = useCallback((): void => {
     if (frame.current !== undefined) return
-    if (typeof requestAnimationFrame !== 'function') { setVersion(value => value + 1); return }
-    frame.current = requestAnimationFrame(() => {
-      frame.current = undefined
+    if (typeof requestAnimationFrame !== 'function') {
       setVersion(value => value + 1)
-    })
+      return
+    }
+    let frameId: number
+    const flush = (): void => {
+      if (frame.current !== frameId) return
+      frame.current = undefined
+      if (fallback.current !== undefined) { clearTimeout(fallback.current); fallback.current = undefined }
+      setVersion(value => value + 1)
+    }
+    frame.current = frameId = requestAnimationFrame(flush)
+    // 200ms is short enough that a quick scroll or a 'Enter' press becomes
+    // visible before the user notices, and long enough that a busy stream
+    // still coalesces dozens of deltas into one render. The fallback never
+    // beats RAF in the foreground (16ms < 200ms), so it only ever matters
+    // when the frame is being held.
+    fallback.current = setTimeout(flush, 200)
   }, [])
   useEffect(() => () => {
     if (frame.current !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame.current)
     frame.current = undefined
+    if (fallback.current !== undefined) { clearTimeout(fallback.current); fallback.current = undefined }
   }, [])
 
   // The binding (and its event window) materializes shortly after a session

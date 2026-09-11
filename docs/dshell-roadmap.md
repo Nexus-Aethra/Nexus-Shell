@@ -485,10 +485,19 @@ was written down):
   and then drawn again), measured by simulating the cursor column: `\r` and
   `ESC 8` rewinds are what move a repaint's origin, while a long echoed line that
   merely ends with a carriage return is left to wrap. Without this a padded
-  progress bar stacked one row per repaint. The font scales down (floor 9px, then
-  horizontal scroll) when the grid is wider than the column. The PTY itself is
+  progress bar stacked one row per repaint. The PTY itself is
   driven to the same width, so this normally matches; see Phase 9.6 for the
   resize path.
+- **The font size is one value for the whole view.** A session's PTY width
+  changes over its life — it starts at the backend's default and is resized to
+  the column once the view measures one — so historical regions legitimately
+  hold lines printed at a different width than today's. Scaling each region's
+  font to fit its own widest line rendered those stretches at different sizes in
+  the same view (13px for the ones at the column's width, 9px for the ones
+  printed wider), which reads as a broken terminal rather than as history. Every
+  region now renders at the base size, and a grid wider than the column scrolls
+  horizontally instead: correct redraws are unaffected, since the grid is what
+  keeps them on one row, not the font.
 - **Regions update in place.** A region's React key is its identity alone: keying
   it by the PTY version remounted every terminal on every output chunk, which
   threw away its scroll position and re-parsed the whole region per frame.

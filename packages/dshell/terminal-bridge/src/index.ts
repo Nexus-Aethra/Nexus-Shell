@@ -431,7 +431,11 @@ export class DshellTerminalBridge extends Service {
           replay: true,
           timeline: record.buffer.timelineEntries().map(entry => [entry.t, entry.n]),
         })
-        record.inputQueue.push('\n')
+        // The init script already ended with an empty line, which readline
+        // echoed and ran the new PROMPT_COMMAND through — the shell is at a
+        // fresh prompt with no need for another Enter press. Pushing another
+        // `\n` would add another empty echo row, and over many respawns that
+        // is exactly the blank block the user sees growing on every reconnect.
         this.pump(record)
       })
     }, () => {
