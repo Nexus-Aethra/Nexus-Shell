@@ -98,7 +98,7 @@ form so implementers can match identifiers exactly.
 | `ctx.terminals` | `dshell-terminal-bridge` host | spawn/startSend/readOutput/signal/kill/list |
 | `ctx.agents` | `dshell-terminal-bridge` host, `dshell-mode` host | `inject`, agent lookup by sessionId |
 | `ctx.commands` | `dshell-commands` host | register `/clear`, `/new`, `/compact` |
-| `ctx.tools` | `dshell-commands` host | register `dshell_get_main_terminal` |
+| `ctx.tools` | `dshell-commands` host | register `dshell_get_agent_terminal`, `dshell_terminal_read` |
 | `ctx.dshellMainPty` | `dshell-mode`, `dshell-commands` | consume the `Map<Agent, TerminalSessionId>` |
 | `ctx.dshellPtyBuffer` | `dshell-mode` host | consume the per-session rolling buffer |
 
@@ -374,9 +374,10 @@ the standard Node-side target on host halves.
 ## 12. What dshell does not introduce
 
 - No changes to dsh source. No fork.
-- No new model-facing tool *other than* `dshell_get_main_terminal`,
-  which exists solely to give the agent a stable reference to the
-  bridge's `main` PTY.
+- No new model-facing tool *other than* the two terminal tools
+  (`dshell_get_agent_terminal`, `dshell_terminal_read`), which exist
+  solely to give the agent a shell of its own and a read-only view of
+  the user's (Phase 9.11).
 - No new session events. PTY bytes never reach `ctx.sessionPersistence`.
 - No cross-process PTY. Session restart loses PTY scrollback.
 - No multi-tab browser surface.

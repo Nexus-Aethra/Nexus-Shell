@@ -36,7 +36,7 @@ import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import {
-  createSplitter, sanitizeTerminalText, sliceWindow, splitOutput, trackInput,
+  createSplitter, sanitizeTerminalText, sliceWindow, splitOutput, stripAnsi, trackInput,
   type CommandSplitterState, type TerminalCommandRecord,
 } from './commands.js'
 
@@ -122,32 +122,19 @@ const AGENT_WAIT_MS = 4000
 /** Poll interval while waiting for that Agent. */
 const AGENT_WAIT_POLL_MS = 50
 
-interface MainRecord {
+/** What every bridge-owned shell needs for the shared init handshake. */
+interface ShellRecord {
   agent: Agent
-  /** dsh session id this main shell belongs to. */
+  /** dsh session id this shell belongs to. */
   dshSessionId: string
   /** PTY id inside ctx.terminals (per boot). */
   ptyId: TerminalSessionId
   /** The backend's rich handle: raw output push, exit push, resize. */
   session: DshellPtySession
   buffer: PtyBuffer
-  /** The host's block model for this session: the render order's source. */
-  blocks: BlockLog
-  /** Shell identity; every respawn and `/clear` takes a fresh value. */
-  generation: number
-  /** Bytes ever appended to the logical stream, independent of window trims. */
-  absOffset: number
-  /** Completed commands, oldest drop first. */
-  commands: TerminalCommandRecord[]
-  /** Input-line assembly + output/marker splitter for this shell. */
-  splitter: CommandSplitterState
   activeSend: TerminalSendOperation | undefined
-  inputQueue: string[]
   /** Init echo is scrubbed and output suppressed until the first settle. */
   initializing: boolean
-  /** Push-subscription disposers, released in dropMain. */
-  stopOutput: () => void
-  stopExit: () => void
   /**
    * Whether this shell ever reached a prompt.
    *
@@ -158,6 +145,23 @@ interface MainRecord {
    * full connecting/failure panel, and only the host can make that call.
    */
   ready: boolean
+}
+
+interface MainRecord extends ShellRecord {
+  /** The host's block model for this session: the render order's source. */
+  blocks: BlockLog
+  /** Shell identity; every respawn and `/clear` takes a fresh value. */
+  generation: number
+  /** Bytes ever appended to the logical stream, independent of window trims. */
+  absOffset: number
+  /** Completed commands, oldest drop first. */
+  commands: TerminalCommandRecord[]
+  /** Input-line assembly + output/marker splitter for this shell. */
+  splitter: CommandSplitterState
+  inputQueue: string[]
+  /** Push-subscription disposers, released in dropMain. */
+  stopOutput: () => void
+  stopExit: () => void
   /**
    * Set when the PTY exited or the dsh session was disposed. The record
    * stays in `mains` briefly so a reconnecting client can receive the
@@ -165,6 +169,41 @@ interface MainRecord {
    * after the grace. The diagnostic and readiness travel with it so a client
    * that binds after the death still gets the whole story.
    */
+  dead?: { reason: string; detail?: string | undefined; ready: boolean; time: number }
+  /** Pending dispose handle, kept so a rapid respawn can cancel it. */
+  disposeTimer?: NodeJS.Timeout
+}
+
+/**
+ * The agent's own shell.
+ *
+ * The user's main shell and the agent's shell are two PTYs owned by the same
+ * session Agent, so a command the agent runs and a command the user types no
+ * longer take turns in one foreground: each has its own line discipline, its
+ * own settle and its own Ctrl+C. That is what makes the two sides genuinely
+ * parallel instead of mutually blocking, and it is the only arrangement in
+ * which "the terminal stays usable while the agent works" can hold — one PTY
+ * has exactly one foreground job.
+ *
+ * It is spawned lazily, on the agent's first need for a terminal, so a session
+ * that never runs a shell pays for nothing (a device session would otherwise
+ * open a second ssh connection for nobody).
+ */
+interface AgentRecord extends ShellRecord {
+  /** Shell identity; a replaced shell takes a fresh value. */
+  generation: number
+  /** Push-subscription disposers, released on death. */
+  stopOutput: () => void
+  stopExit: () => void
+  /**
+   * Settles when the init handshake finished.
+   *
+   * The id handed to the agent is only safe to send into once init has settled:
+   * the backend rejects a second concurrent send with `SEND_ACTIVE`, and an
+   * agent that got the id and immediately ran a command would race its own
+   * shell's startup and lose.
+   */
+  readonly initSettled: Promise<void>
   dead?: { reason: string; detail?: string | undefined; ready: boolean; time: number }
   /** Pending dispose handle, kept so a rapid respawn can cancel it. */
   disposeTimer?: NodeJS.Timeout
@@ -189,6 +228,27 @@ export class DshellTerminalBridge extends Service {
   private readonly pendingSizes = new Map<string, { cols: number; rows: number }>()
   private readonly clients = new Map<string, Set<WebSocket>>()
   private readonly boundSession = new Map<WebSocket, string>()
+  /** The agent-owned shells, keyed by the same Agent as their main shell. */
+  private readonly agents = new Map<Agent, AgentRecord>()
+  private readonly pendingAgents = new Map<Agent, Promise<AgentRecord>>()
+  /**
+   * Watchers of one session's agent shell — the task card's terminal panel.
+   *
+   * A separate subscriber set from `clients` on purpose: this stream is
+   * read-only, has no input or signal frames, and a view that never opens the
+   * panel costs the host nothing.
+   */
+  private readonly agentClients = new Map<string, Set<WebSocket>>()
+  /** Sessions the sockets on {@link agentClients} are bound to. */
+  private readonly agentBound = new Map<WebSocket, string>()
+  /**
+   * Columns the panel last asked for, applied when the agent shell spawns.
+   *
+   * Only the width: the agent's shell is spawned at the backend's row count and
+   * keeps it, because rows decide how much a full-screen program can draw while
+   * the panel is a short window that scrolls.
+   */
+  private readonly agentCols = new Map<string, number>()
   /** OS identity for the bash prompt; safe for embedding inside PS1 quotes. */
   readonly promptUser = safeShellWord(userInfo().username)
   readonly promptHost = safeShellWord(hostname())
@@ -253,6 +313,19 @@ export class DshellTerminalBridge extends Service {
           }
           this.clients.delete(sessionId)
         }
+      }
+      // The agent's shell goes with the session for the same reason, and its
+      // panel sockets are closed the same way: nothing can watch a session
+      // that no longer exists.
+      const agentRecord = this.agentRecordFor(sessionId)
+      if (agentRecord !== undefined) this.markAgentDead(agentRecord, 'session closed')
+      const watching = this.agentClients.get(sessionId)
+      if (watching !== undefined) {
+        for (const client of watching) {
+          this.agentBound.delete(client)
+          if (client.readyState === WebSocket.OPEN) client.close(1000, 'session closed')
+        }
+        this.agentClients.delete(sessionId)
       }
     })
     ctx.inject(['webServer', 'connection'], (webCtx) => {
@@ -413,12 +486,36 @@ export class DshellTerminalBridge extends Service {
     // cue once the shell is ready; PS1 and PROMPT_COMMAND are rewritten in
     // one line so no render window can clobber it, and the backend's fast
     // settle keys off the marker this PROMPT_COMMAND prints.
-    this.runInit(record)
+    this.runInit(record, frame => { this.broadcast(record.dshSessionId, frame) }, {
+      afterRestore: () => {
+        record.absOffset = Buffer.byteLength(record.buffer.text(), 'utf8')
+        this.pump(record)
+      },
+    })
     return record
   }
 
-  /** Queue the prompt-rewrite init and wipe its setup echo from the scrollback. */
-  private runInit(record: MainRecord): void {
+  /**
+   * Queue the prompt-rewrite init and wipe its setup echo from the scrollback.
+   *
+   * Shared by both shells: the user's and the agent's get the same prompt and
+   * the same settle marker, so one settle implementation and one backend
+   * contract cover them. What differs is only who hears about it (`deliver`)
+   * and what the owner must fix up once the seeded scrollback is restored.
+   * @param record - the shell being initialized.
+   * @param deliver - publishes one frame to that shell's watchers.
+   * @param options - `cdTo` is an already-quoted directory for the new shell to
+   *   start in (the agent's fork), `afterRestore` runs once the seeded history
+   *   is back in the buffer.
+   */
+  private runInit(
+    record: ShellRecord,
+    deliver: (frame: Record<string, unknown>) => void,
+    options: {
+      cdTo?: string | undefined
+      afterRestore?: (() => void) | undefined
+    } = {},
+  ): void {
     // The scrollback a respawn owes the client: the window already holds the
     // seeded log tail, so snapshot it before the init echo lands. Restoring
     // the snapshot (below) is the whole point of the persisted log — seeding
@@ -427,8 +524,9 @@ export class DshellTerminalBridge extends Service {
     // ONE line: the PROMPT_COMMAND re-asserts PS1 from a dedicated variable
     // on every prompt render, so the prompt survives any clobber and the
     // settle marker stays live. Real ESC bytes are safe on this backend.
+    const cd = options.cdTo === undefined ? '' : `cd ${options.cdTo} 2>/dev/null; `
     const init = [
-      `export DSHELL_PS1='\\u@\\h:\\w\\$ '; export PS1="$DSHELL_PS1"; export PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?"; PS1="$DSHELL_PS1"'`,
+      `${cd}export DSHELL_PS1='\\u@\\h:\\w\\$ '; export PS1="$DSHELL_PS1"; export PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?"; PS1="$DSHELL_PS1"'`,
       'clear',
       '',
     ].join('\n')
@@ -445,15 +543,14 @@ export class DshellTerminalBridge extends Service {
       // Clients already bound need this the moment it happens: until the
       // shell has answered, they show a connecting state rather than an empty
       // terminal, and only this frame ends it.
-      this.broadcast(record.dshSessionId, { kind: 'ready', ready: record.ready })
+      deliver({ kind: 'ready', ready: record.ready })
       // The init echo (export line + clear) never deserves screen space, but
       // the seeded scrollback does: reset the log to the snapshot instead of
       // to nothing, and hand that same text back to every client, which
       // replaces its own history from a replay chunk.
       void record.buffer.truncate().then(() => {
         record.buffer.append(seeded)
-        record.absOffset = Buffer.byteLength(seeded, 'utf8')
-        this.broadcast(record.dshSessionId, {
+        deliver({
           kind: 'output',
           chunk: seeded,
           time: Date.now(),
@@ -465,13 +562,121 @@ export class DshellTerminalBridge extends Service {
         // fresh prompt with no need for another Enter press. Pushing another
         // `\n` would add another empty echo row, and over many respawns that
         // is exactly the blank block the user sees growing on every reconnect.
-        this.pump(record)
+        options.afterRestore?.()
       })
     }, () => {
       record.activeSend = undefined
       record.initializing = false
-      this.pump(record)
+      options.afterRestore?.()
     })
+  }
+
+  /**
+   * The agent's own shell for one session, spawning it lazily.
+   *
+   * Lazy on purpose: a session that never asks for a terminal pays nothing, and
+   * a device session does not open a second ssh connection for a panel nobody
+   * opened. The record is keyed by the same Agent as the main shell — the two
+   * are two named PTYs under one owner, addressable separately.
+   */
+  async ensureAgentShell(dshSessionId: string): Promise<AgentRecord> {
+    const agent = await this.awaitAgent(dshSessionId)
+    const existing = this.agents.get(agent)
+    if (existing !== undefined && existing.dead === undefined) return existing
+    if (existing !== undefined) {
+      // A dead record still holds the owner's "agent" name reservation, so the
+      // respawn below would collide; release it inline first.
+      if (existing.disposeTimer !== undefined) clearTimeout(existing.disposeTimer)
+      await this.disposeAgentRecord(existing)
+      void this.ctx.terminals.kill(agent, existing.ptyId, 'dshell: replace dead agent shell').catch(() => {})
+    }
+    const pending = this.pendingAgents.get(agent)
+    if (pending !== undefined) return await pending
+    const promise = this.spawnAgent(agent, dshSessionId)
+    this.pendingAgents.set(agent, promise)
+    try {
+      return await promise
+    } finally {
+      this.pendingAgents.delete(agent)
+    }
+  }
+
+  /**
+   * The addressable id of the agent's own shell.
+   *
+   * What the model-facing tool hands the agent, so `terminal_send` lands in a
+   * shell the agent owns rather than in the one the user is typing into. The
+   * id is only returned once init has settled: the backend rejects a send that
+   * overlaps another (`SEND_ACTIVE`), and the agent's next act is a send.
+   * @param dshSessionId - the session whose agent shell to spawn (lazily).
+   * @returns the PTY id inside `ctx.terminals`.
+   */
+  async agentTerminalId(dshSessionId: string): Promise<TerminalSessionId> {
+    const record = await this.ensureAgentShell(dshSessionId)
+    await record.initSettled
+    return record.ptyId
+  }
+
+  private async spawnAgent(agent: Agent, dshSessionId: string): Promise<AgentRecord> {
+    const cwd = agent.session?.header?.cwd
+    const spawned = await this.ctx.terminals.spawn(agent, {
+      type: 'dshell-pty',
+      name: 'agent',
+      ...(cwd === undefined || cwd === '' ? {} : { cwd }),
+    })
+    const session = this.backend.session(spawned.sessionId)
+    if (session === undefined) {
+      throw new Error(`dshell-bridge: backend session missing after agent spawn (${String(spawned.sessionId)})`)
+    }
+    // The width the panel already asked for, if any: a shell spawned wider than
+    // the panel wraps its output where the panel does not, and nothing would
+    // re-wrap it afterwards.
+    const cols = this.agentCols.get(dshSessionId)
+    if (cols !== undefined) session.resize(cols, DEFAULT_PTY_ROWS)
+    const logPath = join(ptyLogDir(), `${dshSessionId}.agent.log`)
+    const buffer = await PtyBuffer.open(logPath)
+    const settled = Promise.withResolvers<void>()
+    const record: AgentRecord = {
+      agent,
+      dshSessionId,
+      ptyId: spawned.sessionId,
+      session,
+      buffer,
+      generation: nextShellGeneration++,
+      activeSend: undefined,
+      initializing: true,
+      ready: false,
+      stopOutput: () => {},
+      stopExit: () => {},
+      initSettled: settled.promise,
+    }
+    this.agents.set(agent, record)
+    record.stopOutput = session.onOutput((chunk) => {
+      // The init echo is the bridge's own setup, not the agent's work: the
+      // panel opens on the fork's prompt, not on an export line.
+      if (record.initializing) return
+      record.buffer.append(chunk)
+      this.broadcastAgent(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
+    })
+    record.stopExit = session.onExit((status) => {
+      this.markAgentDead(record, status.kind === 'exited' ? exitLabel(status) : status.kind)
+    })
+    // The agent's shell forks the user's: it opens in the directory the user's
+    // own shell is sitting in, so "look at what I am looking at" needs no path
+    // in a prompt. Best effort — a shell in the middle of a command reports no
+    // directory, and the fork simply stays in the session's own.
+    const fork = forkDirWord(this.mains.get(agent))
+    this.runInit(record, frame => { this.broadcastAgent(record.dshSessionId, frame) }, {
+      cdTo: fork,
+      afterRestore: () => { settled.resolve() },
+    })
+    return record
+  }
+
+  /** The agent shell record for one session — live, dead, or not spawned. */
+  private agentRecordFor(dshSessionId: string): AgentRecord | undefined {
+    for (const record of this.agents.values()) if (record.dshSessionId === dshSessionId) return record
+    return undefined
   }
 
   /**
@@ -521,18 +726,9 @@ export class DshellTerminalBridge extends Service {
    */
   releaseSession(dshSessionId: string): void {
     const record = this.recordFor(dshSessionId)
-    if (record === undefined) return
-    this.markDead(record, 'session deleted')
-  }
-
-  /**
-   * The main PTY's addressable `TerminalSessionId`, spawning the shell on
-   * first need — what `dshell_get_main_terminal` hands the agent so
-   * `terminal_send` lands in the user's visible shell.
-   */
-  async mainTerminalId(dshSessionId: string): Promise<TerminalSessionId> {
-    const record = await this.ensureMainShell(dshSessionId)
-    return record.ptyId
+    if (record !== undefined) this.markDead(record, 'session deleted')
+    const agentRecord = this.agentRecordFor(dshSessionId)
+    if (agentRecord !== undefined) this.markAgentDead(agentRecord, 'session deleted')
   }
 
   /** The live main record for one session, or undefined. Never spawns. */
@@ -706,6 +902,38 @@ export class DshellTerminalBridge extends Service {
     await record.buffer.close().catch(() => {})
   }
 
+  /**
+   * Mark the agent's shell dead: stop listening and tell its panel.
+   *
+   * Unlike the main shell there is no dispose timer. A dead main shell has to
+   * leave quickly — its name holds the next respawn back — while a dead agent
+   * shell is worth keeping: it is the record of what the agent did, and the
+   * panel that opens hours later must be able to say the shell ended and why,
+   * not pretend none ever existed. The next `ensureAgentShell` replaces it.
+   */
+  private markAgentDead(record: AgentRecord, reason: string): void {
+    if (record.dead !== undefined) return
+    record.dead = {
+      reason,
+      detail: diagnosticTail(record.buffer.text()),
+      ready: record.ready,
+      time: Date.now(),
+    }
+    record.stopOutput()
+    record.stopExit()
+    record.stopOutput = () => {}
+    record.stopExit = () => {}
+    this.broadcastAgent(record.dshSessionId, { kind: 'closed', reason, detail: record.dead.detail, ready: record.ready })
+    void this.ctx.terminals.kill(record.agent, record.ptyId, 'dshell: agent shell dead').catch(() => {})
+  }
+
+  /** Drop the agent record, releasing its buffer's file handle. */
+  private async disposeAgentRecord(record: AgentRecord): Promise<void> {
+    delete record.disposeTimer
+    this.agents.delete(record.agent)
+    await record.buffer.close().catch(() => {})
+  }
+
   private async disposeAll(): Promise<void> {
     for (const record of [...this.mains.values()]) {
       if (record.disposeTimer !== undefined) clearTimeout(record.disposeTimer)
@@ -713,21 +941,47 @@ export class DshellTerminalBridge extends Service {
       record.stopExit()
       await record.buffer.close().catch(() => {})
     }
+    for (const record of [...this.agents.values()]) {
+      if (record.disposeTimer !== undefined) clearTimeout(record.disposeTimer)
+      record.stopOutput()
+      record.stopExit()
+      await record.buffer.close().catch(() => {})
+    }
     this.mains.clear()
+    this.agents.clear()
     this.clients.clear()
     this.boundSession.clear()
+    this.agentClients.clear()
+    this.agentBound.clear()
   }
 
   private attachClient(client: WebSocket): void {
     client.on('message', (data: unknown) => {
-      let frame: { kind?: string; sessionId?: string; text?: string; signal?: string; cols?: number; rows?: number }
+      let frame: {
+        kind?: string
+        stream?: string
+        sessionId?: string
+        text?: string
+        signal?: string
+        cols?: number
+        rows?: number
+      }
       try {
         frame = JSON.parse(String(data)) as typeof frame
       } catch {
         return
       }
       if (frame.kind === 'bind' && typeof frame.sessionId === 'string') {
-        this.bindClient(client, frame.sessionId)
+        // The task card's panel opens a socket of its own for the agent's
+        // shell; the main stream and the agent stream never share one.
+        if (frame.stream === 'agent') this.bindAgent(client, frame.sessionId)
+        else this.bindClient(client, frame.sessionId)
+        return
+      }
+      const agentSession = this.agentBound.get(client)
+      if (agentSession !== undefined) {
+        if (frame.kind === 'agent-open') this.openAgentFor(client, agentSession)
+        else if (frame.kind === 'resize' && typeof frame.cols === 'number') this.resizeAgent(agentSession, frame.cols)
         return
       }
       const bound = this.boundSession.get(client)
@@ -771,6 +1025,13 @@ export class DshellTerminalBridge extends Service {
       }
     })
     client.on('close', () => {
+      const agentSession = this.agentBound.get(client)
+      if (agentSession !== undefined) {
+        this.agentBound.delete(client)
+        const watching = this.agentClients.get(agentSession)
+        watching?.delete(client)
+        if (watching !== undefined && watching.size === 0) this.agentClients.delete(agentSession)
+      }
       const bound = this.boundSession.get(client)
       this.boundSession.delete(client)
       if (bound === undefined) return
@@ -778,6 +1039,76 @@ export class DshellTerminalBridge extends Service {
       set?.delete(client)
       if (set !== undefined && set.size === 0) this.clients.delete(bound)
     })
+  }
+
+  /**
+   * Subscribe one socket to a session's agent shell and tell it the state.
+   *
+   * Subscribing is not spawning: the panel may open against a session whose
+   * agent has never touched a terminal, and that is a state to report, not a
+   * reason to start a second shell. `agent-open` is the frame that asks for
+   * one.
+   */
+  private bindAgent(client: WebSocket, dshSessionId: string): void {
+    let set = this.agentClients.get(dshSessionId)
+    if (set === undefined) {
+      set = new Set()
+      this.agentClients.set(dshSessionId, set)
+    }
+    set.add(client)
+    this.agentBound.set(client, dshSessionId)
+    this.pushAgentSnapshot(client, dshSessionId)
+  }
+
+  /** Spawn the agent's shell on the panel's request, then report it. */
+  private openAgentFor(client: WebSocket, dshSessionId: string): void {
+    void this.ensureAgentShell(dshSessionId).then(() => {
+      this.pushAgentSnapshot(client, dshSessionId)
+    }, (error: unknown) => {
+      this.sendFrame(client, {
+        kind: 'error',
+        stream: 'agent',
+        message: describeSpawnError(error),
+        sessionId: dshSessionId,
+      })
+    })
+  }
+
+  /**
+   * Apply the panel's width to the agent's shell.
+   *
+   * Only the columns: the panel is a short window onto a full-height terminal,
+   * so it scrolls rather than shrinking the rows a full-screen program may
+   * draw. A request that arrives before the shell exists is remembered and
+   * applied at spawn.
+   */
+  private resizeAgent(dshSessionId: string, cols: number): void {
+    const width = Math.max(20, Math.min(500, Math.floor(cols)))
+    this.agentCols.set(dshSessionId, width)
+    const record = this.agentRecordFor(dshSessionId)
+    if (record === undefined || record.dead !== undefined) return
+    record.session.resize(width, DEFAULT_PTY_ROWS)
+  }
+
+  /** Hand one panel client the agent shell's existence, state and scrollback. */
+  private pushAgentSnapshot(client: WebSocket, dshSessionId: string): void {
+    const record = this.agentRecordFor(dshSessionId)
+    this.sendFrame(client, {
+      kind: 'agent-info',
+      stream: 'agent',
+      live: record !== undefined && record.dead === undefined,
+      ready: record?.ready ?? false,
+      ...record?.dead === undefined ? {} : { reason: record.dead.reason, detail: record.dead.detail },
+    })
+    if (record !== undefined) {
+      this.sendFrame(client, {
+        kind: 'output',
+        stream: 'agent',
+        chunk: record.initializing ? '' : record.buffer.text(),
+        time: Date.now(),
+        replay: true,
+      })
+    }
   }
 
   private bindClient(client: WebSocket, dshSessionId: string): void {
@@ -890,6 +1221,16 @@ export class DshellTerminalBridge extends Service {
       if (client.readyState === WebSocket.OPEN) client.send(data)
     }
   }
+
+  /** Fan one frame out to the panels watching a session's agent shell. */
+  private broadcastAgent(dshSessionId: string, frame: Record<string, unknown>): void {
+    const set = this.agentClients.get(dshSessionId)
+    if (set === undefined) return
+    const data = JSON.stringify({ stream: 'agent', ...frame })
+    for (const client of set) {
+      if (client.readyState === WebSocket.OPEN) client.send(data)
+    }
+  }
 }
 
 /**
@@ -907,6 +1248,49 @@ function describeSpawnError(error: unknown): string {
 /** Defensive escape: drop chars that would let a quoted $PS1 leak out. */
 function safeShellWord(s: string): string {
   return s.replace(/[^A-Za-z0-9._-]/g, '_')
+}
+
+/** One POSIX shell word, quoted so any character inside stays literal. */
+function shellQuote(word: string): string {
+  return `'${word.replaceAll("'", "'\\''")}'`
+}
+
+/**
+ * The directory the *user's* shell is sitting in, as a shell word.
+ *
+ * The prompt dshell installs is `user@host:dir$`, printed by the shell itself
+ * on every prompt render, so when the user's shell is idle its scrollback ends
+ * in that directory. Nothing else reports a terminal's working directory —
+ * there is no cwd channel on this wire — and this is what lets the agent's
+ * shell open where the user is looking instead of in the session's original
+ * directory, which is the closest thing to a fork of their shell that the
+ * model of a PTY allows.
+ *
+ * `~` is rebuilt as `"$HOME"` because a tilde inside quotes would not expand;
+ * the rest of the path is single-quoted verbatim. Best effort by design: a
+ * shell in the middle of a command ends in output, not in a prompt, and then
+ * this returns nothing and the caller leaves the new shell where it spawned.
+ * @param record - the user's main record, when one exists.
+ * @returns the quoted directory, or undefined when the tail is not a prompt.
+ */
+function forkDirWord(record: MainRecord | undefined): string | undefined {
+  if (record === undefined) return undefined
+  const stripped = stripAnsi(record.buffer.text())
+  const lines = stripped.split('\n')
+  let tail = ''
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim() ?? ''
+    if (line.length > 0) { tail = line; break }
+  }
+  // `user@host:dir$` (or `#` for a root shell) — the prompt this bridge
+  // installs, matched at the very end of the line.
+  const match = /@[^:@\s]*:([^$#\n]*)[$#]\s*$/.exec(tail)
+  const dir = match?.[1]?.trim()
+  if (dir === undefined || dir.length === 0) return undefined
+  if (dir === '~') return '"$HOME"'
+  if (dir.startsWith('~/')) return `"$HOME"/${shellQuote(dir.slice(2))}`
+  if (!dir.startsWith('/')) return undefined
+  return shellQuote(dir)
 }
 
 /** Reject one unauthenticated upgrade with dsh's status semantics. */

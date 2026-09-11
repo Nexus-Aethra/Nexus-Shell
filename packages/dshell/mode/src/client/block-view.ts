@@ -29,7 +29,7 @@ import { AgentBlock, UserBubble } from './agent-block.js'
 import { assembleTimeline, type ViewItem } from './block-model.js'
 import { createSpanTerminal, SPAN_FONT, SPAN_FONT_SIZE, SPAN_LINE_HEIGHT } from './block-terminal.js'
 import { ConnectionNotice, ConnectionPanel, connectionView } from './connection-notice.js'
-import { TodoCard, injectTodoCardCss, setTodoPanelSuppressed, type TodoItem } from './todo-card.js'
+import { StatusCard, StatusCardBoundary, STATUS_CARD_RESERVE, injectTodoCardCss, setTodoPanelSuppressed, type TodoItem } from './status-card.js'
 import { BookmarkRail, bookmarksOf } from './bookmark-rail.js'
 import { useDshellTheme } from './theme.js'
 
@@ -376,6 +376,15 @@ export function BlockView(props: {
     return () => { setTodoPanelSuppressed(false) }
   }, [])
 
+  // Follow this session's agent terminal while the view is mounted: the card
+  // reports whether the agent has a shell (and can open one on request), which
+  // it cannot know without a subscription. Watching is not spawning — the host
+  // only replays, and the agent's shell appears when the agent first uses it.
+  useEffect(() => {
+    props.pty.watchAgent(id)
+    return () => { props.pty.watchAgent(undefined) }
+  }, [props.pty, id])
+
   const items = useMemo(() => {
     const state = foldRef.current
     // The fold lags a session switch by one render (the binding effect runs
@@ -407,6 +416,20 @@ export function BlockView(props: {
   const todos = useMemo<readonly TodoItem[]>(() => {
     const state = foldRef.current
     return id !== undefined && state !== undefined && state.sessionId === id ? state.todos : []
+  }, [version, id])
+
+  // What the agent is doing right now, for the status card's one-line head:
+  // the newest block the fold still holds open is the turn in flight, and its
+  // title is the phase (a todo item) the reader last saw. The card decides
+  // whether a turn is actually running — see there.
+  const activity = useMemo(() => {
+    const state = foldRef.current
+    if (id === undefined || state === undefined || state.sessionId !== id) return undefined
+    for (let index = state.fold.blocks.length - 1; index >= 0; index -= 1) {
+      const block = state.fold.blocks[index]
+      if (block?.status === 'running') return block.title.length > 0 ? block.title : undefined
+    }
+    return undefined
   }, [version, id])
 
   // The right-edge bookmark rail: one tick per agent turn in this session.
@@ -479,7 +502,14 @@ export function BlockView(props: {
         font: `${String(SPAN_FONT_SIZE)}px ${SPAN_FONT}`,
       },
     }, 'W'.repeat(40)),
-    createElement(TodoCard, { todos, theme }),
+    createElement(StatusCardBoundary, null, createElement(StatusCard, {
+      todos,
+      activity,
+      theme,
+      pty: props.pty,
+      sessionId: id,
+      sessions: props.sessions,
+    })),
     createElement('div', {
       ref: scroll,
       'data-dshell-block-view': '',
@@ -488,7 +518,15 @@ export function BlockView(props: {
         if (el === null) return
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
       },
-      style: { position: 'absolute', inset: 0, overflowY: 'auto', padding: '6px 10px 2px' },
+      style: {
+        position: 'absolute',
+        inset: 0,
+        overflowY: 'auto',
+        // The status card is permanent, so the column reserves its height: a
+        // floating pill over the terminal's first line is exactly the kind of
+        // covered output this view exists to avoid.
+        padding: `${String(STATUS_CARD_RESERVE)}px 10px 2px`,
+      },
     },
       ...items.flatMap((item, index) => {
         const previous = items[index - 1]
@@ -506,7 +544,19 @@ export function BlockView(props: {
         // incremental append path with it) instead of appending to it.
         const node = item.kind === 'shell'
           ? createElement(ShellRegion, { key: item.key, item, theme })
-          : item.kind === 'pending'
+          : item.kind === 'command'
+            ? createElement('div', {
+              key: item.key,
+              style: {
+                fontFamily: SPAN_FONT,
+                fontSize: 12,
+                color: theme.muted,
+                opacity: 0.85,
+                margin: '6px 2px',
+                whiteSpace: 'pre-wrap',
+              },
+            }, `▸ ${item.text}`)
+            : item.kind === 'pending'
             ? createElement(UserBubble, { key: item.key, text: item.text, loadImage: props.loadImage, theme })
             : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage })
         return [...divider, node]

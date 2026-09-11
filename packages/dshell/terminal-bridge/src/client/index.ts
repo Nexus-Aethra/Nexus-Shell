@@ -91,6 +91,31 @@ const HISTORY_MAX_BYTES = 256 * 1024
 const HISTORY_MAX_FRAMES = 1000
 
 /**
+ * The agent's own shell, as the task card's panel sees it.
+ *
+ * A separate store from {@link PtyStreamState} because it is a separate stream
+ * with a separate lifetime: the user's terminal is bound for as long as a
+ * session is open, while this one is watched by an optional panel and its shell
+ * may not exist at all.
+ */
+export interface AgentStreamState {
+  /** The session whose agent shell this is. */
+  sessionId: string | undefined
+  /** Wire state of the panel's own socket. */
+  status: 'idle' | 'connecting' | 'open' | 'closed' | 'error'
+  /** Whether the agent actually has a shell (spawned and not dead). */
+  live: boolean
+  /** Whether that shell reached its first prompt. */
+  ready: boolean
+  /** Why the shell ended, or why the socket failed. */
+  reason: string | undefined
+  /** The connection diagnostic the shell's output held, when there was one. */
+  detail: string | undefined
+  /** Bumped whenever the text or the state changes; read text via {@link agentText}. */
+  version: number
+}
+
+/**
  * Automatic reconnect budget, and the backoff between attempts.
  *
  * Bounded on purpose. An unbounded retry loop is indistinguishable from a hang
@@ -135,6 +160,8 @@ interface WireFrame {
   message?: string
   /** `info`/`ready` frames: whether the shell has reached a prompt. */
   ready?: boolean
+  /** `agent-info` frames: whether the agent shell exists at all. */
+  live?: boolean
   /** `info` frames: OS identity the dock uses to build bash prompts. */
   user?: string
   host?: string
@@ -184,6 +211,23 @@ export class PtyStreamService extends Service {
     home: '',
   })
 
+  /**
+   * The agent's own shell: whether it exists, and what it has printed.
+   *
+   * Read by the task card, which shows the state in its summary and the text in
+   * its expandable panel. Kept apart from the main stream so a session whose
+   * agent never touches a terminal carries no state for it at all.
+   */
+  readonly agent = createSnapshotStore<AgentStreamState>({
+    sessionId: undefined,
+    status: 'idle',
+    live: false,
+    ready: false,
+    reason: undefined,
+    detail: undefined,
+    version: 0,
+  })
+
   private readonly histories = new Map<string, SessionHistory>()
   /** Per-session block lists, exactly as the host ordered them. The stored
    * copy is mutable because a live block grows by deltas. */
@@ -214,6 +258,15 @@ export class PtyStreamService extends Service {
   private desiredSize: { cols: number; rows: number } | undefined
   /** Automatic attempts spent since this connection last carried output. */
   private attempt = 0
+  /** Per-session text of the agent shell, capped like the main history. */
+  private readonly agentChunks = new Map<string, PtyChunk[]>()
+  private readonly agentBytes = new Map<string, number>()
+  private agentSocket: WebSocket | undefined
+  private agentSocketSession: string | undefined
+  /** The panel's requested width, replayed when the socket (re)opens. */
+  private agentCols: number | undefined
+  /** A reopen was asked for before the socket finished opening. */
+  private agentSpawnRequested = false
 
   constructor(ctx: Context) {
     super(ctx, 'dshellPtyStream')
@@ -413,6 +466,183 @@ export class PtyStreamService extends Service {
   sendSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGTSTP'): void {
     if (this.boundId === undefined || this.socket?.readyState !== WebSocket.OPEN) return
     this.socket.send(JSON.stringify({ kind: 'signal', sessionId: this.boundId, signal }))
+  }
+
+  /**
+   * Watch one session's agent shell (undefined stops watching).
+   *
+   * Subscribing is not spawning: the panel learns whether the agent has a
+   * terminal, and only {@link openAgentTerminal} asks the host to make one.
+   * The socket is idempotent per session, so a re-render never reconnects.
+   */
+  watchAgent(dshSessionId: string | undefined): void {
+    if (dshSessionId === undefined) {
+      this.closeAgentSocket()
+      return
+    }
+    const socket = this.agentSocket
+    if (socket !== undefined && this.agentSocketSession === dshSessionId
+      && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return
+    this.openAgentSocket(dshSessionId)
+  }
+
+  /** The agent shell's text for one session (oldest first, capped). */
+  agentText(dshSessionId: string): string {
+    const chunks = this.agentChunks.get(dshSessionId)
+    if (chunks === undefined) return ''
+    let text = ''
+    for (const chunk of chunks) text += chunk.text
+    return text
+  }
+
+  /**
+   * Ask the host for the agent's shell now — the panel's "open it" action.
+   *
+   * The agent itself spawns this shell the first time it runs a command, so
+   * this exists for the reader who wants to watch before the agent gets there
+   * (and for a shell that died and has to be replaced).
+   */
+  openAgentTerminal(): void {
+    const id = this.agent.getSnapshot().sessionId
+    if (id === undefined) return
+    this.watchAgent(id)
+    const socket = this.agentSocket
+    if (socket === undefined) return
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ kind: 'agent-open', sessionId: id }))
+    else this.agentSpawnRequested = true
+  }
+
+  /**
+   * Tell the host how wide the panel is, so the agent's shell wraps there.
+   *
+   * Only the width: the agent's shell keeps a full terminal's rows and the
+   * panel is a scrolling window onto them.
+   */
+  resizeAgent(cols: number): void {
+    if (cols <= 0) return
+    this.agentCols = Math.floor(cols)
+    const socket = this.agentSocket
+    if (socket?.readyState !== WebSocket.OPEN) return
+    socket.send(JSON.stringify({ kind: 'resize', cols: this.agentCols }))
+  }
+
+  /** Close the panel's socket; the main stream is untouched. */
+  private closeAgentSocket(): void {
+    this.agentSocket?.close()
+    this.agentSocket = undefined
+    this.agentSocketSession = undefined
+    this.agentSpawnRequested = false
+  }
+
+  private openAgentSocket(dshSessionId: string): void {
+    this.closeAgentSocket()
+    const previous = this.agent.getSnapshot()
+    const sameSession = previous.sessionId === dshSessionId
+    this.agent.set({
+      sessionId: dshSessionId,
+      status: 'connecting',
+      // A reconnect to the same session keeps what is known about its shell;
+      // a different session starts from nothing.
+      live: sameSession && previous.live,
+      ready: sameSession && previous.ready,
+      reason: undefined,
+      detail: undefined,
+      version: previous.version,
+    })
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(`${protocol}//${location.host}/dshell/pty`)
+    this.agentSocket = socket
+    this.agentSocketSession = dshSessionId
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ kind: 'bind', sessionId: dshSessionId, stream: 'agent' }))
+      this.patchAgent({ status: 'open' })
+      if (this.agentCols !== undefined) socket.send(JSON.stringify({ kind: 'resize', cols: this.agentCols }))
+      if (this.agentSpawnRequested) {
+        this.agentSpawnRequested = false
+        socket.send(JSON.stringify({ kind: 'agent-open', sessionId: dshSessionId }))
+      }
+    }
+    socket.onmessage = (event) => {
+      if (this.agentSocket !== socket) return
+      let frame: WireFrame
+      try {
+        frame = JSON.parse(String(event.data)) as WireFrame
+      } catch {
+        return
+      }
+      this.ingestAgentFrame(dshSessionId, frame)
+    }
+    socket.onclose = () => {
+      if (this.agentSocket !== socket) return
+      this.agentSocket = undefined
+      this.agentSocketSession = undefined
+      const reason = this.agent.getSnapshot().reason ?? '与服务端的连接已断开'
+      this.patchAgent({ status: 'closed', reason })
+    }
+    socket.onerror = () => {
+      if (this.agentSocket !== socket) return
+      this.patchAgent({ status: 'error' })
+    }
+  }
+
+  /** Fold one agent-stream frame into the panel's state and text. */
+  private ingestAgentFrame(dshSessionId: string, frame: WireFrame): void {
+    if (frame.kind === 'output' && typeof frame.chunk === 'string') {
+      const chunk: PtyChunk = { text: frame.chunk, time: frame.time ?? Date.now(), replay: frame.replay === true }
+      if (chunk.replay) {
+        this.agentChunks.set(dshSessionId, [chunk])
+        this.agentBytes.set(dshSessionId, chunk.text.length)
+      } else {
+        const chunks = [...(this.agentChunks.get(dshSessionId) ?? []), chunk]
+        let bytes = (this.agentBytes.get(dshSessionId) ?? 0) + chunk.text.length
+        while (bytes > HISTORY_MAX_BYTES || chunks.length > HISTORY_MAX_FRAMES) {
+          const dropped = chunks[0]
+          if (dropped === undefined || chunks.length === 1) break
+          chunks.shift()
+          bytes -= dropped.text.length
+        }
+        this.agentChunks.set(dshSessionId, chunks)
+        this.agentBytes.set(dshSessionId, bytes)
+      }
+      this.patchAgent({ status: 'open', live: true, version: this.agent.getSnapshot().version + 1 })
+      return
+    }
+    if (frame.kind === 'agent-info') {
+      this.patchAgent({
+        live: frame.live === true,
+        ready: frame.ready === true,
+        reason: typeof frame.reason === 'string' ? frame.reason : undefined,
+        detail: typeof frame.detail === 'string' ? frame.detail : undefined,
+        version: this.agent.getSnapshot().version + 1,
+      })
+      return
+    }
+    if (frame.kind === 'ready') {
+      this.patchAgent({ ready: frame.ready !== false })
+      return
+    }
+    if (frame.kind === 'closed') {
+      this.patchAgent({
+        status: 'closed',
+        live: false,
+        ready: frame.ready === true,
+        reason: typeof frame.reason === 'string' ? frame.reason : undefined,
+        detail: typeof frame.detail === 'string' ? frame.detail : undefined,
+        version: this.agent.getSnapshot().version + 1,
+      })
+      return
+    }
+    if (frame.kind === 'error') {
+      this.patchAgent({
+        status: 'error',
+        reason: typeof frame.message === 'string' ? frame.message : undefined,
+        detail: undefined,
+      })
+    }
+  }
+
+  private patchAgent(patch: Partial<AgentStreamState>): void {
+    this.agent.set({ ...this.agent.getSnapshot(), ...patch })
   }
 
   private openSocket(dshSessionId: string): void {
@@ -638,6 +868,11 @@ export interface DshellPtyDebug {
   status(): PtyStreamState['status']
   /** The whole connection state, for inspecting retries and failures. */
   state(): PtyStreamState
+  /** The agent shell's panel state and text. */
+  agent(): AgentStreamState
+  agentText(): string
+  /** Ask the host for the agent's shell now (the panel's "open" action). */
+  openAgent(): void
   send(text: string): void
   signal(signal: 'SIGINT' | 'SIGTERM' | 'SIGTSTP'): void
   /** Retry the connection now, exactly like the view's button. */
@@ -677,6 +912,12 @@ export function apply(ctx: Context): void {
     session: () => stream.state.getSnapshot().sessionId,
     status: () => stream.state.getSnapshot().status,
     state: () => stream.state.getSnapshot(),
+    agent: () => stream.agent.getSnapshot(),
+    agentText: () => {
+      const sessionId = stream.agent.getSnapshot().sessionId
+      return sessionId === undefined ? '' : stream.agentText(sessionId)
+    },
+    openAgent: () => { stream.openAgentTerminal() },
     send: (text) => { stream.send(text) },
     signal: (signal) => { stream.sendSignal(signal) },
     reconnect: () => { stream.reconnect() },

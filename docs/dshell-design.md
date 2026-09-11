@@ -180,12 +180,11 @@ PTY context block immediately before the user message:
 - The wrapped block uses triple-backtick fencing so the model can
   distinguish context from user message.
 
-The agent's `terminal_open` calls carry `name: 'main'` semantics by
-default through a new model-facing tool `dshell_get_main_terminal`,
-which returns the `TerminalSessionId` of the bridge-owned main shell.
-The agent uses this id when interacting with the user's shell. Without
-this tool, the agent has no reliable way to refer to `main` — `name`
-is owner-local display metadata only, not an addressable handle.
+The agent reaches a shell through a model-facing tool that returns a
+`TerminalSessionId`, because `name` is owner-local display metadata
+and not an addressable handle. Phase 8 first pointed that tool at the
+bridge's `main` shell; Phase 9.11 moved it to a shell the agent owns
+(§ 4.10), so the two never contend for one foreground.
 
 ### 4.7 Workspace removal
 
@@ -289,16 +288,62 @@ for live rendering and context injection:
   decision narrows the § 2 non-goal — process durability stays out of
   scope; scrollback history persistence is in scope.
 
+### 4.10 Two shells per session (agent-owned terminal)
+
+dsh's terminal service allows exactly ONE active send per PTY, and a
+PTY's foreground is single-owner by nature. Phase 8 therefore made the
+agent a second writer into the user's own shell, which is precisely the
+arrangement that cannot work: the two take turns at the foreground, a
+send waits on the other's output to settle, and Ctrl+C in the user's
+shell cannot reach the agent's command (the bridge's own send record
+does not cover it).
+
+Phase 9.11 gives the agent its own PTY instead, under the same session
+Agent but with a distinct owner-local name (`agent` next to `main`):
+
+- **Spawned lazily**, on the agent's first need for a terminal. A
+  session whose agent never runs a shell pays nothing, and a device
+  session does not open a second ssh connection for a panel nobody
+  opened.
+- **Forked, not shared**: the agent's shell opens in the directory the
+  user's shell is sitting in, read from the user's own prompt (nothing
+  on this wire reports a PTY's working directory), and falls back to
+  the session directory when that shell is busy.
+- **The sync direction stays one-way**: the user's activity reaches the
+  agent's context through 4.6, and the agent reads the user's shell
+  with `dshell_terminal_read` — read-only. The agent does not type into
+  the user's terminal, because that is the same foreground contest.
+- **The user can watch it**: a second, read-only stream on the same ws
+  route (`bind` with `stream: 'agent'`) feeds the status card's
+  terminal row. The panel negotiates the shell's WIDTH only — rows stay
+  a full terminal's, since a full-screen program needs them and the
+  panel scrolls.
+- The shell's bytes never enter the main block log: the user's timeline
+  carries the user's shell and the agent's turns, and the agent's
+  command output arrives where it was always visible — in its own tool
+  results and in the panel.
+
+The model-facing tool is `dshell_get_agent_terminal`; it returns the id
+of this shell, and only after the init handshake settled, because the
+agent's next act is a send and the backend rejects one that overlaps
+another.
+
 ## 5. Wire protocol
 
 `dshell-terminal-bridge` exposes a single ws upgrade route at
 `/dshell/pty`. The protocol is JSON framed; messages are:
 
 - Client → server:
-  - `{ kind: 'bind', sessionId: string }` — associate this ws with the
-    dsh session id. Required as the first message after upgrade; the
-    server answers with a replay `{ kind: 'output', ..., replay: true }`
-    carrying the persisted scrollback tail (4.9) before any live frame.
+  - `{ kind: 'bind', sessionId: string, stream?: 'main' | 'agent' }` —
+    associate this ws with the dsh session id. Required as the first
+    message after upgrade; the server answers with a replay
+    `{ kind: 'output', ..., replay: true }` carrying the persisted
+    scrollback tail (4.9) before any live frame. Omitting `stream`
+    binds the user's `main` shell; `'agent'` subscribes to the
+    agent-owned shell's read-only stream (4.10) and is the only reason
+    a second ws exists — it accepts `agent-open` (spawn it now) and a
+    `cols`-only `resize`, and answers with `agent-info`, `output`,
+    `ready` and `closed` frames tagged `stream: 'agent'`.
   - `{ kind: 'input', sessionId: string, text: string }` — forwarded to
     the `main` PTY through `startSend`. Raw control keys ride the text
     (`\u03` = Ctrl+C cancels the active send with SIGINT).

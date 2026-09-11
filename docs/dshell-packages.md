@@ -60,16 +60,20 @@ when it contributes to model-visible state.
 ### `dshell-terminal-bridge`
 
 - Role: host-side bridge between browser ws and `ctx.terminals`. Owns
-  `mainPtyByAgent`. Exposes the ws upgrade route at `/dshell/pty`.
-  Implements the wire protocol in `dshell-design.md` § 5.
+  one `main` PTY per session (the user's shell) and, spawned lazily,
+  one `agent` PTY (the agent's own shell, Phase 9.11), each with its
+  own persisted buffer and block log. Exposes the ws upgrade route at
+  `/dshell/pty`, where a `bind` frame names the stream (`main` or
+  `agent`). Implements the wire protocol in `dshell-design.md` § 5.
 - dsh services depended on: `ctx.webServer` (upgrade route),
   `ctx.terminals` (PTY lifecycle), `ctx.agents` (resolve agent by
   sessionId), browser-side `dshell-conversation` (channel for byte
   push).
 - Introduced in: Phase 2 (host only); expanded in Phase 3 (browser
-  ws).
+  ws), Phase 9.11 (agent shell + agent stream).
 - Touches decisions: 4.2 (main shell ownership), 4.3 (secondary pass-
-  through), 4.4 (host half of byte stream).
+  through), 4.4 (host half of byte stream), 4.10 (two shells per
+  session).
 
 ### `dshell-mode`
 
@@ -77,25 +81,32 @@ when it contributes to model-visible state.
   dispatch. Patches the `inputActions` exposed by
   `ctx.uiSession.provide()` to route Enter according to mode. Handles
   `/agent` and `/shell` prefix parsing. On agent-mode submit, injects
-  the truncated PTY context block before the user message.
+  the truncated PTY context block before the user message. Its view
+  also carries the status card (Phase 9.11): a permanent one-line head,
+  with plan / AI terminal / subagents / sessions / link rows whose
+  details open on click.
 - dsh services depended on: `ctx.uiSession`, `ctx.agents.inject`,
-  `dshell-terminal-bridge` (for main PTY id and context buffer
-  read).
+  `dshell-terminal-bridge` (for main PTY id, the agent stream and
+  context buffer read), `ctx.sessions` (the status card's session and
+  subagent rows).
 - Introduced in: Phase 5 (state and dispatch); expanded in Phase 7
-  (injection).
+  (injection), Phase 9.11 (status card).
 - Touches decisions: 4.5 (mode state and prefix handling), 4.6
-  (injection).
+  (injection), 4.10 (status surface).
 
 ### `dshell-commands`
 
 - Role: registers `/clear`, `/new`, `/compact` on `ctx.commands`, and
-  one model-facing tool `dshell_get_main_terminal` on `ctx.tools`.
+  one model-facing tool `dshell_get_agent_terminal` on `ctx.tools`
+  (Phase 9.11; it was `dshell_get_main_terminal` while the agent shared
+  the user's shell).
 - dsh services depended on: `ctx.commands`, `ctx.tools`,
-  `dshell-terminal-bridge` (for the main PTY id returned by the
-  tool).
-- Introduced in: Phase 6 (commands); expanded in Phase 8 (tool).
-- Touches decisions: 4.5 (real commands), 4.6 (agent access to main
-  PTY id).
+  `dshell-terminal-bridge` (for the agent shell's PTY id returned by
+  the tool, and the read-only view of the user's shell).
+- Introduced in: Phase 6 (commands); expanded in Phase 8 (tool),
+  Phase 9.11 (own shell).
+- Touches decisions: 4.5 (real commands), 4.6 (agent access to a PTY
+  id), 4.10 (agent-owned shell).
 
 ### `dshell-workspace`
 
@@ -284,8 +295,8 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.agents` — `inject` (in `dshell-mode`) and session id lookup
   (in `dshell-terminal-bridge`).
 - `ctx.commands` — registers commands (in `dshell-commands`).
-- `ctx.tools` — registers `dshell_get_main_terminal` (in
-  `dshell-commands`).
+- `ctx.tools` — registers `dshell_get_agent_terminal` and
+  `dshell_terminal_read` (in `dshell-commands`).
 - `ctx.uiSession` — patches `inputActions` (in `dshell-mode`).
 - `ctx.systemPrompt` — registers one section stating the pipe protocol
   (in `dshell-buffer`, host face).

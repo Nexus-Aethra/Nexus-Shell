@@ -17,12 +17,19 @@ import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-control
 import { sanitizeRowText } from './session-rows.js'
 import type { PtyBlock } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 import type { TurnBlock } from './blocks.js'
-import type { TodoItem } from './todo-card.js'
+import type { TodoItem } from './status-card.js'
 
 /** One rendered element of the view. */
 export type ViewItem =
   | { readonly kind: 'shell'; readonly key: string; readonly time: number; readonly text: string }
   | { readonly kind: 'agent'; readonly key: string; readonly time: number; readonly block: TurnBlock }
+  /**
+   * A turn that carried no model work at all — a slash command such as
+   * `/permission default`, which submits a real turn whose only rows are the
+   * command echo and its outcome. Drawn as one quiet line instead of a task
+   * card, which would read as a fake agent turn.
+   */
+  | { readonly kind: 'command'; readonly key: string; readonly time: number; readonly text: string }
   /**
    * A message the reader just sent, shown from the session's local submission
    * echo. It exists only until the durable event arrives, so the request is on
@@ -33,6 +40,35 @@ export type ViewItem =
 /** Whether a shell region holds anything a reader would see. */
 function visible(text: string): boolean {
   return sanitizeRowText(text).replace(/\s/gu, '').length > 0
+}
+
+/**
+ * The timeline item one folded block becomes, or undefined when the block
+ * carries nothing to show.
+ *
+ * Two cases collapse: a turn whose rows are all command echoes (a slash command
+ * — it becomes one line, not a card), and a closed turn with no rows, no steps
+ * and no tokens at all (an aborted submission — it becomes nothing). Everything
+ * else is a task card.
+ */
+function agentItemOf(block: TurnBlock): ViewItem | undefined {
+  if (block.rows.length > 0 && block.steps === 0 && block.stream === undefined
+    && block.rows.every(row => row.role === 'command')) {
+    // The first row is the command as it was typed; a slash marks it as the
+    // dsh command it was rather than a shell line the reader never ran.
+    const [head, ...rest] = block.rows.map(row => row.text)
+    return {
+      kind: 'command',
+      key: block.key,
+      time: block.startedAt,
+      text: [`/${head ?? ''}`, ...rest].join(' · '),
+    }
+  }
+  if (block.rows.length === 0 && block.stream === undefined && block.steps === 0
+    && block.tokens === 0 && block.status !== 'running') {
+    return undefined
+  }
+  return { kind: 'agent', key: block.key, time: block.startedAt, block }
 }
 
 /**
@@ -64,7 +100,8 @@ export function assembleTimeline(
     for (const block of fold.blocks) {
       if (block.turn !== host.turn || used.has(block.key)) continue
       used.add(block.key)
-      items.push({ kind: 'agent', key: block.key, time: block.startedAt, block })
+      const item = agentItemOf(block)
+      if (item !== undefined) items.push(item)
     }
   }
   // Tasks the host has no block for — history from before the block log
@@ -73,8 +110,9 @@ export function assembleTimeline(
   for (const block of fold.blocks) {
     if (used.has(block.key)) continue
     used.add(block.key)
+    const node = agentItemOf(block)
+    if (node === undefined) continue
     const at = items.findIndex(item => item.time > block.startedAt)
-    const node: ViewItem = { kind: 'agent', key: block.key, time: block.startedAt, block }
     if (at < 0) items.push(node)
     else items.splice(at, 0, node)
   }

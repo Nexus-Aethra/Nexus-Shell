@@ -8,9 +8,10 @@
  * because the "current session" selection is client-only state no host
  * command can switch). `/compact` is dsh's own `command-compact` — dshell
  * must not re-register it; the dock routes it to the stock executor.
- * `dshell_get_main_terminal` hands the agent the addressable
- * `TerminalSessionId` of the user's visible main shell.
- * `dshell_terminal_read` reads that shell's recent activity at command
+ * `dshell_get_agent_terminal` hands the agent the addressable
+ * `TerminalSessionId` of its OWN shell — the PTY the bridge spawns for it,
+ * separate from the one the user types into.
+ * `dshell_terminal_read` reads the USER's shell (read-only) at command
  * granularity — incremental since an opaque cursor, or the latest commands.
  */
 
@@ -69,10 +70,13 @@ export function apply(ctx: Context): void {
   })
 
   ctx.tools.register(defineTool({
-    name: 'dshell_get_main_terminal',
-    description: 'Return the terminal session id of the user-facing main shell. '
-      + 'Pass it to terminal_send / terminal_read / terminal_signal to run commands '
-      + 'in the terminal the user is watching; its output streams back to the user live.',
+    name: 'dshell_get_agent_terminal',
+    description: 'Return the terminal session id of YOUR OWN shell — a PTY spawned for you, '
+      + 'starting in the directory the user\'s shell is in. Pass it to terminal_send / '
+      + 'terminal_read / terminal_signal to run commands. It is a separate shell from the one '
+      + 'the user types into, so your commands and theirs never block each other, and the user '
+      + 'can watch yours live in the task card. The user\'s own shell is only readable, via '
+      + 'dshell_terminal_read.',
     parameters: {},
     output: {
       schema: {
@@ -84,18 +88,21 @@ export function apply(ctx: Context): void {
     },
     async execute(_args: Record<string, never>, exec) {
       const agent = exec.agent
-      if (agent === undefined) throw new Error('dshell_get_main_terminal requires an agent context')
-      return { sessionId: String(await bridge.mainTerminalId(String(agent.id))) }
+      if (agent === undefined) throw new Error('dshell_get_agent_terminal requires an agent context')
+      return { sessionId: String(await bridge.agentTerminalId(String(agent.id))) }
     },
-    presentCall: () => ({ card: 'generic', title: '获取主终端', kind: 'read' }),
+    presentCall: () => ({ card: 'generic', title: '获取 AI 终端', kind: 'read' }),
   }))
 
   ctx.tools.register(defineTool({
     name: 'dshell_terminal_read',
-    description: 'Read the terminal the user is watching, at command granularity. '
-      + 'Without a cursor it lists the most recent commands; with the cursor a previous '
-      + 'call returned, it reports only what happened since — the way to catch up on a '
-      + 'shell you have not looked at. Output is stripped of terminal control codes.',
+    description: 'Read the USER\'s terminal — the shell they are typing into — at command '
+      + 'granularity, read-only. Without a cursor it lists the most recent commands; with the '
+      + 'cursor a previous call returned, it reports only what happened since — the way to catch '
+      + 'up on what the user has been doing without asking them. Output is stripped of terminal '
+      + 'control codes. Run your own commands in the shell from '
+      + 'dshell_get_agent_terminal instead: typing into the user\'s terminal takes the foreground '
+      + 'away from them.',
     parameters: {
       cursor: {
         type: 'string',

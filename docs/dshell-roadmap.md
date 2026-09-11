@@ -618,6 +618,11 @@ Acceptance check (verified end-to-end with a live model):
 
 Goal: the agent has a reliable way to learn the `main` PTY session id.
 
+Superseded by Phase 9.11: pointing the agent at the user's own shell is
+the arrangement that could not work (one PTY has one foreground), so the
+tool is now `dshell_get_agent_terminal` and returns the id of a shell the
+agent owns. Everything below describes the shell the agent used to share.
+
 Covers decision: 4.6 (agent access to `main`).
 
 Plugins touched:
@@ -1193,6 +1198,93 @@ Acceptance check (driven from the browser, against the throwaway local
 - Copying a name that already exists fails with the overwrite question;
   覆盖 replaces it and keeps the file's previous mode.
 - Files above 32 MB are refused by name; a symlink is skipped and counted.
+
+## Phase 9.11 — The agent's own terminal, and the status card
+
+Goal: make "the terminal stays usable while the agent works" actually
+true, and give the session one place where its state is visible. The
+first half is what makes the second possible: once the agent prints into
+a shell of its own, the user's timeline is the user's again — and the
+agent's shell becomes something worth watching.
+
+Shipped:
+
+- **Two shells per session** (`dshell-terminal-bridge` host). The
+  bridge already owned `main`; it now also owns `agent`, the same
+  session Agent's second PTY under a different owner-local name,
+  spawned **lazily** on the agent's first need for a terminal (a
+  session whose agent never runs a shell pays nothing, and a device
+  session does not open a second ssh connection for a panel nobody
+  opened). It gets its own persisted log
+  (`<dsh-session-id>.agent.log`), the same prompt/PS1 init and the same
+  settle marker — `runInit` was generalized so both shells share one
+  implementation, differing only in who hears about the frames and what
+  the owner fixes up after the seeded scrollback is restored.
+- **The agent's shell forks the user's**: it opens in the directory the
+  user's shell is sitting in, read from the user's own prompt line
+  (`user@host:dir$`, `~` rebuilt as `"$HOME"` so it still expands),
+  because nothing on this wire reports a PTY's working directory. Best
+  effort by design: a shell in the middle of a command ends in output,
+  not in a prompt, and the fork then stays in the session's own
+  directory.
+- **The sync stays one-way and read-only.** The user's activity keeps
+  reaching the agent's context through Phase 7's `主终端增量`
+  injection, and `dshell_terminal_read` keeps reading the user's shell.
+  The agent does not type into it: that is the same foreground contest,
+  in the other direction.
+- **The agent's stream is a second, read-only stream** on the same
+  `/dshell/pty` route (`bind` with `stream: 'agent'`; `agent-open` to
+  spawn it, `cols`-only `resize`, `agent-info`/`output`/`ready`/`closed`
+  back). The panel drives the shell's width so it wraps where the reader
+  sees it, and never its rows — a full-screen program needs a full
+  terminal's rows, and the panel scrolls.
+- **`dshell_get_agent_terminal`** (`dshell-commands`) replaces
+  `dshell_get_main_terminal` and waits for the init handshake to settle
+  before returning the id, because the agent's very next act is a send
+  and the backend rejects one that overlaps another.
+- **The task card became the status card** (`dshell-mode` browser): an
+  integrated status list rather than a terminal window. It is
+  permanent — idle says so and stays openable — one narrow line while
+  collapsed (the phase of the running plan, else the shell/agent/link
+  state, else `空闲`), and rows when expanded: 计划, AI 终端 (its detail
+  is the live read-only terminal), 智能体 (dsh's subagent catalog,
+  fetched when the row opens), 会话 (dsh's session list, click to
+  switch) and 连接. A row opens its detail; nothing opens by itself.
+  The column reserves the collapsed card's height, so a floating pill
+  never sits on the terminal's first line, and a `StatusCardBoundary`
+  contains any fault to the card instead of the view.
+- **The fake agent block is gone.** A turn whose rows are all command
+  echoes — what `/permission <preset>` produces, since it submits a real
+  turn with no model work in it — renders as one quiet line
+  (`▸ /permission … · preset …`); a closed turn with no rows, steps or
+  tokens renders nothing at all.
+
+Covers decision: 4.10 (two shells per session, agent-owned terminal).
+
+Plugins touched:
+
+- `dshell-terminal-bridge` (both faces) — the agent shell, its record,
+  teardown paths, the agent stream and its frames; the client service
+  gains `.agent`, `.agentText()`, `.watchAgent()`, `.openAgentTerminal()`,
+  `.resizeAgent()`.
+- `dshell-commands` (host face) — the renamed tool and its description.
+- `dshell-mode` (browser face) — `status-card.ts` (rows, details, the
+  card's own terminal view), `agent-terminal.ts` (the read-only xterm),
+  the block model's command-only line, the view's reserved top space.
+
+Acceptance check:
+
+- While an agent turn runs, `Enter` in shell mode executes in the user's
+  shell immediately (measured 34 ms from keypress to echoed output) and
+  the agent's own command still completes; the two shells have separate
+  foregrounds and separate Ctrl+C.
+- `dshell_get_agent_terminal()` returns a PTY id whose prompt is the
+  directory the user's shell was in; commands sent there appear in the
+  status card's AI 终端 row within a frame.
+- `/permission <preset>` adds one line to the timeline and no task card.
+- The status card is present on every session (collapsed ~35 px tall,
+  ≤330 px wide), and expanding it lists the rows without opening any
+  detail.
 
 ## Phase 10 — Packaging
 
