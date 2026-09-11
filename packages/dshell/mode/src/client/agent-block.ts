@@ -14,13 +14,6 @@ import { renderMarkdown } from './markdown.js'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { Theme } from './theme.js'
 
-/**
- * The transcript is monochrome by design: steps are told apart by their glyph,
- * label and weight, not by colour, and everything sits directly on the page
- * background. Only a failure earns a colour.
- */
-const FAIL_COLOR = '#cc0000'
-
 /** A foldable row: one hover target, so the whole line reads as the control. */
 const FOLD_STYLE = { margin: '0 -6px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer' } as const
 
@@ -53,7 +46,9 @@ function injectFoldCss(): void {
     '[data-dshell-fold]:hover [data-dshell-chevron]{opacity:1}',
     // Brand-coloured shimmer on the running agent block's "深度求索中…" line,
     // adapted from dsh's stock turnStatus (ChatView.module.css): the same
-    // linear-gradient sweep on the text, but sized to the dshell 12px row.
+    // linear-gradient sweep on the text. This is the only place the transcript
+    // uses the brand blue — internal rows stay monochrome and let the
+    // header's colour do the running-signal work.
     '[data-dshell-running-text]{',
     '  background:linear-gradient(90deg,var(--dsw-static-deepseek-500) 0%,var(--dsw-static-deepseek-500) 40%,var(--dsw-static-deepseek-200) 50%,var(--dsw-static-deepseek-500) 60%,var(--dsw-static-deepseek-500) 100%);',
     '  background-position:100% 0;background-size:250% 100%;',
@@ -62,22 +57,32 @@ function injectFoldCss(): void {
     '  animation:dshell-running-shimmer 1.8s linear infinite;',
     '}',
     '@keyframes dshell-running-shimmer{to{background-position:0 0}}',
-    // A slow breath on the live thinking label, so the reader can see a
-    // thinking row is still in flight without re-reading the label.
+    // The running fish mark in the fold header shares the same brand
+    // colour as the running text so the row reads as one piece.
+    '[data-dshell-running-fish]{color:var(--dsw-static-deepseek-500)}',
+    // A slow opacity breath on a live thinking label, so the reader can
+    // see the row is still in flight without re-reading the label.
     '[data-dshell-thinking-glyph]{animation:dshell-thinking-breathe 1.4s ease-in-out infinite}',
     '@keyframes dshell-thinking-breathe{0%,100%{opacity:.35}50%{opacity:1}}',
-    // The running fish mark shares the same brand colour as the running text
-    // so the row reads as one piece, not two; reduced-motion takes it back
-    // to a flat static brand colour.
-    '[data-dshell-running-fish]{color:var(--dsw-static-deepseek-500)}',
-    // Internal steps (thinking, tool, tool-group) use a smaller 12px fish
-    // mark, still in the brand colour, so the agent block reads as a single
-    // branded surface top to bottom.
-    '[data-dshell-step-fish]{color:var(--dsw-static-deepseek-500)}',
-    // Honour the OS-level reduced-motion preference: stop the shimmer and
-    // breath, fall back to the static brand colour.
+    // Internal rows adopt dsh's stock "running" affordance: a 300px sweep
+    // band that crosses the row on the page background, not on the text.
+    // The band is the page's own skeleton tone so the running signal reads
+    // as "the page is paying attention", not "this row is coloured".
+    // Column-specific overrides aren't needed because every internal row
+    // is the same height as the fold body.
+    '[data-dshell-running-row]{position:relative;overflow:hidden}',
+    '[data-dshell-running-row]::after{',
+    '  content:"";position:absolute;inset-block:0;left:0;width:300px;',
+    '  background:linear-gradient(90deg,transparent 0%,var(--dsw-alias-bg-skeleton) 55%,transparent 100%);',
+    '  animation:dshell-row-sweep 2.6s ease-out infinite;',
+    '  pointer-events:none;',
+    '}',
+    '@keyframes dshell-row-sweep{0%{left:-300px}90%,100%{left:100%}}',
+    // Honour the OS-level reduced-motion preference: stop every animation
+    // and fall back to the static brand colour on the header.
     '@media (prefers-reduced-motion:reduce){',
     '  [data-dshell-running-text]{background-position:0 0;background-size:100% 100%;animation:none}',
+    '  [data-dshell-running-row]::after{animation:none;display:none}',
     '  [data-dshell-thinking-glyph]{animation:none;opacity:1}',
     '}',
   ].join('\n')
@@ -209,16 +214,14 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; 
         ...FOLD_STYLE,
       },
     },
-      createElement(StepMark),
+      createElement(ToolMark),
       createElement('span', {
-        style: {
-          // Same family as the fold header's running text but muted for
-          // archived steps, so the row reads as "the same brand, lower volume"
-          // instead of a different palette.
-          color: 'var(--dsw-static-deepseek-500)',
-          opacity: 0.78,
-          flex: '0 0 auto',
-        },
+        // Internal rows stay on the same tertiary label tier dsh's stock
+        // command/thinking rows use. Brand colour is reserved for the fold
+        // header's running shimmer — internal rows are archival regardless
+        // of whether the parent block is still running; the parent's
+        // sweep container is what signals "live".
+        style: { color: 'var(--dsw-alias-label-tertiary)', flex: '0 0 auto' },
       }, step.label),
       createElement('span', {
         style: { color: theme.text, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -328,13 +331,13 @@ function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme
         ...FOLD_STYLE,
       },
     },
-      createElement(StepMark),
+      createElement(ToolMark),
       createElement('span', null, `${step.label} · `),
-      // The count is the only fresh fact in the row, so it's the only part
-      // that earns the brand colour; the rest stays muted so the rest of
-      // the transcript doesn't lose its quiet baseline.
       createElement('span', {
-        style: { color: 'var(--dsw-static-deepseek-500)', fontWeight: 500 },
+        // The count is the only fresh fact in the row; bold pulls it
+        // forward without a colour swap, so the rest of the transcript
+        // doesn't gain a second accent tier.
+        style: { fontWeight: 600, color: theme.muted },
       }, String(step.items.length)),
       createElement('span', null, ' 个命令'),
       createElement(Chevron, { open, theme }),
@@ -360,24 +363,15 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; 
       createElement('div', {
         style: { display: 'flex', alignItems: 'baseline', gap: '6px', color: theme.muted, fontSize: 12 },
       },
-        // Thinking rows get the same fish mark as tool rows, in the same
-        // brand colour, so the transcript reads as one surface. The breath
-        // attribute still rides on a separate target (`data-dshell-thinking-
-        // glyph`) so a future marker redesign doesn't have to re-derive
-        // which children animate.
-        createElement(StepMark),
+        // Thinking rows get dsh's official `IconThinkOutline14` mark — the
+        // same small brain glyph dsh's stock ReasoningRow uses. Live
+        // thinking rows (duration === undefined) carry a 1.4s opacity
+        // breath on the label so the reader can see one is still in
+        // flight without re-reading it. Reduced-motion drops the breath.
+        createElement(ThinkMark),
         createElement('span', {
           'data-dshell-thinking-glyph': step.duration === undefined ? '' : undefined,
-          style: {
-            color: 'var(--dsw-static-deepseek-500)',
-            opacity: 0.78,
-            // Live thinking rows still want the breathing marker; the data
-            // attribute also lives on the label here so a label redesign
-            // doesn't lose the running signal.
-            ...(step.duration === undefined
-              ? { animation: 'dshell-thinking-breathe 1.4s ease-in-out infinite' }
-              : {}),
-          },
+          style: { color: 'var(--dsw-alias-label-tertiary)' },
         }, SESSION_ROW_LABEL.reasoning),
         step.duration === undefined ? null : createElement('span', null, `· 持续了 ${formatDuration(step.duration)}`),
         createElement(Chevron, { open, theme }),
@@ -413,50 +407,104 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; 
 
 /**
 /**
- * The dsh brand fish, drawn at 16px in the running fold header.
+ * The dsh brand fish, drawn at 16px in the fold header. It signals "this
+ * block" rather than "any row of this block" — dsh's stock ChatView uses
+ * the same fish for the parent turn surface, and reserves the running
+ * affordance for the header alone. The body rows use a small per-action
+ * icon (see ThinkMark, ToolMark), not the fish.
  *
  * `tone: 'shimmer'` lets the surrounding text shimmer paint the fish via
- * `currentColor`; the parent text element is what carries the gradient, so the
- * fish picks up the same animated brand colour for free.
+ * `currentColor`; `tone: 'error'` is the failed-block variant, which is
+ * the same shape painted with the dsw error alias.
  */
-function FishMark(_props: { tone: 'shimmer' }): ReactElement {
+function FishMark(props: { tone: 'shimmer' | 'muted' | 'error' }): ReactElement {
   const h = (16 * FISH_VB_H) / FISH_VB_W
+  const style: Record<string, string | number> = { flex: '0 0 auto', alignSelf: 'center' }
+  if (props.tone === 'shimmer') {
+    // The brand colour comes from the `[data-dshell-running-fish]` rule so
+    // the same animation hook can re-paint the fish when the running state
+    // changes; a future palette swap is one rule change.
+    style['data-dshell-running-fish'] = ''
+  } else if (props.tone === 'error') {
+    style.color = 'var(--dsw-alias-state-error-primary)'
+  }
   return createElement('svg', {
     width: 16,
     height: h,
     viewBox: `0 0 ${FISH_VB_W} ${FISH_VB_H}`,
     fill: 'currentColor',
     'aria-hidden': 'true',
-    // The shared brand colour is set by the `[data-dshell-running-fish]`
-    // selector, so a future palette swap is one rule change. The static
-    // brand colour (var(--dsw-static-deepseek-500)) is the same family the
-    // shimmer text gradients through, so the fish and the label read as one.
-    'data-dshell-running-fish': '',
-    style: { flex: '0 0 auto', alignSelf: 'center' },
+    style,
   },
     createElement('path', { d: FISH_PATH }),
   )
 }
 
 /**
- * A 12px fish used as the leading mark on internal steps (thinking rows, tool
- * calls, grouped runs). Same dsh brand path as the fold header, smaller so
- * the visual weight doesn't compete with the running shimmer on the parent
- * row; every internal step is brand-coloured so the transcript reads as one
- * branded surface, not "agent header in colour, body in grey".
+ * Internal-row mark for a thinking step: the dsh official `IconThinkOutline14`
+ * glyph, inlined so this package does not have to take
+ * `@deepseek-ai/dsh-client-ui-primitives` as a link dep. The path is
+ * reproduced verbatim from
+ * `dsh/packages/client/ui-primitives/src/icons/index.tsx`; the viewBox is
+ * 14×14 and the mark fills the parent `currentColor` so it picks up the
+ * row's label tier without a per-row rule.
  */
-function StepMark(): ReactElement {
-  const h = (12 * FISH_VB_H) / FISH_VB_W
+function ThinkMark(): ReactElement {
   return createElement('svg', {
-    width: 12,
-    height: h,
-    viewBox: `0 0 ${FISH_VB_W} ${FISH_VB_H}`,
-    fill: 'currentColor',
-    'aria-hidden': 'true',
-    'data-dshell-step-fish': '',
-    style: { flex: '0 0 auto', alignSelf: 'center', opacity: 0.85 },
+    width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true',
+    style: { flex: '0 0 auto', alignSelf: 'center', color: 'var(--dsw-alias-label-tertiary)' },
   },
-    createElement('path', { d: FISH_PATH }),
+    createElement('path', {
+      d: 'M7.06431 5.93342C7.68763 5.93342 8.19307 6.43904 8.19322 7.06233C8.19322 7.68573 7.68772 8.19123 7.06431 8.19123C6.44099 8.19113 5.9354 7.68567 5.9354 7.06233C5.93555 6.43911 6.44108 5.93353 7.06431 5.93342Z',
+      fill: 'currentColor',
+    }),
+    createElement('path', {
+      fillRule: 'evenodd', clipRule: 'evenodd',
+      d: 'M8.6815 0.963693C10.1169 0.447019 11.6266 0.374829 12.5633 1.31135C13.5 2.24805 13.4277 3.75776 12.911 5.19319C12.7126 5.74431 12.4386 6.31796 12.0965 6.89729C12.4969 7.54638 12.8141 8.19018 13.036 8.80647C13.5527 10.2419 13.6251 11.7516 12.6883 12.6883C11.7516 13.625 10.242 13.5527 8.8065 13.036C8.19022 12.8141 7.54641 12.4969 6.89732 12.0965C6.31797 12.4386 5.74435 12.7125 5.19322 12.911C3.75777 13.4276 2.2481 13.5 1.31138 12.5633C0.374859 11.6266 0.447049 10.1168 0.963724 8.68147C1.17185 8.10338 1.46321 7.50063 1.82896 6.8924C1.52182 6.35711 1.27235 5.82825 1.08872 5.31819C0.572068 3.88278 0.499714 2.37306 1.43638 1.43635C2.37308 0.499655 3.8828 0.572044 5.31822 1.08869C5.82828 1.27232 6.35715 1.5218 6.89243 1.82893C7.50066 1.46318 8.10341 1.17181 8.6815 0.963693ZM11.3573 8.01154C10.9083 8.62253 10.3901 9.22873 9.80943 9.8094C9.22877 10.3901 8.62255 10.9083 8.01158 11.3572C8.4257 11.5841 8.8287 11.7688 9.21275 11.9071C10.5456 12.3868 11.4246 12.2547 11.8397 11.8397C12.2548 11.4246 12.3869 10.5456 11.9071 9.21272C11.7688 8.82866 11.5841 8.42568 11.3573 8.01154ZM2.56529 8.02912C2.37344 8.39322 2.21495 8.74796 2.09263 9.08772C1.61291 10.4204 1.74512 11.2995 2.16001 11.7147C2.57505 12.1297 3.45415 12.2618 4.78697 11.7821C5.11057 11.6656 5.44786 11.5164 5.7938 11.3367C5.249 10.9223 4.70922 10.4533 4.19029 9.9344C3.57578 9.31987 3.03169 8.67633 2.56529 8.02912ZM6.90708 3.2469C6.24065 3.70479 5.5646 4.26321 4.91392 4.91389C4.26325 5.56456 3.70482 6.24063 3.24693 6.90705C3.72674 7.63325 4.32777 8.37459 5.03892 9.08576C5.64943 9.69627 6.28183 10.2265 6.90806 10.6678C7.59368 10.2025 8.2908 9.63076 8.96079 8.96076C9.6308 8.29075 10.2025 7.59366 10.6678 6.90803C10.2265 6.2818 9.69631 5.6494 9.08579 5.03889C8.37462 4.32773 7.63328 3.72672 6.90708 3.2469ZM11.7147 2.15998C11.2996 1.74509 10.4204 1.61288 9.08775 2.0926C8.74835 2.21479 8.39382 2.37271 8.03013 2.56428C8.67728 3.03065 9.31995 3.5758 9.93443 4.19026C10.4534 4.7092 10.9223 5.24896 11.3368 5.79377C11.5164 5.44785 11.6656 5.11052 11.7821 4.78694C12.2618 3.45416 12.1297 2.57502 11.7147 2.15998ZM4.91197 2.2176C3.57922 1.73788 2.70004 1.86995 2.28501 2.28498C1.87001 2.70003 1.73791 3.5792 2.21763 4.91194C2.31709 5.18822 2.44112 5.47427 2.58677 5.7674C3.01931 5.1887 3.51474 4.6158 4.06529 4.06526C4.61584 3.5147 5.18872 3.01928 5.76743 2.58674C5.47431 2.4411 5.18824 2.31706 4.91197 2.2176Z',
+      fill: 'currentColor',
+    }),
+  )
+}
+
+/**
+ * Internal-row mark for a generic tool call: the dsh official
+ * `IconApiOutline14` glyph (the same `</api>`-style API plugin icon dsh's
+ * stock `GenericCommandCard` uses), inlined for the same reason as
+ * ThinkMark. The error-tone variant draws the same path with the dsw error
+ * alias and overlays a small red dot, mirroring dsh's "StateDot state=error"
+ * affordance.
+ */
+function ToolMark(props: { tone?: 'muted' | 'error' }): ReactElement {
+  return createElement('span', {
+    style: {
+      flex: '0 0 auto',
+      alignSelf: 'center',
+      position: 'relative',
+      display: 'inline-flex',
+      width: 14, height: 14,
+      color: props.tone === 'error' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-tertiary)',
+    },
+  },
+    createElement('svg', {
+      width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true',
+      style: { position: 'absolute', inset: 0 },
+    },
+      createElement('path', {
+        transform: 'translate(0.6689 1.073)',
+        d: 'M11.4818 5.57813C11.4818 4.45301 11.4807 3.66237 11.4075 3.05908C11.3359 2.46953 11.2024 2.13852 10.9939 1.89441C10.9247 1.81341 10.8493 1.73801 10.7683 1.66882C10.5242 1.46033 10.1932 1.32686 9.60364 1.25525C9.00034 1.18198 8.20974 1.18091 7.0846 1.18091L5.57813 1.18091C4.45301 1.18091 3.66238 1.18198 3.05908 1.25525C2.46953 1.32686 2.13852 1.46033 1.89441 1.66882C1.81341 1.73801 1.73801 1.81341 1.66882 1.89441C1.46033 2.13852 1.32686 2.46953 1.25525 3.05908C1.18198 3.66238 1.18091 4.45301 1.18091 5.57813L1.18091 6.2771C1.18091 7.40218 1.18197 8.19288 1.25525 8.79614C1.32687 9.38553 1.46036 9.71674 1.66882 9.96082C1.73797 10.0417 1.81347 10.1173 1.89441 10.1864C2.13851 10.3948 2.46965 10.5275 3.05908 10.5991C3.66238 10.6724 4.45298 10.6735 5.57813 10.6735L7.0846 10.6735C8.20977 10.6735 9.00033 10.6724 9.60364 10.5991C10.1931 10.5275 10.5242 10.3948 10.7683 10.1864C10.8493 10.1173 10.9247 10.0417 10.9939 9.96082C11.2024 9.71674 11.3358 9.38553 11.4075 8.79614C11.4808 8.19288 11.4818 7.40218 11.4818 6.2771L11.4818 5.57813ZM12.6627 6.2771C12.6627 7.37222 12.6637 8.247 12.5798 8.93799C12.4942 9.64284 12.3133 10.2359 11.8928 10.7282C11.7834 10.8562 11.6637 10.9751 11.5356 11.0845C11.0434 11.5049 10.4511 11.6867 9.74634 11.7723C9.05525 11.8563 8.17999 11.8552 7.0846 11.8552L5.57813 11.8552C4.48273 11.8552 3.60747 11.8563 2.91638 11.7723C2.21157 11.6867 1.61933 11.5049 1.12708 11.0845C0.99901 10.9751 0.879281 10.8562 0.769898 10.7282C0.349454 10.2359 0.168506 9.64284 0.0828864 8.93799C-0.00101964 8.247 4.88512e-07 7.37222 6.47206e-07 6.2771L6.47206e-07 5.57813C6.47206e-07 4.48273 -0.00106163 3.60747 0.0828864 2.91638C0.168502 2.21168 0.349594 1.61928 0.769898 1.12708C0.879302 0.998981 0.998981 0.879302 1.12708 0.769898C1.61928 0.349594 2.21168 0.168502 2.91638 0.0828864C3.60747 -0.00106163 4.48273 6.47206e-07 5.57813 6.47206e-07L7.0846 6.47206e-07C8.17999 6.47206e-07 9.05525 -0.00106163 9.74634 0.0828864C10.451 0.168505 11.0434 0.349587 11.5356 0.769898C11.6637 0.879302 11.7834 0.998981 11.8928 1.12708C12.3131 1.61928 12.4942 2.21169 12.5798 2.91638C12.6638 3.60747 12.6627 4.48273 12.6627 5.57813L12.6627 6.2771Z',
+        fill: 'currentColor',
+      }),
+      createElement('path', {
+        transform: 'translate(0.6689 1.073)',
+        d: 'M6.02607 5.50955L6.44306 5.9274L3.84284 8.52762L3.425 8.11063L3.00715 7.69278L4.77253 5.9274L3.00715 4.16202L3.84284 3.32633L6.02607 5.50955Z',
+        fill: 'currentColor',
+      }),
+      createElement('path', {
+        transform: 'translate(0.6689 1.073)',
+        d: 'M9.23789 7.35397L9.23789 8.53488L6.96238 8.53488L6.96238 7.35397L9.23789 7.35397Z',
+        fill: 'currentColor',
+      }),
+    ),
   )
 }
 
@@ -575,36 +623,46 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
       onClick: () => { setExpanded(value => !value) },
       style: {
         display: 'flex', alignItems: 'baseline', gap: '6px',
-        color: failed ? FAIL_COLOR : theme.muted, fontSize: 12,
-        margin: '6px -6px 4px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer',
+        // A failed block reads as a stopped session, not an alert. The whole
+        // row stays on the same muted label tier as a normal-done block; the
+        // failure is signalled by a thin left rail in the error alias, the
+        // error-toned fish, and the "已中断" word. This matches dsh's stock
+        // philosophy: colour is reserved for the part of the line the
+        // reader has to act on, not the whole row.
+        color: theme.muted, fontSize: 12,
+        margin: '6px -6px 4px', padding: '1px 6px 1px 8px', borderRadius: '6px', cursor: 'pointer',
+        borderLeft: failed ? '2px solid var(--dsw-alias-state-error-primary)' : '2px solid transparent',
       },
     },
       running
         ? createElement(FishMark, { tone: 'shimmer' })
-        : createElement('span', { style: { fontSize: 9, color: failed ? FAIL_COLOR : theme.muted } },
-            failed ? '◼' : '●'),
+        : createElement(FishMark, { tone: failed ? 'error' : 'muted' }),
       running
         ? createElement('span', { 'data-dshell-running-text': '' },
             `深度求索中 · ${formatDuration(endedAt - block.startedAt)}`)
         : createElement('span', null,
-            failed ? 'AI 回答已中断' : `已工作 ${formatDuration(endedAt - block.startedAt)}`),
+            failed ? `已中断 · ${formatDuration(endedAt - block.startedAt)}` : `已工作 ${formatDuration(endedAt - block.startedAt)}`),
       tokens === undefined ? null : createElement('span', null, `· ${tokens}`),
       createElement(Chevron, { open: expanded, theme }),
     ),
-    ...(expanded
-      ? steps.map(step => (step.kind === 'tool'
-          ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage })
-          : step.kind === 'group'
-            ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage })
-            : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage })))
-      : []),
-    expanded ? liveReasoning : null,
+    // Fold body: when the block is running, a single running-row container
+    // gives every internal step dsh's stock "sweep" running signal. When
+    // the block is done or failed, no container — the steps read as a quiet
+    // monochrome archive. The notice line that used to render below the
+    // answer (a red "AI 回答已中断 · 22:43") was a duplicate of the fold
+    // header; the header now carries the failure state on its own, so the
+    // duplicate is gone.
+    expanded ? createElement('div', running ? { 'data-dshell-running-row': '' } : undefined,
+      ...steps.map(step => (step.kind === 'tool'
+        ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage })
+        : step.kind === 'group'
+          ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage })
+          : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage }))),
+      liveReasoning,
+    ) : null,
     ...answerNodes,
     liveText === undefined
       ? null
       : createElement('div', { 'data-dshell-stream': '' }, ...renderMarkdown(liveText, theme, 'stream')),
-    block.notice === undefined || !failed ? null : createElement('div', {
-      style: { color: FAIL_COLOR, fontSize: 12, marginTop: '4px' },
-    }, block.notice.text),
   )
 }
