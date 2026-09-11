@@ -47,6 +47,7 @@
     "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
     "@deepseek-ai/dsh-sandbox-policy": "link:../../../dsh/packages/sandbox/sandbox-policy",
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
+    "@deepseek-ai/dsh-shell": "link:../../../dsh/packages/shell/shell",
     "@deepseek-ai/dsh-system-prompt": "link:../../../dsh/packages/core/system-prompt",
     "@deepseek-ai/dsh-tools": "link:../../../dsh/packages/core/tools"
   },

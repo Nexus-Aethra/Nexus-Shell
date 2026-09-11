@@ -50,6 +50,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-shell':
+        specifier: link:../../../dsh/packages/shell/shell
+        version: link:../../../dsh/packages/shell/shell
       '@deepseek-ai/dsh-system-prompt':
         specifier: link:../../../dsh/packages/core/system-prompt
         version: link:../../../dsh/packages/core/system-prompt

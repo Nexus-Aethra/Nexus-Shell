@@ -24,4 +24,7 @@ export const BUFFER_PROMPT_TEXT =
   + 'and/or write rights. A grant lives only while its ticket is unsettled, and it is the only way that '
   + 'session can reach this one tree, so open the narrowest areas that let the task be finished. Use '
   + 'action="grants" to see what you hold or have issued, and read / ls / write to exercise a grant you '
-  + 'hold; paths outside the granted areas are refused.'
+  + 'hold; paths outside the granted areas are refused. When a file must actually cross between the two '
+  + 'machines — binary, or simply kept byte-for-byte — use action="transfer" instead of read/write: it '
+  + 'moves one file between the granted area and your own machine, and with no dest it lands at the same '
+  + 'relative path on the other side.'

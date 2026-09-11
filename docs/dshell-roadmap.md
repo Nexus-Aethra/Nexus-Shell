@@ -897,11 +897,23 @@ Shipped:
   own sandbox policy, so a grant can never widen it.
 - Grants are reference-counted by unsettled tickets: count 0 revokes
   immediately, and the panel's 回收 button is the manual escape hatch.
+- **Transfer** moves one file, bytes intact, between the granted area's
+  execution world and the caller's own. `ctx.fs` has no byte write (both
+  its mutations take text), so the bytes ride base64 on the `ctx.shell`
+  seam's stdin and the destination world's own `base64 -d` decodes them.
+  That seam rather than a new filesystem method because it already routes
+  per initiator — a device session decodes on the device with no new
+  transport — and it already fences the run by the session's resolved
+  policy, so a transfer is bounded exactly where `writeText` is. With no
+  `dest` the file lands at the same relative path, i.e. the corresponding
+  location in the other world; binary files travel, which read/write
+  cannot carry. `side="from"` needs read, `side="to"` needs write, and
+  one call is capped at 8 MiB by default (32 MiB hard cap).
 
-Model experience: one `dshell_buffer` tool with four families of action
-(links, ticket lifecycle, the grant view, granted file access) plus one
-system-prompt section stating the protocol — delegate asynchronously, never
-wait, and always settle a request you received.
+Model experience: one `dshell_buffer` tool with five families of action
+(links, ticket lifecycle, the grant view, granted file access, transfer)
+plus one system-prompt section stating the protocol — delegate
+asynchronously, never wait, and always settle a request you received.
 
 Acceptance check (driven from the browser, two local sessions):
 
@@ -915,6 +927,10 @@ Acceptance check (driven from the browser, two local sessions):
 - A grant is visible to the grantee with the granter's description, areas and
   remaining count; `read` returns the granter's file text, `write` writes
   back, and a path outside the granted area is refused.
+- `transfer` pulls the granter's file to the grantee's machine and pushes it
+  back, byte-for-byte including a binary file, with no `dest` landing on the
+  same relative path; a source over `max_bytes` is refused, and `side="to"`
+  without a write right is refused.
 - Settling the ticket removes the grant from `grants` and from the panel.
 
 ## Phase 10 — Packaging

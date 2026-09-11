@@ -71,9 +71,13 @@ export class Feasibility {
    * Resolve the target agent, or explain why it cannot work.
    *
    * @param sessionId - the session the request is addressed to.
+   * @param probeCtx - a context that has `subprocess` injected, for the device
+   *   probe: the router spawns `ssh` through that seam, and reaching for a
+   *   service its context did not inject throws in cordis. Omitted when the
+   *   composition provides none, which only matters for a device-bound target.
    * @returns the live agent plus a one-word status, or a refusal reason.
    */
-  async resolveTarget(sessionId: string): Promise<FeasibilityResult> {
+  async resolveTarget(sessionId: string, probeCtx?: Context): Promise<FeasibilityResult> {
     let agent: Agent
     try {
       const resolved = await this.ctx.sessionController.resolveAgent(SessionId(sessionId))
@@ -85,7 +89,7 @@ export class Feasibility {
       const detail = error instanceof Error ? error.message : String(error)
       return { ok: false, reason: `目标会话解析失败：${detail}` }
     }
-    const deviceFailure = await this.checkDevice(sessionId)
+    const deviceFailure = await this.checkDevice(sessionId, probeCtx)
     if (deviceFailure !== undefined) return { ok: false, reason: deviceFailure }
     return { ok: true, agent, status: agent.status }
   }
@@ -94,10 +98,11 @@ export class Feasibility {
    * Probe the device a session is bound to, when it is bound to one.
    *
    * @param sessionId - the session whose device should answer.
+   * @param probeCtx - the injection-carrying context the router spawns from.
    * @returns a refusal reason, or undefined when there is nothing to check or
    *   the device answered.
    */
-  private async checkDevice(sessionId: string): Promise<string | undefined> {
+  private async checkDevice(sessionId: string, probeCtx?: Context): Promise<string | undefined> {
     const device = this.device
     if (device === undefined) return undefined
     let target: { device: { id: string } } | undefined
@@ -108,13 +113,16 @@ export class Feasibility {
       return undefined
     }
     if (target === undefined) return undefined
+    if (probeCtx === undefined) {
+      return '目标会话运行在设备上，但本组合没有 subprocess 服务，无法探测设备可达性'
+    }
     const deviceId = target.device.id
     const cached = this.probes.get(deviceId)
     if (cached !== undefined && Date.now() - cached.at < PROBE_TTL_MS) {
       return cached.ok ? undefined : cached.reason
     }
     try {
-      await device.test(deviceId, this.ctx)
+      await device.test(deviceId, probeCtx)
       this.probes.set(deviceId, { at: Date.now(), ok: true, reason: undefined })
       return undefined
     } catch (error) {

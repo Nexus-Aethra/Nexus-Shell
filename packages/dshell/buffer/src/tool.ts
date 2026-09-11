@@ -29,6 +29,7 @@ const ACTION_KINDS: Record<string, GenericCallView['kind']> = {
   grants: 'read',
   read: 'read',
   ls: 'read',
+  transfer: 'move',
 }
 
 const DESCRIPTION =
@@ -48,6 +49,12 @@ const DESCRIPTION =
   + 'reference count, and grants you issued, so you can see what is still open.\n'
   + '- read / ls / write: file access inside a granted area, addressed by grant_id plus a path '
   + 'relative to the area root. Paths outside the granted areas are refused.\n'
+  + '- transfer: copy one FILE, bytes intact, between the granted area and this session\'s own '
+  + 'machine. side="from" (the default) pulls the granted area\'s path to this session\'s dest; '
+  + 'side="to" pushes this session\'s dest into the granted area\'s path. dest defaults to the same '
+  + 'relative path, which is the corresponding location in the other world. It needs read (from) or '
+  + 'write (to) on the grant, is capped by max_bytes, and works for binary files that read/write '
+  + 'cannot carry.\n'
   + 'A grant stays alive only while a ticket references it; settle the ticket and the access ends.'
 
 /**
@@ -186,7 +193,6 @@ function present(args: { action?: string; to?: string; ticket_id?: string; grant
     : `管道 ${args.action ?? '操作'}`
   return { card: 'generic', title, ...kind === undefined ? {} : { kind }, ...target === undefined ? {} : { rawInput: target } }
 }
-
 /** Register the one buffer tool. */
 export function registerBufferTool(ctx: Context, service: BufferService): () => void {
   return ctx.tools.register(defineTool({
@@ -196,7 +202,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       action: {
         type: 'string',
         required: true,
-        enum: ['links', 'delegate', 'tickets', 'claim', 'progress', 'finish', 'fail', 'cancel', 'grants', 'read', 'ls', 'write'],
+        enum: ['links', 'delegate', 'tickets', 'claim', 'progress', 'finish', 'fail', 'cancel', 'grants', 'read', 'ls', 'write', 'transfer'],
         description: 'Which buffer operation to perform.',
       },
       to: { type: 'string', description: 'delegate: target session id (the peer of a pipe).' },
@@ -237,9 +243,12 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       text: { type: 'string', description: 'progress: what to report.' },
       result: { type: 'string', description: 'finish: the outcome handed back to the requester.' },
       error: { type: 'string', description: 'fail: why the request could not be completed.' },
-      grant_id: { type: 'string', description: 'read / ls / write: the grant being exercised.' },
-      path: { type: 'string', description: 'read / ls / write: path relative to the granted area root.' },
+      grant_id: { type: 'string', description: 'read / ls / write / transfer: the grant being exercised.' },
+      path: { type: 'string', description: 'read / ls / write: path relative to the granted area root. In transfer this is the grant-side path, and a directory path is listed by ls.' },
       content: { type: 'string', description: 'write: the full text to write.' },
+      dest: { type: 'string', description: 'transfer: the path in THIS session\'s own machine; omitted means the same relative path as path.' },
+      side: { type: 'string', enum: ['from', 'to'], description: 'transfer: "from" pulls from the granted area into this session (needs read); "to" pushes this session\'s file into the granted area (needs write). Default "from".' },
+      max_bytes: { type: 'number', description: 'transfer: size ceiling in bytes. Default 8 MiB, hard cap 32 MiB.' },
     },
     output: {
       schema: {
@@ -277,6 +286,9 @@ async function run(
     grant_id?: string
     path?: string
     content?: string
+    dest?: string
+    side?: string
+    max_bytes?: number
   },
   viewer: string,
   service: BufferService,
@@ -373,6 +385,15 @@ async function run(
       if (args.content === undefined) throw new Error('缺少参数 content')
       await service.writeGranted(viewer, grantId, path, args.content, signal)
       return `已写入 ${path}（${String(args.content.length)} 字符）。`
+    }
+
+    case 'transfer': {
+      const grantId = required(args.grant_id, 'grant_id')
+      const path = required(args.path, 'path')
+      const side = args.side === 'to' ? 'to' : 'from'
+      const outcome = await service.transfer(viewer, grantId, path, args.dest, side, args.max_bytes, signal)
+      return `已传输（${side === 'from' ? '拉取' : '推送'}）：`
+        + `${outcome.source} → ${outcome.destination}，${String(outcome.bytes)} 字节。`
     }
 
     default:

@@ -153,8 +153,8 @@ when it contributes to model-visible state.
     header button toggles.
 - dsh services depended on: `ctx.tools`, `ctx.systemPrompt`, `ctx.fs`,
   `ctx.agents`, `ctx.sessionController`, `ctx.sandboxPolicy` (optional),
-  `ctx.connection.fetch`; the browser face uses `ctx.slots` and
-  `ctx.sessions`.
+  `ctx.shell` (cross-world byte transfer), `ctx.connection.fetch`; the
+  browser face uses `ctx.slots` and `ctx.sessions`.
 - Reads `dshellSshRouting` structurally when present, to probe a
   device-bound target before admitting a delegation; a composition
   without dshell-ssh simply has no device to check.

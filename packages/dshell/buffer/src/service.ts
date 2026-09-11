@@ -28,6 +28,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
+// Type-only: pulls the shell service merge (`ctx.shell`), the byte-transport
+// seam a cross-world transfer writes through.
+import type {} from '@deepseek-ai/dsh-shell'
 // Type-only: pulls the sandbox-policy service merge, so a granted write can be
 // authorized against the GRANTER's own mode instead of the fail-safe default.
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
@@ -49,7 +52,7 @@ import {
 } from './protocol.js'
 import { readDocument, writeDocument } from './store.js'
 
-/** Default time a ticket may stay unsettled before the watchdog settles it. */
+/** How long a ticket may stay unsettled before the watchdog settles it. */
 export const DEFAULT_DEADLINE_MS = 10 * 60_000
 /** Shortest deadline a caller may ask for; below this the watchdog races the worker. */
 export const MIN_DEADLINE_MS = 30_000
@@ -57,6 +60,23 @@ export const MIN_DEADLINE_MS = 30_000
 export const MAX_DEADLINE_MS = 2 * 60 * 60_000
 /** How often the watchdog looks for expired tickets. */
 const WATCHDOG_INTERVAL_MS = 15_000
+/** Bytes one transfer moves when the caller names no ceiling. */
+export const DEFAULT_TRANSFER_BYTES = 8 * 1024 * 1024
+/** Hard ceiling on one transfer: the payload rides stdin as base64. */
+export const MAX_TRANSFER_BYTES = 32 * 1024 * 1024
+
+/** Which end of a transfer is the source. */
+export type TransferSide = 'from' | 'to'
+
+/** What one cross-world copy moved, and between which paths. */
+export interface TransferOutcome {
+  readonly bytes: number
+  /** The source's path, as its own world spells it. */
+  readonly source: string
+  /** The destination's path, as its own world spells it. */
+  readonly destination: string
+  readonly side: TransferSide
+}
 
 /** One inline grant a delegation asks to create. */
 export interface GrantRequest {
@@ -97,6 +117,16 @@ export class BufferService {
   private tickets: BufferTicket[] = []
   private grants: BufferGrant[] = []
   private readonly feasibility: Feasibility
+  /**
+   * A context carrying `subprocess`, for the device probe only.
+   *
+   * The router the probe calls spawns `ssh` through that seam, and cordis
+   * refuses a property the calling context did not inject — so the buffer
+   * resolves a dedicated scope instead of making `subprocess` a hard
+   * dependency of the whole plugin (a composition without dshell-ssh never
+   * probes anything).
+   */
+  private probeCtx: Context | undefined
   /** Serializes persistence so two mutations cannot interleave a write. */
   private saveChain: Promise<void> = Promise.resolve()
   private watchdog: ReturnType<typeof setInterval> | undefined
@@ -111,6 +141,7 @@ export class BufferService {
     // probe, and this package must not depend on that bundle.
     const routing = this.ctx.get('dshellSshRouting') as unknown as DeviceRoutingSeat | undefined
     this.feasibility = new Feasibility(this.ctx, routing)
+    this.ctx.inject(['subprocess'], (probeCtx) => { this.probeCtx = probeCtx })
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -233,7 +264,7 @@ export class BufferService {
     const link = this.resolveLink(callerId, input)
     const targetId = this.peerOf(link, callerId)
 
-    const feasible = await this.feasibility.resolveTarget(targetId)
+    const feasible = await this.feasibility.resolveTarget(targetId, this.probeCtx)
     if (!feasible.ok) throw new Error(feasible.reason)
 
     const deadlineMs = clampDeadline(input.deadlineMs)
@@ -399,6 +430,124 @@ export class BufferService {
   }
 
   /**
+   * Copy one file between the granted area's execution world and this
+   * session's own.
+   *
+   * This is the one operation that crosses worlds rather than reaching into
+   * one: the source is read through `ctx.fs` as its owner, and the destination
+   * is written through the shell seam as ITS owner, so a grantee on a device
+   * and a granter on this machine (or the reverse) never learn more about each
+   * other than the bytes moved. `path` is always the grant-side path and
+   * `dest` the caller-side one; `side` says which end is the source.
+   *
+   * @param callerId - the session exercising the grant.
+   * @param grantId - the grant, which supplies the path's scope and the right.
+   * @param path - path relative to a granted area root.
+   * @param dest - path in the caller's own world; omitted means the same
+   *   relative path, which is what "the corresponding location" means here.
+   * @param side - `from` reads the granted area (needs read), `to` writes it
+   *   (needs write).
+   * @param maxBytes - size ceiling override, clamped by the service.
+   * @returns what moved where, in bytes.
+   */
+  async transfer(
+    callerId: string,
+    grantId: string,
+    path: string,
+    dest: string | undefined,
+    side: TransferSide,
+    maxBytes: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<TransferOutcome> {
+    const access = await this.authorize(callerId, grantId, path, side === 'from' ? 'read' : 'write', signal)
+    const resolved = await this.ctx.sessionController.resolveAgent(SessionId(callerId))
+    if ('error' in resolved) throw new Error(`本会话不可用：${resolved.error.code}`)
+    const caller = resolved.agent
+    const callerPath = dest === undefined || dest.trim().length === 0 ? path : dest.trim()
+    // Resolved as the CALLER: the path lands in this session's own world, which
+    // is a device tree over its own route or this machine.
+    const callerTarget = await this.ctx.agents.withInitiator(
+      caller,
+      () => this.ctx.fs.resolve(callerPath, this.resolveOptions(caller, signal)),
+    )
+    const source = side === 'from' ? access.target : callerTarget
+    const destination = side === 'from' ? callerTarget : access.target
+    const sourceWorld = side === 'from' ? access.granter : caller
+    const destinationWorld = side === 'from' ? caller : access.granter
+
+    const cap = clampTransfer(maxBytes)
+    const info = await this.ctx.agents.withInitiator(sourceWorld, () => this.ctx.fs.stat(source, signal))
+    if (info === undefined) throw new Error(`源文件不存在：${source.displayPath}`)
+    if (info.type !== 'file') throw new Error(`源不是普通文件：${source.displayPath}（${info.type}）`)
+    if (info.size !== undefined && info.size > cap) {
+      throw new Error(
+        `源文件 ${String(info.size)} 字节，超过单次传输上限 ${String(cap)} 字节；`
+        + '请提高 max_bytes（上限 ' + String(MAX_TRANSFER_BYTES) + '）或换更小的文件',
+      )
+    }
+    const bytes = await this.ctx.agents.withInitiator(
+      sourceWorld,
+      () => this.ctx.fs.readBytes(source, signal, cap),
+    )
+    await this.writeBytesAs(destinationWorld, destination, bytes, signal)
+    return {
+      bytes: bytes.byteLength,
+      source: source.displayPath,
+      destination: destination.displayPath,
+      side,
+    }
+  }
+
+  /**
+   * Write bytes into ONE session's execution world.
+   *
+   * `ctx.fs` has no byte write — both of its mutations take text, and its
+   * remote half encodes stdin as UTF-8 — so the bytes travel base64 on the
+   * shell seam's stdin and are decoded by the destination world's own
+   * `base64 -d`. That seam is the right one rather than a new filesystem
+   * method: it already routes per initiator (a device session decodes on the
+   * device, with no new transport), and the executor already fences the run by
+   * the session's resolved policy, so this write is bounded exactly where
+   * `writeText` would be — a grant cannot reach outside what that session's
+   * own mode allows.
+   */
+  private async writeBytesAs(world: Agent, target: FsTarget, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+    const shell = this.ctx.get('shell')
+    if (shell === undefined) {
+      throw new Error('本次组合没有 shell 服务，无法把字节写入目标执行环境')
+    }
+    // `processPath` is the path this filesystem's own world can open, which is
+    // the device path for a remote target and the host path locally — exactly
+    // the string the destination shell needs.
+    const path = this.ctx.fs.processPath(target)
+    const cwd = world.session.header.cwd
+    const policy = this.ctx.get('sandboxPolicy')?.resolve({ session: world.session })
+    const spec = this.ctx.agents.withInitiator(world, () => shell.resolve({
+      command: `mkdir -p -- ${quote(posixDirname(path))} && base64 -d > ${quote(path)}`,
+      ...cwd === undefined ? {} : { workdir: cwd },
+      ...policy === undefined ? {} : { sandboxPolicy: policy },
+      ...signal === undefined ? {} : { signal },
+    }))
+    const result = await shell.run({ ...spec, stdin: Buffer.from(bytes).toString('base64') })
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.text.trim()
+      throw new Error(
+        `写入 ${target.displayPath} 失败：`
+        + (detail.length > 0 ? detail : `退出码 ${String(result.exitCode ?? result.signal ?? 'unknown')}`),
+      )
+    }
+  }
+
+  /** The fs resolution options for one session: its cwd and the call's signal. */
+  private resolveOptions(agent: Agent, signal?: AbortSignal): { cwd?: string; signal?: AbortSignal } {
+    const cwd = agent.session.header.cwd
+    return {
+      ...cwd === undefined ? {} : { cwd },
+      ...signal === undefined ? {} : { signal },
+    }
+  }
+
+  /**
    * Resolve a request against a grant's areas.
    *
    * The area root and the requested path are both resolved **as the granter**,
@@ -425,13 +574,9 @@ export class BufferService {
     const resolved = await this.ctx.sessionController.resolveAgent(SessionId(grant.from))
     if ('error' in resolved) throw new Error(`授权方会话不可用：${resolved.error.code}`)
     const granter = resolved.agent
-    const cwd = granter.session.header.cwd
     // Built conditionally: `exactOptionalPropertyTypes` treats an explicit
     // `undefined` as a value, and the resolution options are optional keys.
-    const options = {
-      ...cwd === undefined ? {} : { cwd },
-      ...signal === undefined ? {} : { signal },
-    }
+    const options = this.resolveOptions(granter, signal)
     const rejections: string[] = []
     for (const area of areas) {
       try {
@@ -633,6 +778,31 @@ function short(sessionId: string): string {
 function clampDeadline(requested: number | undefined): number {
   if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_DEADLINE_MS
   return Math.min(MAX_DEADLINE_MS, Math.max(MIN_DEADLINE_MS, Math.floor(requested)))
+}
+
+/** Clamp a caller-supplied transfer ceiling. */
+function clampTransfer(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_TRANSFER_BYTES
+  return Math.min(MAX_TRANSFER_BYTES, Math.max(1, Math.floor(requested)))
+}
+
+/**
+ * The directory part of a POSIX path, without `node:path`.
+ *
+ * Both execution worlds in this composition are POSIX (this machine and the
+ * device), and a device path must not be run through a local path module that
+ * would rewrite its separators.
+ */
+function posixDirname(path: string): string {
+  const trimmed = path.replace(/\/+$/u, '')
+  const cut = trimmed.lastIndexOf('/')
+  if (cut < 0) return '.'
+  return cut === 0 ? '/' : trimmed.slice(0, cut)
+}
+
+/** Single-quote one shell argument so the destination shell reads it literally. */
+function quote(value: string): string {
+  return `'${value.replace(/'/gu, "'\\''")}'`
 }
 
 /**
