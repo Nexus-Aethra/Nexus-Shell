@@ -24,6 +24,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../theme-settings.js'
 import { BlockView, type SshSeat } from './block-view.js'
+import { injectSidebarCompactCss } from './sidebar-compact.js'
 import { DshellLeftControls } from './controls.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
@@ -158,10 +159,10 @@ export function apply(ctx: Context): void {
   }
   // `ctx.layout` is the cross-plugin panel-action face dsh's layout plugin
   // publishes. Mode does not take ui-layout as a dependency, so the merge
-  // is structural: a `get('layout')` returns whatever the loader bound, and
-  // a composition without a layout simply leaves the bookmark rail's
-  // `onAfterJump` undefined — the jump still works, the sidebar just does
-  // not auto-close.
+  // is structural: a `get('layout')` returns whatever the loader bound.
+  // `toggleSidebar` flips the sidebar between its full width and its
+  // compact rail — used by the bookmark rail so a click lands in a
+  // narrower reading surface.
   const layout = ctx.get('layout') as unknown as
     | { toggleSidebar: () => void }
     | undefined
@@ -226,6 +227,14 @@ export function apply(ctx: Context): void {
   }
   ctx.effect(() => themeScope.subscribe(syncTheme), 'dshell-mode: theme settings mirror')
   syncTheme()
+
+  // Inject once per page load: the rule that suppresses the workspace
+  // sidebar's section labels ("会话 (6)", "已归档") in the compact rail
+  // state. The rail still draws its icons; the rotated text that would
+  // otherwise crowd them is gone. Safe to run before the AppFrame mounts
+  // — the rule is scoped by the sidebar root's collapsed class, which is
+  // applied on toggle.
+  injectSidebarCompactCss()
 
   // dshell does not shadow the stock composer bar — the stock InputBar owns
   // the composer surface, so the user gets stock features out of the box:
@@ -294,10 +303,10 @@ export function apply(ctx: Context): void {
         // Read at render time, so a plugin that loads after this one is still
         // picked up.
         ssh: sshSeat,
-        // After a successful bookmark jump, dismiss the sidebar so the
-        // destination lands in a fully open reading surface. The user
-        // reopens the sidebar from the toolbar; the next click closes it
-        // again, so the side effect is naturally idempotent across clicks.
+        // After a successful bookmark jump, toggle the sidebar to its
+        // compact rail so the destination lands in a wider reading surface.
+        // The next click toggles again; the user reopens the sidebar from
+        // the toolbar's existing "打开侧边栏" affordance.
         ...layout === undefined ? {} : { onAfterJump: () => layout.toggleSidebar() },
         // Attachments arrive as opaque refs; the conversation service owns the
         // only sanctioned way to turn one into a URL.
