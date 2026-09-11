@@ -9,6 +9,8 @@
     { "path": "./packages/dshell/conversation" },
     { "path": "./packages/dshell/terminal-bridge" },
     { "path": "./packages/dshell/mode" },
+    { "path": "./packages/dshell/ssh" },
+    { "path": "./packages/dshell/buffer" },
     { "path": "./packages/dshell/workspace" }
   ]
 }

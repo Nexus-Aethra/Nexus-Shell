@@ -18,6 +18,61 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/dshell/buffer:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../dsh/vendor/cordis
+        version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-ui-layout':
+        specifier: link:../../../dsh/packages/client/ui-layout
+        version: link:../../../dsh/packages/client/ui-layout
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-fs':
+        specifier: link:../../../dsh/packages/fs/fs
+        version: link:../../../dsh/packages/fs/fs
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../dsh/packages/llm/llm
+        version: link:../../../dsh/packages/llm/llm
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../../../dsh/packages/sandbox/sandbox-policy
+        version: link:../../../dsh/packages/sandbox/sandbox-policy
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../dsh/packages/core/system-prompt
+        version: link:../../../dsh/packages/core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../dsh/packages/core/tools
+        version: link:../../../dsh/packages/core/tools
+    devDependencies:
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      tsdown:
+        specifier: ^0.22.14
+        version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/dshell/bundle:
     dependencies:
       '@deepseek-ai/cordis':
@@ -29,6 +84,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../dsh/packages/client/ui-conversation
         version: link:../../../dsh/packages/client/ui-conversation
+      '@deepseek-ai/dsh-dshell-buffer':
+        specifier: link:../buffer
+        version: link:../buffer
       '@deepseek-ai/dsh-dshell-commands':
         specifier: link:../commands
         version: link:../commands
@@ -368,6 +426,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-workspace':
         specifier: link:../../../dsh/packages/client/ui-workspace
         version: link:../../../dsh/packages/client/ui-workspace
+      '@deepseek-ai/dsh-dshell-buffer':
+        specifier: link:../buffer
+        version: link:../buffer
       '@deepseek-ai/dsh-dshell-ssh':
         specifier: link:../ssh
         version: link:../ssh

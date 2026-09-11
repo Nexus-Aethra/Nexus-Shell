@@ -861,6 +861,62 @@ Acceptance check (driven from the browser):
 - Restarting the device and clicking 重试连接 brings the terminal back at the
   same place in the history; a local session shows neither treatment.
 
+## Phase 9.8 — Cross-session pipe
+
+Goal: one session's agent can hand a task to another session's agent, wait
+without blocking, and get an outcome back — with the files it opens to the
+other side scoped and automatically reclaimed.
+
+Shipped:
+
+- `dshell-buffer` (new host+client package): a durable link between two
+  sessions that **only the user** can create (there is no agent-facing
+  linking action at all), a deferred-request queue with claim / progress /
+  finish / fail, and scoped revocable folder grants.
+- The pipe panel enters the frame-wide `shell.overlay` seat, opened from the
+  sidebar header — the duplicated `＋ 新会话` button there becomes `管道`
+  (the stock shell already offers session creation). A composition without
+  `dshell-buffer` keeps the original button.
+- The wait semantics follow the one constraint dsh imposes: **a turn cannot
+  be suspended and resumed**. So `delegate` returns a ticket id immediately
+  and the requester's turn ends naturally; when the ticket settles, the
+  buffer delivers a new message that reopens the turn — the same
+  completion-delivery policy dsh's own job registry uses (idle → `followup`,
+  busy → `inject`).
+- Reachability is checked, never guessed: `ctx.sessionController.resolveAgent`
+  is dsh's own resume path, and a device-bound target is probed over its SSH
+  connection before admission, so an unreachable target is refused with the
+  real reason instead of timing out later.
+- Nothing can wait forever: a ticket past its deadline is settled `timeout`
+  by the host watchdog, a disposed worker session settles its live tickets
+  `failed`, and every settlement path wakes the requester.
+- Grants are directories in the **granter's** namespace, resolved as the
+  granter (so a device session's tree is read over its own route), with
+  containment checked on the canonical target keys — `..` and symlinks in a
+  request cannot escape the granted area. A write is fenced by the granter's
+  own sandbox policy, so a grant can never widen it.
+- Grants are reference-counted by unsettled tickets: count 0 revokes
+  immediately, and the panel's 回收 button is the manual escape hatch.
+
+Model experience: one `dshell_buffer` tool with four families of action
+(links, ticket lifecycle, the grant view, granted file access) plus one
+system-prompt section stating the protocol — delegate asynchronously, never
+wait, and always settle a request you received.
+
+Acceptance check (driven from the browser, two local sessions):
+
+- The `管道` button opens the panel; two sessions are connected there and the
+  connection survives a reload.
+- A `delegate` in one session wakes the other with a framed request; `tickets
+  direction="in"` shows it, `claim` / `progress` / `finish` advance it, and
+  the requester receives the result as a new message.
+- A request nobody answers, with a short `deadline_ms`, is settled `timeout`
+  and the requester is still woken.
+- A grant is visible to the grantee with the granter's description, areas and
+  remaining count; `read` returns the granter's file text, `write` writes
+  back, and a path outside the granted area is refused.
+- Settling the ticket removes the grant from `grants` and from the panel.
+
 ## Phase 10 — Packaging
 
 Goal: `dshell-*` packages install with `pnpm add` and dsh loads them

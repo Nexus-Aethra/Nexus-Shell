@@ -1,8 +1,8 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-workspace",
+  "name": "@deepseek-ai/dsh-dshell-buffer",
   "version": "0.1.0",
   "private": true,
-  "description": "dshell workspace removal (design 4.7): same-key stub providers for workspaceRegistry / workspaces / uiWorkspace so the stock web-app workspace rows can be disabled, plus a flat session list for the sidebar.",
+  "description": "dshell cross-session buffer: user-established links between sessions, deferred requests one agent hands to another, a durable ticket queue with progress reports, scoped revocable folder grants, and a watchdog that guarantees the requester is always woken with an outcome.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -10,6 +10,10 @@
     ".": {
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./protocol": {
+      "types": "./lib/types/protocol.d.ts",
+      "default": "./lib/protocol.js"
     },
     "./client": {
       "types": "./lib/types/client/index.d.ts",
@@ -29,23 +33,22 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/protocol.js",
     "lib/types/**/*.d.ts"
   ],
   "dependencies": {
     "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
     "@deepseek-ai/dsh-agent": "link:../../../dsh/packages/core/agent",
-    "@deepseek-ai/dsh-agent-presets": "link:../../../dsh/packages/preset/agent-presets",
-    "@deepseek-ai/dsh-api-remotes": "link:../../../dsh/packages/api/remotes",
     "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
-    "@deepseek-ai/dsh-api-workspace-controller": "link:../../../dsh/packages/api/workspace-controller",
     "@deepseek-ai/dsh-client-connection": "link:../../../dsh/packages/client/connection",
-    "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
+    "@deepseek-ai/dsh-client-ui-layout": "link:../../../dsh/packages/client/ui-layout",
     "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
-    "@deepseek-ai/dsh-client-ui-sidebar": "link:../../../dsh/packages/client/ui-sidebar",
-    "@deepseek-ai/dsh-client-ui-workspace": "link:../../../dsh/packages/client/ui-workspace",
-    "@deepseek-ai/dsh-dshell-buffer": "link:../buffer",
-    "@deepseek-ai/dsh-dshell-ssh": "link:../ssh",
-    "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session"
+    "@deepseek-ai/dsh-fs": "link:../../../dsh/packages/fs/fs",
+    "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
+    "@deepseek-ai/dsh-sandbox-policy": "link:../../../dsh/packages/sandbox/sandbox-policy",
+    "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../dsh/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../dsh/packages/core/tools"
   },
   "devDependencies": {
     "@types/node": "^24",

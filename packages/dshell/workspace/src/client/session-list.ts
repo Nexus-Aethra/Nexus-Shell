@@ -71,6 +71,11 @@ export interface FlatSessionListProps {
   panel: SessionPanelClient
   /** Present only when the SSH plugin is part of the composition. */
   device?: DeviceSeat | undefined
+  /**
+   * Cross-session pipe entry, present only when dshell-buffer is composed.
+   * Absent, the header keeps the new-session button it replaces.
+   */
+  pipe?: { toggle: () => void } | undefined
   /** Re-read the host session list (after a purge removed a log). */
   refresh: () => Promise<void>
   createSession(
@@ -240,11 +245,20 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
       'div',
       { key: 'header', style: headerStyle },
       createElement('span', null, `会话 (${active.length})`),
-      createElement(
-        'button',
-        { style: newButtonStyle, onClick: () => { newSessionDialog.set(true) } },
-        '＋ 新会话',
-      ),
+      // The stock shell already offers new-session creation, so this header
+      // slot carries the cross-session pipe entry instead. A composition
+      // without dshell-buffer keeps the original new-session button.
+      props.pipe === undefined
+        ? createElement(
+          'button',
+          { style: newButtonStyle, onClick: () => { newSessionDialog.set(true) } },
+          '＋ 新会话',
+        )
+        : createElement(
+          'button',
+          { style: newButtonStyle, title: '跨会话管道：建立连接、查看委派与授权', onClick: props.pipe.toggle },
+          '管道',
+        ),
     ),
     createElement('div', { key: 'rows', style: scrollStyle },
       active.length === 0

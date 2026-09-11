@@ -25,9 +25,9 @@ when it contributes to model-visible state.
 
 - Each package name uses one dash-separated role token after `dshell`:
   `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`,
-  `workspace`.
+  `workspace`, `ssh`, `buffer`.
 
-## The six packages
+## The packages
 
 ### `dshell-bundle`
 
@@ -121,6 +121,45 @@ when it contributes to model-visible state.
   `/new` creates sessions via `sessions.create({ cwd })` with no
   workspace attached.
 
+### `dshell-ssh`
+
+- Role: device sessions. Two-faced Cordis package:
+  - **Host face** owns the durable device registry (name, host, port,
+    user, remote directory, login method; secrets in separate 0600 files
+    under `$DSH_HOME/dshell/ssh/keys/`), the durable session→device
+    assignment, and three seams: a wrapped `ctx.shell.resolve`, a
+    subprocess route for `glob`/`grep`, and a replacement `ctx.fs`
+    provider that resolves a bound session's tree over SSH. It also
+    publishes `dshellSshRouting` for packages that need to know which
+    device a session runs on.
+  - **Browser face** provides the device card in the Plugins settings
+    section and the `dshellSsh` service the session picker and the
+    new-session dialog read.
+- dsh services depended on: `ctx.settings`, `ctx.shell`,
+  `ctx.subprocess`, `ctx.fs`, `ctx.agents`, `ctx.connection.fetch`.
+- Introduced in: Phase 9.6; connection failure handling in Phase 9.7.
+
+### `dshell-buffer`
+
+- Role: the cross-session pipe. Two-faced Cordis package:
+  - **Host face** owns links (created only by the user, never by an
+    agent), deferred requests with a claim/progress/finish/fail
+    lifecycle, scoped revocable folder grants, and the watchdog that
+    settles anything nobody settled. It contributes one model-facing
+    tool, `dshell_buffer`, as the single door to all of it, plus one
+    system-prompt section stating the protocol.
+  - **Browser face** provides the pipe panel in the frame-wide
+    `shell.overlay` seat and the `dshellBuffer` service the sidebar
+    header button toggles.
+- dsh services depended on: `ctx.tools`, `ctx.systemPrompt`, `ctx.fs`,
+  `ctx.agents`, `ctx.sessionController`, `ctx.sandboxPolicy` (optional),
+  `ctx.connection.fetch`; the browser face uses `ctx.slots` and
+  `ctx.sessions`.
+- Reads `dshellSshRouting` structurally when present, to probe a
+  device-bound target before admitting a delegation; a composition
+  without dshell-ssh simply has no device to check.
+- Introduced in: Phase 9.8.
+
 ## What is not a dshell package
 
 The following dsh components are reused unchanged. They are listed here
@@ -151,11 +190,16 @@ dshell-bundle
   │     └── dshell-terminal-bridge
   ├── dshell-commands
   │     └── dshell-terminal-bridge
-  └── dshell-workspace        (replaces the disabled stock rows)
+  ├── dshell-workspace        (replaces the disabled stock rows)
+  │     └── dshell-buffer     (optional: the sidebar `管道` entry)
+  └── dshell-buffer           (optional: reads dshell-ssh's routing face)
+        └── dshell-ssh        (optional: target reachability probe)
 ```
 
 There are no cycles. `dshell-bundle` is the install root; the others
-  are leaves or single-level consumers of the bridge.
+  are leaves or single-level consumers of the bridge. The two optional
+  edges exist only when both rows are composed — each side reads the
+  other through a structural seat, never an import.
 
 ## Cordis `ctx` keys dshell publishes or subscribes to
 
@@ -175,6 +219,14 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.tools` — registers `dshell_get_main_terminal` (in
   `dshell-commands`).
 - `ctx.uiSession` — patches `inputActions` (in `dshell-mode`).
+- `ctx.systemPrompt` — registers one section stating the pipe protocol
+  (in `dshell-buffer`, host face).
+- `ctx.sessionController` — `resolveAgent` for the target and, at
+  settlement, for the requester (in `dshell-buffer`, host face).
+- `ctx.sandboxPolicy` — resolved against the granter's session to fence a
+  granted write; optional (in `dshell-buffer`, host face).
+- `ctx.sessions` — peer labels in the pipe panel (in `dshell-buffer`,
+  browser face).
 
 ### Publishes
 
@@ -184,6 +236,11 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.dshellPtyBuffer` — per-session rolling buffer of recent
   `main` PTY output (≤ 100 lines / 4 KiB). Read by `dshell-mode`
   when injecting context.
+- `ctx.dshellSshRouting` — dshell-ssh's router, so dshell-buffer can ask
+  which device a session runs on and probe it before admitting a
+  delegation.
+- `ctx.dshellBuffer` (client) — the pipe state and its mutations. Read by
+  dshell-workspace's sidebar `管道` entry.
 
 ### Replaces (same-key providers over disabled stock rows)
 

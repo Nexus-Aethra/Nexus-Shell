@@ -32,6 +32,7 @@
     "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
     "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation",
     "@deepseek-ai/dsh-dshell-commands": "link:../commands",
+    "@deepseek-ai/dsh-dshell-buffer": "link:../buffer",
     "@deepseek-ai/dsh-dshell-conversation": "link:../conversation",
     "@deepseek-ai/dsh-dshell-mode": "link:../mode",
     "@deepseek-ai/dsh-dshell-ssh": "link:../ssh",

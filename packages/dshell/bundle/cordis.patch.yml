@@ -59,6 +59,12 @@
     - id: dshell-ssh
       name: '@deepseek-ai/dsh-dshell-ssh'
 
+    # Cross-session pipe: user-established links between sessions, deferred
+    # requests one agent hands to another, scoped revocable folder grants, and
+    # the watchdog that guarantees the requester is always woken.
+    - id: dshell-buffer
+      name: '@deepseek-ai/dsh-dshell-buffer'
+
 # ── workspace removal (design 4.7) ────────────────────────────────────
 # dshell has no use for dsh's directory-workspace grouping: a terminal's
 # workspace is its current directory. The four stock web-app rows are

@@ -25,6 +25,8 @@ PLUGINS=(
   mode
   commands
   workspace
+  ssh
+  buffer
 )
 
 echo "Installing dshell plugins into profile '$PROFILE'..."

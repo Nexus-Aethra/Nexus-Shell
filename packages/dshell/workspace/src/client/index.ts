@@ -43,6 +43,8 @@ import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 // Type-only: pulls ui-sidebar's SlotMap merge ('sidebar.workspaces' hole).
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+// Type-only: pulls the `dshellBuffer` service merge the pipe entry toggles.
+import type {} from '@deepseek-ai/dsh-dshell-buffer/client'
 import type { SshSnapshot } from '@deepseek-ai/dsh-dshell-ssh/client'
 import { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'
@@ -311,6 +313,14 @@ export function apply(ctx: Context): void {
   const uiWorkspace = new DshellUiWorkspace(ctx, sessions, panel)
   void panel.load()
 
+  // The cross-session pipe entry, filled by injection like the device seat:
+  // present in the dshell bundle, absent in a composition that omits
+  // dshell-buffer — and then the header keeps its new-session button.
+  let pipe: { toggle: () => void } | undefined
+  ctx.inject(['dshellBuffer'], (bufferCtx) => {
+    pipe = { toggle: () => { bufferCtx.dshellBuffer.toggle() } }
+  })
+
   // ConversationRoot resolves its chip via the global useWorkspaces hook;
   // the empty 'pending' snapshot routes it to the cwd-label branch.
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
@@ -373,6 +383,7 @@ export function apply(ctx: Context): void {
         sessions: sessions.list,
         panel,
         device: deviceSeat,
+        pipe,
         refresh: () => sessions.refresh(),
         createSession: (name, cwd, presetId) =>
           uiWorkspace.createNamedSession(name, cwd, presetId).then((sessionId) => {
