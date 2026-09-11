@@ -25,7 +25,7 @@
 import { createElement, Fragment, useEffect, type ReactNode } from 'react'
 import {
   FileTypeIcon, IconChevronLeftOutline14, IconChevronRightOutline14, IconFolderClose16, IconFolderOpen16,
-  IconRefreshOutline16, classifyFileType,
+  IconRefreshOutline16, IconRightUpOutline16, classifyFileType,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the session standard props (`sessionId`, `useSessions`).
@@ -168,7 +168,7 @@ function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
 
 /** The file navigator's body. */
 export function DshellFilesBody({
-  useTabInfo, sessionId, useSessions, useStore, start, load, toggle, navigate, back, forward, reload, t,
+  useTabInfo, sessionId, useSessions, useStore, start, load, toggle, navigate, cd, back, forward, reload, t,
 }: FilesBodyProps): ReactNode {
   const { tab } = useTabInfo()
   const { signal, actions: tabActions } = tab
@@ -209,6 +209,10 @@ export function DshellFilesBody({
 
   const atStart = state.history.index <= 0
   const atEnd = state.history.index >= state.history.stack.length - 1
+  const rootLevel = state.levels[state.root]
+  // The host says whether it can drive a shell at all; without one the button
+  // is absent rather than dead.
+  const canCd = rootLevel !== undefined && rootLevel.kind === 'ready' && rootLevel.level.canCd
   const segments = pathSegments(state.root)
   const crumbs = segments.flatMap((segment, index) => {
     const last = index === segments.length - 1
@@ -229,6 +233,11 @@ export function DshellFilesBody({
 
   const parent = parentOf(state.root)
   const rows: ReactNode[] = []
+  if (state.notice !== undefined) {
+    rows.push(createElement('li', {
+      key: '__notice__', style: styles.errorStyle, 'data-dshell-file-row': 'refused',
+    }, t('error.cd', { message: state.notice })))
+  }
   if (parent !== undefined) {
     rows.push(createElement('li', { key: '__parent__', 'data-dshell-file-entry': 'parent', 'data-dshell-file-path': parent },
       createElement('button', {
@@ -269,6 +278,16 @@ export function DshellFilesBody({
         onClick: () => { forward(tab.id) },
       }, createElement(IconChevronRightOutline14, { size: 16 })),
       createElement('div', { style: styles.pathStyle, 'data-dshell-file-path': '', title: state.root }, crumbs),
+      canCd
+        ? createElement('button', {
+          type: 'button',
+          style: styles.navButtonStyle,
+          'aria-label': t('cd'),
+          title: t('cd'),
+          'data-dshell-file-nav': 'cd',
+          onClick: () => { cd(tab.id, state.root) },
+        }, createElement(IconRightUpOutline16, { size: 16 }))
+        : null,
       createElement('button', {
         type: 'button',
         style: styles.navButtonStyle,

@@ -165,24 +165,30 @@ when it contributes to model-visible state.
 - Role: the right sidebar's file navigator, roaming without bound.
   Two-faced Cordis package:
   - **Host face** registers one connection route,
-    `/api/dshell/files`, whose single action `list` resolves the
+    `/api/dshell/files`, with two actions. `list` resolves the
     session's agent, then inside `withInitiator` resolves `stat` (must
     be a directory) and `listDir` and answers with the canonical
-    absolute path in that session's own execution world. It exists
-    because dsh's own `workspaceFiles.list` is fenced to the workspace
-    root; `ctx.fs` is the same seam, just without that fence, and the
-    sandbox only fences writes, so listing is at the same trust level
-    as `read`.
+    absolute path in that session's own execution world. `cd` sends the
+    session's main shell into one such directory, through the terminal
+    bridge's own input path — the same one a keystroke takes, so the
+    command is tracked and rendered like any typed command. The route
+    exists because dsh's own `workspaceFiles.list` is fenced to the
+    workspace root; `ctx.fs` is the same seam, just without that fence,
+    and the sandbox only fences writes, so listing is at the same trust
+    level as `read`.
   - **Browser face** registers its own `SidebarRightTabDefinition` for
     the `files` kind at `priority: 'extension'`, shadowing the stock
     body (which resumes if this row is removed) and contributing the
     required guide entry that keeps the pane's default page. The pane
-    draws a `..` row, clickable path crumbs, back/forward history and
-    a reload button; navigation state lives in a declared per-session
-    store bucketed by tab id, because the pane unmounts the inactive
-    tab's body but the store survives.
+    draws a `..` row, clickable path crumbs, back/forward history and a
+    reload button, plus a jump button that moves the session's shell
+    into the directory on screen — drawn only when the host reports it
+    can (no terminal bridge, no button). Navigation state lives in a
+    declared per-session store bucketed by tab id, because the pane
+    unmounts the inactive tab's body but the store survives.
 - dsh services depended on: host — `ctx.connection.fetch`,
-  `ctx.agents`, `ctx.sessionController`, `ctx.fs`; browser —
+  `ctx.agents`, `ctx.sessionController`, `ctx.fs`, and optionally
+  `ctx.dshellTerminalBridge` for the shell jump; browser —
   `ctx.slots`, `ctx.locale`, `ctx.sidebarRightTabs`, and the
   `sidebar.right.pane.tab` standard props (`ctx.sessions` for the
   session id and cwd).
@@ -223,6 +229,7 @@ dshell-bundle
   ├── dshell-buffer           (optional: reads dshell-ssh's routing face)
   │     └── dshell-ssh        (optional: target reachability probe)
   └── dshell-files            (shadows the stock `files` sidebar tab)
+        └── dshell-terminal-bridge  (optional: the pane's shell jump)
 ```
 
 There are no cycles. `dshell-bundle` is the install root; the others
@@ -260,6 +267,9 @@ There are no cycles. `dshell-bundle` is the install root; the others
   route (in `dshell-files`, host face).
 - `ctx.sidebarRightTabs` — registers the `files` tab definition that
   shadows the stock kind (in `dshell-files`, browser face).
+- `ctx.dshellTerminalBridge` — `feed` moves a session's shell into a
+  directory for the pane's jump button; optional, and its absence is
+  what the pane reports as `canCd: false` (in `dshell-files`, host face).
 
 ### Publishes
 

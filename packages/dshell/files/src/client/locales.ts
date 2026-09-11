@@ -27,10 +27,12 @@ export const zh = {
   reload: '重新读取',
   back: '后退',
   forward: '前进',
+  cd: '让终端进入这个目录',
   parent: '双击进入上一级',
   root: '跳到根目录',
   'entry.other': '这不是文件或目录，没法打开。',
   'error.unavailable': '读取失败：{message}',
+  'error.cd': '终端跳转失败：{message}',
 } satisfies Record<string, string>
 
 /** Files dictionary key union. */
@@ -48,8 +50,10 @@ export const en = {
   reload: 'Reload',
   back: 'Back',
   forward: 'Forward',
+  cd: 'Send the terminal into this directory',
   parent: 'Double-click to go up one level',
   root: 'Jump to the root',
   'entry.other': 'Not a file or a directory, so it cannot be opened.',
   'error.unavailable': 'Read failed: {message}',
+  'error.cd': 'Could not move the terminal: {message}',
 } satisfies Record<DshellFilesKey, string>

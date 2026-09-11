@@ -982,6 +982,17 @@ Shipped:
 - One listing is capped at 1000 entries with a `truncated` notice, and
   failures are graded by cause (missing / not a directory / permission /
   other). Read-only: no delete, rename, or create.
+- A jump button left of the reload button sends the session's shell into the
+  directory on screen, so browsing to a place and working there are one
+  gesture. It has to be input, not a command: a shell's working directory is
+  process state, so a command run through the shell seam would not move the
+  interactive shell. The line goes to the terminal bridge's own input path —
+  the same one a keystroke takes — so it is tracked and rendered like any
+  command the user types, and it is the canonical path of the session's own
+  world, so on a device session the device's shell cds on the device. The
+  listing carries `canCd` so a composition without the bridge draws no button
+  rather than a dead one, and a refused jump says why in the pane, because the
+  shell moves off-pane and would otherwise look like a dead click.
 
 Acceptance check (driven from the browser):
 
@@ -995,6 +1006,11 @@ Acceptance check (driven from the browser):
   and back keeps the current directory.
 - In a device session the same pane lists the device's tree — entering
   `/etc` proves the listing was inherited from the session's routing.
+- The jump button sits between the path and the reload button; on the local
+  session it moves that session's shell to the directory on screen, and on the
+  device session the device's shell — the prompt's own `cwd` report moves with
+  it — while the command shows up in the session's terminal record like a typed
+  one.
 
 ## Phase 10 — Packaging
 

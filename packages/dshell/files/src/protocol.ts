@@ -33,19 +33,31 @@ export interface DshellFilesListing {
   readonly entries: readonly DshellFileEntry[]
   /** The listing hit the route's entry cap, so entries are missing. */
   readonly truncated: boolean
+  /**
+   * Whether the host can move the session's shell into a directory (`cd`).
+   *
+   * False when the composition has no terminal bridge, which is the only thing
+   * that can drive a session's main shell; the pane then draws no jump button
+   * rather than one that cannot work. It is a fact about the composition, so it
+   * is the same on every listing of one boot.
+   */
+  readonly canCd: boolean
 }
 
 /** One browser face request. */
 export interface DshellFilesRequest {
-  readonly action: 'list'
+  /** `list` reads a directory; `cd` sends the session's shell into one. */
+  readonly action: 'list' | 'cd'
   /** The session whose execution world the path belongs to. */
   readonly sessionId: string
-  /** Absolute path in that world; omitted lists the session's own directory. */
+  /** Absolute path in that world; omitted means the session's own directory. */
   readonly path?: string | undefined
 }
 
-/** One browser face response: the listing, or why there is none. */
+/** One browser face response: the listing, the shell's new directory, or why neither happened. */
 export interface DshellFilesResponse {
   readonly listing?: DshellFilesListing | undefined
+  /** The directory the session's shell was sent to, for the `cd` action. */
+  readonly cdTo?: string | undefined
   readonly error?: string | undefined
 }

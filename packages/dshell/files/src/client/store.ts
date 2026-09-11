@@ -30,6 +30,8 @@ export interface DirectoryLevel {
   readonly path: string
   readonly entries: readonly DshellFileEntry[]
   readonly truncated: boolean
+  /** Whether the host can send the session's shell into this directory. */
+  readonly canCd: boolean
 }
 
 /** What one directory level is doing right now. */
@@ -50,6 +52,14 @@ export interface FilesTabState {
   readonly levels: Record<string, LevelState>
   /** Expanded absolute directory paths (paths opened INSIDE the current root). */
   readonly expanded: readonly string[]
+  /**
+   * Why the last shell jump failed, until the next reading clears it.
+   *
+   * A jump leaves no trace in the pane — the shell moves in the terminal, not
+   * here — so a refused one has to say so somewhere the reader is already
+   * looking, or the button would look dead.
+   */
+  readonly notice?: string | undefined
 }
 
 /** Every tab's navigator, keyed by tab id. */
@@ -64,7 +74,10 @@ type FilesActions = {
   loaded: (draft: FilesState, tabId: TabId, path: string, level: DirectoryLevel) => void
   failed: (draft: FilesState, tabId: TabId, path: string, message: string) => void
   toggled: (draft: FilesState, tabId: TabId, path: string) => void
+  /** Stand on a directory, recording it in history. */
   navigated: (draft: FilesState, tabId: TabId, path: string) => void
+  /** Record why a shell jump was refused, for the pane to show. */
+  refused: (draft: FilesState, tabId: TabId, message: string) => void
   back: (draft: FilesState, tabId: TabId) => void
   forward: (draft: FilesState, tabId: TabId) => void
   /** Drop every cached level; the current root is listed again after. */
@@ -100,6 +113,7 @@ function standOn(state: FilesState, tabId: TabId, path: string): void {
     root: path,
     history: { stack, index: stack.length - 1 },
     expanded: [path],
+    notice: undefined,
   }
 }
 
@@ -150,12 +164,13 @@ export function createDshellFilesStore(): EngineStoreHandle<FilesState, FilesAct
             levels,
             expanded: [level.path],
             history: { stack, index: tab.history.index },
+            notice: undefined,
           }
           return
         }
         const levels = { ...tab.levels }
         levels[path] = { kind: 'ready', level }
-        d.byTab[tabId] = { ...tab, levels }
+        d.byTab[tabId] = { ...tab, levels, notice: undefined }
       },
       /** Record why one directory could not be listed. */
       failed: (d, tabId: TabId, path: string, message: string) => {
@@ -177,6 +192,10 @@ export function createDshellFilesStore(): EngineStoreHandle<FilesState, FilesAct
       /** Stand on a directory, recording it in history. */
       navigated: (d, tabId: TabId, path: string) => {
         standOn(d, tabId, path)
+      },
+      /** Record why a shell jump was refused. */
+      refused: (d, tabId: TabId, message: string) => {
+        d.byTab[tabId] = { ...bucket(d, tabId), notice: message }
       },
       /** Step one entry back in history. */
       back: (d, tabId: TabId) => {

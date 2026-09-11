@@ -16,7 +16,7 @@
 
 import type { BoundActions } from '@deepseek-ai/dsh-client-store'
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
-import type { ListDirectory } from './client.js'
+import type { ListDirectory, MoveShell } from './client.js'
 import type { createDshellFilesStore } from './store.js'
 
 /** The navigator's injected business face, as the body receives it. */
@@ -42,6 +42,12 @@ export interface FilesInjected {
   readonly toggle: (tabId: TabId, path: string, loaded: boolean, signal: AbortSignal) => void
   /** Stand this tab on a directory, recording it in history. */
   readonly navigate: (tabId: TabId, path: string) => void
+  /**
+   * Send the session's shell into the directory this tab is standing on.
+   * @param tabId - the tab being drawn.
+   * @param path - absolute directory path in the session's world.
+   */
+  readonly cd: (tabId: TabId, path: string) => void
   /** Step one entry back in history. */
   readonly back: (tabId: TabId) => void
   /** Step one entry forward in history. */
@@ -54,12 +60,14 @@ export interface FilesInjected {
 }
 
 /**
- * Bind the navigator's face to one directory listing.
+ * Bind the navigator's face to one directory listing and one shell jump.
  * @param list - the bound listing call.
+ * @param moveShell - the bound "send the shell here" call.
  * @returns the Slot `inject` factory: session and bound actions in, face out.
  */
 export function createFilesFace(
   list: ListDirectory,
+  moveShell: MoveShell,
 ): (sessionId: string, actions: BoundActions<ReturnType<typeof createDshellFilesStore>>) => FilesInjected {
   return (
     sessionId: string,
@@ -102,6 +110,13 @@ export function createFilesFace(
       },
       navigate(tabId, path) {
         actions.navigated(tabId, path)
+      },
+      cd(tabId, path) {
+        // The shell moves where the pane already stands, so nothing here
+        // changes; only a refusal has to be written down for the reader.
+        void moveShell(sessionId, path).then((outcome) => {
+          if (!outcome.ok) actions.refused(tabId, outcome.message)
+        })
       },
       back(tabId) {
         actions.back(tabId)

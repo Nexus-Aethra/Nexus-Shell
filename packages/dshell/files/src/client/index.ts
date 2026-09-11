@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 // Type-only: pulls the locale service (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import { createListDirectory } from './client.js'
+import { createListDirectory, createMoveShell } from './client.js'
 import { dshellFilesDefinition, DSHELL_FILES_ID } from './definition.js'
 import { DshellFilesBody } from './body.js'
 import { createFilesFace } from './face.js'
@@ -51,7 +51,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshell-files: dictionaries')
 
   const store = createDshellFilesStore()
-  const injectFace = createFilesFace(createListDirectory())
+  const injectFace = createFilesFace(createListDirectory(), createMoveShell())
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
     { name: 'sidebar.right.pane.tab', key: DSHELL_FILES_ID, locale: NS, store, inject: injectFace },
     DshellFilesBody,
