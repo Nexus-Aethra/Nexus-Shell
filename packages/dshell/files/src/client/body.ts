@@ -22,7 +22,7 @@
  * yet — the single effect below turns that into exactly one listing.
  */
 
-import { createElement, Fragment, useEffect, type DragEvent as ReactDragEvent, type ReactNode } from 'react'
+import { createElement, Fragment, useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   FileTypeIcon, IconChevronLeftOutline14, IconChevronRightOutline14, IconFolderClose16, IconFolderOpen16,
   IconRefreshOutline16, IconRightUpOutline16, classifyFileType,
@@ -34,7 +34,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { DshellFileEntry } from '../protocol.js'
 import { parentOf, pathSegments, sessionFileAddress } from './address.js'
-import { installDirectoryDrop, startDirectoryDrag } from './drop.js'
+import { installDirectoryDrag, type DirectoryDrag } from './drag.js'
 import type { FilesInjected } from './face.js'
 import type {} from './locales.js'
 import * as styles from './styles.js'
@@ -90,6 +90,8 @@ interface TreeContext {
   readonly onEnter: (path: string) => void
   /** A file: hand it to the tab owner for a viewer to claim. */
   readonly onOpen: (path: string) => void
+  /** A press on a directory row, which becomes a drag if the pointer moves. */
+  readonly onPress: (event: { readonly clientX: number; readonly clientY: number; readonly button: number }, path: string) => void
   readonly t: TranslateNS<'dshellFiles'>
 }
 
@@ -102,21 +104,19 @@ function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry
       key: entry.name,
       'data-dshell-file-entry': 'directory',
       'data-dshell-file-path': path,
-      // Both the row and the button inside it are drag sources: the pointer
-      // lands on the button, and the row covers the rest of the row's width.
-      draggable: true,
       style: styles.dragSourceStyle,
-      onDragStart: (event: ReactDragEvent<HTMLLIElement>) => { startDirectoryDrag(event.dataTransfer, path) },
     },
       createElement('button', {
         type: 'button',
         style: { ...styles.rowStyle, ...styles.dragSourceStyle },
-        draggable: true,
         'data-dshell-file-row': 'directory',
         'aria-expanded': expanded,
         title: entry.name,
         onClick: () => { tree.onToggle(path) },
         onDoubleClick: () => { tree.onEnter(path) },
+        // Not defaulted: this is still the row's click, and it must reach the
+        // button when the pointer never moves far enough to be a drag.
+        onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => { tree.onPress(event, path) },
       },
         createElement('span', { style: styles.iconStyle },
           expanded
@@ -208,10 +208,20 @@ export function DshellFilesBody({
   }, [state, tab.id, signal, load])
 
   // Dropping a directory on the terminal is the jump button by another gesture,
-  // so it goes through the same call and needs the same capability.
+  // so it goes through the same call and needs the same capability. The handle
+  // lives in a ref because the rows reach it through the render below.
+  const dragRef = useRef<DirectoryDrag | undefined>(undefined)
   useEffect(() => {
-    if (rootLevel === undefined || rootLevel.kind !== 'ready' || !rootLevel.level.canCd) return undefined
-    return installDirectoryDrop((path) => { cd(tab.id, path) })
+    if (rootLevel === undefined || rootLevel.kind !== 'ready' || !rootLevel.level.canCd) {
+      dragRef.current = undefined
+      return undefined
+    }
+    const drag = installDirectoryDrag((path) => { cd(tab.id, path) })
+    dragRef.current = drag
+    return () => {
+      dragRef.current = undefined
+      drag.dispose()
+    }
   }, [rootLevel, cd, tab.id])
 
   if (cwd === undefined) {
@@ -225,6 +235,7 @@ export function DshellFilesBody({
     onToggle: (path) => { toggle(tab.id, path, state.levels[path] !== undefined, signal) },
     onEnter: enter,
     onOpen: (path) => { tabActions.openResource(sessionFileAddress(String(sessionId), path)) },
+    onPress: (event, path) => { dragRef.current?.begin(event, path) },
     t,
   }
 
@@ -263,17 +274,15 @@ export function DshellFilesBody({
       key: '__parent__',
       'data-dshell-file-entry': 'parent',
       'data-dshell-file-path': parent,
-      draggable: true,
       style: styles.dragSourceStyle,
-      onDragStart: (event: ReactDragEvent<HTMLLIElement>) => { startDirectoryDrag(event.dataTransfer, parent) },
     },
       createElement('button', {
         type: 'button',
         style: { ...styles.rowStyle, ...styles.dragSourceStyle },
-        draggable: true,
         'data-dshell-file-row': 'parent',
         title: `${t('parent')} · ${parent}`,
         onDoubleClick: () => { enter(parent) },
+        onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => { tree.onPress(event, parent) },
       },
         createElement('span', { style: styles.iconStyle }, createElement(IconFolderClose16, { size: 16 })),
         createElement('span', { style: styles.parentNameStyle }, '..'),

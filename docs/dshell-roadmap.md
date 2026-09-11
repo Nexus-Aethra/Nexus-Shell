@@ -994,17 +994,20 @@ Shipped:
   rather than a dead one, and a refused jump says why in the pane, because the
   shell moves off-pane and would otherwise look like a dead click.
 - Directory rows and the `..` row are also drag sources: dropping one on the
-  terminal runs the same jump. The pane installs one document-level listener
-  while it is on screen and decides by where the pointer landed — the block
-  view's own seat, `data-dshell-terminal-view` — rather than asking the
-  terminal to know about the pane; the whole area is outlined while the pointer
-  is over it, because a gesture with no feedback is indistinguishable from one
-  that is not supported. Files are not drag sources (there is no directory to
-  jump to), and the path travels under a private drag type rather than
-  `text/plain`, so no other drop target — the composer, the terminal's own
-  textarea — can receive a stray path. `dragover` and `drop` are both defaulted
-  over the terminal for that same reason; without it the browser would type the
-  payload into the shell.
+  terminal runs the same jump. It is **pointer events, not HTML5 drag and
+  drop**. A native drag session is a black box — when the drop is refused there
+  is no event to observe and no handler to correct, only the "no drop" cursor,
+  which is exactly what a real mouse hit here (the drag started, carried the
+  right payload and reached the terminal, and the browser still refused the
+  drop; nothing in the page or in dsh could account for it). Pointer events
+  carry the same gesture with nothing to arbitrate: the press, the move and the
+  release are the pane's own, the target is decided by where the pointer is,
+  and touch and pen work by the same code. The gesture stays a click until it
+  moves past a threshold, so one click still expands a folder and two still
+  open it. The pane installs the listeners while it draws a tree whose host can
+  drive a shell; the terminal view gets an outline and the page cursor says a
+  drop is possible, and both are put back when the gesture ends. File rows are
+  not drag sources — there is no directory to jump to.
 
 Acceptance check (driven from the browser):
 
@@ -1024,9 +1027,11 @@ Acceptance check (driven from the browser):
   it — while the command shows up in the session's terminal record like a typed
   one.
 - Dragging a directory row onto the terminal moves the shell there too, with
-  the drop area outlined while the pointer is over it; dropping the same row on
-  the sidebar or the composer does nothing at all — no `cd`, no text inserted —
-  and file rows cannot be dragged.
+  the drop area outlined while the pointer is over it and the cursor changed
+  until the release; releasing the same row over the sidebar does nothing at
+  all, and file rows cannot be dragged. The folder still expands on one click
+  and still opens on two — the drag is the only thing the pointer tracking
+  adds.
 
 ## Phase 10 — Packaging
 

@@ -114,12 +114,12 @@ export const rowStyle: CSSProperties = {
 export const iconStyle: CSSProperties = { flex: '0 0 auto' }
 
 /**
- * What a drag source's row needs.
+ * What a row that can be dragged needs.
  *
- * A press-and-move on a label would otherwise be taken as the start of a text
- * selection — the drag never begins, and the label ends up highlighted instead.
- * The drag itself is the `draggable` attribute on the row and on the button
- * inside it, which is the element the pointer actually lands on.
+ * The drag itself is the pointer handling in `drag.ts`; this only stops a
+ * press-and-move over the label from being taken as the start of a text
+ * selection, which would otherwise paint the row blue while it is being
+ * dragged to the terminal.
  */
 export const dragSourceStyle: CSSProperties = {
   userSelect: 'none',
