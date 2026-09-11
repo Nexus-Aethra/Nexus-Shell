@@ -102,15 +102,16 @@ function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry
       key: entry.name,
       'data-dshell-file-entry': 'directory',
       'data-dshell-file-path': path,
-      // The row is the drag source, not the button inside it: a directory can
-      // be dragged to the terminal to move the shell there, and a button is
-      // also the click target that expands it.
+      // Both the row and the button inside it are drag sources: the pointer
+      // lands on the button, and the row covers the rest of the row's width.
       draggable: true,
+      style: styles.dragSourceStyle,
       onDragStart: (event: ReactDragEvent<HTMLLIElement>) => { startDirectoryDrag(event.dataTransfer, path) },
     },
       createElement('button', {
         type: 'button',
-        style: styles.rowStyle,
+        style: { ...styles.rowStyle, ...styles.dragSourceStyle },
+        draggable: true,
         'data-dshell-file-row': 'directory',
         'aria-expanded': expanded,
         title: entry.name,
@@ -263,11 +264,13 @@ export function DshellFilesBody({
       'data-dshell-file-entry': 'parent',
       'data-dshell-file-path': parent,
       draggable: true,
+      style: styles.dragSourceStyle,
       onDragStart: (event: ReactDragEvent<HTMLLIElement>) => { startDirectoryDrag(event.dataTransfer, parent) },
     },
       createElement('button', {
         type: 'button',
-        style: styles.rowStyle,
+        style: { ...styles.rowStyle, ...styles.dragSourceStyle },
+        draggable: true,
         'data-dshell-file-row': 'parent',
         title: `${t('parent')} · ${parent}`,
         onDoubleClick: () => { enter(parent) },

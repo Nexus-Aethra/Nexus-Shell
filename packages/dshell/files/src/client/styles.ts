@@ -113,6 +113,18 @@ export const rowStyle: CSSProperties = {
 
 export const iconStyle: CSSProperties = { flex: '0 0 auto' }
 
+/**
+ * What a drag source's row needs.
+ *
+ * A press-and-move on a label would otherwise be taken as the start of a text
+ * selection — the drag never begins, and the label ends up highlighted instead.
+ * The drag itself is the `draggable` attribute on the row and on the button
+ * inside it, which is the element the pointer actually lands on.
+ */
+export const dragSourceStyle: CSSProperties = {
+  userSelect: 'none',
+}
+
 export const nameStyle: CSSProperties = {
   flex: '1 1 auto',
   minWidth: 0,
