@@ -246,9 +246,15 @@ importers:
       '@deepseek-ai/dsh-fs':
         specifier: link:../../../dsh/packages/fs/fs
         version: link:../../../dsh/packages/fs/fs
+      '@deepseek-ai/dsh-sandbox':
+        specifier: link:../../../dsh/packages/sandbox/sandbox
+        version: link:../../../dsh/packages/sandbox/sandbox
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-shell':
+        specifier: link:../../../dsh/packages/shell/shell
+        version: link:../../../dsh/packages/shell/shell
     devDependencies:
       '@types/node':
         specifier: ^24

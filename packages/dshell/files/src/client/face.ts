@@ -57,17 +57,41 @@ export interface FilesInjected {
    * @param path - the tab's current directory.
    */
   readonly reload: (tabId: TabId, path: string, signal: AbortSignal) => void
+  /**
+   * Whether this session has a transfer view to open.
+   *
+   * True when the transfer type is registered AND the session runs on a device
+   * whose binding has a mount directory — the two facts that decide whether the
+   * two-pane view could show anything. Read at render time rather than captured,
+   * so the header button appears as soon as both are true.
+   * @returns whether the pane should offer the way into the transfer view.
+   */
+  readonly transferAvailable: () => boolean
 }
 
 /**
- * Bind the navigator's face to one directory listing and one shell jump.
+ * The facts the transfer button needs, resolved outside the face because they
+ * belong to other plugins: the tab registry, and dshell-ssh's browser service.
+ */
+export interface TransferAvailability {
+  /** Whether the transfer type is registered in this composition. */
+  readonly registered: () => boolean
+  /** Whether one session is a device session with a mount. */
+  readonly deviceSession: (sessionId: string) => boolean
+}
+
+/**
+ * Bind the navigator's face to one directory listing, one shell jump, and the
+ * transfer view's availability.
  * @param list - the bound listing call.
  * @param moveShell - the bound "send the shell here" call.
+ * @param availability - what the header's transfer button depends on.
  * @returns the Slot `inject` factory: session and bound actions in, face out.
  */
 export function createFilesFace(
   list: ListDirectory,
   moveShell: MoveShell,
+  availability: TransferAvailability,
 ): (sessionId: string, actions: BoundActions<ReturnType<typeof createDshellFilesStore>>) => FilesInjected {
   return (
     sessionId: string,
@@ -127,6 +151,9 @@ export function createFilesFace(
       reload(tabId, path, signal) {
         actions.reset(tabId)
         load(tabId, path, signal)
+      },
+      transferAvailable() {
+        return availability.registered() && availability.deviceSession(sessionId)
       },
     }
   }

@@ -36,9 +36,11 @@ import type { DshellFileEntry } from '../protocol.js'
 import { parentOf, pathSegments, sessionFileAddress } from './address.js'
 import { installDirectoryDrag, type DirectoryDrag } from './drag.js'
 import type { FilesInjected } from './face.js'
+import { TRANSFER_KIND } from './transfer-definition.js'
+import { TransferGlyph } from './transfer-glyph.js'
 import type {} from './locales.js'
 import * as styles from './styles.js'
-import type { FilesTabState, createDshellFilesStore } from './store.js'
+import type { TreeState, createDshellFilesStore } from './store.js'
 
 /** The body's composed props: the tab it draws, its store, its face, and its copy. */
 export type FilesBodyProps =
@@ -81,23 +83,47 @@ function injectHoverCss(): () => void {
   return () => { style.remove() }
 }
 
-/** What every level shares: the tab's tree and the gestures. */
-interface TreeContext {
-  readonly state: FilesTabState
+/** One row a press can start a drag from, as the row knows itself. */
+export interface TreePress {
+  /** Absolute path in the tree's world. */
+  readonly path: string
+  readonly name: string
+  readonly kind: DshellFileEntry['kind']
+}
+
+/**
+ * What every level shares: the tree it draws and the gestures on it.
+ *
+ * Deliberately the same context for the navigator and for each of a transfer
+ * tab's two panes — the drawing and the single-click/double-click contract are
+ * identical, so only the handlers differ. `dragAll` is the one difference the
+ * rows themselves need: the navigator drags directories (onto the terminal),
+ * while a transfer pane drags files too (onto the other side).
+ */
+export interface TreeContext {
+  readonly state: TreeState
   /** Single click on a directory: open or collapse it in place. */
   readonly onToggle: (path: string) => void
   /** Double click on a directory, or the `..` row: stand there. */
   readonly onEnter: (path: string) => void
-  /** A file: hand it to the tab owner for a viewer to claim. */
-  readonly onOpen: (path: string) => void
-  /** A press on a directory row, which becomes a drag if the pointer moves. */
-  readonly onPress: (event: { readonly clientX: number; readonly clientY: number; readonly button: number }, path: string) => void
+  /** A file: hand it to the tab owner for a viewer to claim. Absent draws a dead row. */
+  readonly onOpen?: ((path: string) => void) | undefined
+  /** A press on a row, which becomes a drag if the pointer moves. */
+  readonly onPress?: ((event: { readonly clientX: number; readonly clientY: number; readonly button: number }, pressed: TreePress) => void) | undefined
+  /** Whether files are drag sources as well as directories. */
+  readonly dragAll?: boolean | undefined
   readonly t: TranslateNS<'dshellFiles'>
 }
 
 /** One entry's row, and its children when it is an expanded directory. */
-function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry; tree: TreeContext }): ReactNode {
+export function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry; tree: TreeContext }): ReactNode {
   const path = `${parent.replace(/[/\\]+$/u, '')}/${entry.name}`
+  const draggable = entry.kind === 'directory' || tree.dragAll === true
+  const onPress = tree.onPress === undefined || !draggable
+    ? undefined
+    : (event: ReactPointerEvent<HTMLButtonElement>): void => {
+      tree.onPress?.(event, { path, name: entry.name, kind: entry.kind })
+    }
   if (entry.kind === 'directory') {
     const expanded = tree.state.expanded.includes(path)
     return createElement('li', {
@@ -116,7 +142,7 @@ function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry
         onDoubleClick: () => { tree.onEnter(path) },
         // Not defaulted: this is still the row's click, and it must reach the
         // button when the pointer never moves far enough to be a drag.
-        onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => { tree.onPress(event, path) },
+        onPointerDown: onPress,
       },
         createElement('span', { style: styles.iconStyle },
           expanded
@@ -130,16 +156,17 @@ function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry
     )
   }
   if (entry.kind === 'file') {
+    const open = tree.onOpen
     return createElement('li', {
       key: entry.name, 'data-dshell-file-entry': 'file', 'data-dshell-file-path': path,
     },
       createElement('button', {
         type: 'button',
-        style: styles.rowStyle,
+        style: tree.dragAll === true ? { ...styles.rowStyle, ...styles.dragSourceStyle } : styles.rowStyle,
         'data-dshell-file-row': 'file',
         title: entry.name,
-        onClick: () => { tree.onOpen(path) },
-        onDoubleClick: () => { tree.onOpen(path) },
+        ...open === undefined ? {} : { onClick: () => { open(path) }, onDoubleClick: () => { open(path) } },
+        ...onPress === undefined ? {} : { onPointerDown: onPress },
       },
         createElement('span', { style: styles.iconStyle },
           createElement(FileTypeIcon, { kind: classifyFileType(entry.name), size: 16 })),
@@ -156,7 +183,7 @@ function Entry({ parent, entry, tree }: { parent: string; entry: DshellFileEntry
 }
 
 /** One directory's rows: its state while listing, its entries once listed. */
-function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
+export function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
   const { state, t } = tree
   const level = state.levels[path]
   if (level === undefined || level.kind === 'loading') {
@@ -179,7 +206,8 @@ function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
 
 /** The file navigator's body. */
 export function DshellFilesBody({
-  useTabInfo, sessionId, useSessions, useStore, start, load, toggle, navigate, cd, back, forward, reload, t,
+  useTabInfo, sessionId, useSessions, useStore, start, load, toggle, navigate, cd, back, forward, reload,
+  transferAvailable, t,
 }: FilesBodyProps): ReactNode {
   const { tab } = useTabInfo()
   const { signal, actions: tabActions } = tab
@@ -235,7 +263,9 @@ export function DshellFilesBody({
     onToggle: (path) => { toggle(tab.id, path, state.levels[path] !== undefined, signal) },
     onEnter: enter,
     onOpen: (path) => { tabActions.openResource(sessionFileAddress(String(sessionId), path)) },
-    onPress: (event, path) => { dragRef.current?.begin(event, path) },
+    // Only directories: dropping one on the terminal is the jump gesture. A
+    // file has nowhere to land there, so its press stays an ordinary press.
+    onPress: (event, pressed) => { if (pressed.kind === 'directory') dragRef.current?.begin(event, pressed.path) },
     t,
   }
 
@@ -282,7 +312,9 @@ export function DshellFilesBody({
         'data-dshell-file-row': 'parent',
         title: `${t('parent')} · ${parent}`,
         onDoubleClick: () => { enter(parent) },
-        onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => { tree.onPress(event, parent) },
+        onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+          tree.onPress?.(event, { path: parent, name: '..', kind: 'directory' })
+        },
       },
         createElement('span', { style: styles.iconStyle }, createElement(IconFolderClose16, { size: 16 })),
         createElement('span', { style: styles.parentNameStyle }, '..'),
@@ -333,6 +365,19 @@ export function DshellFilesBody({
         'data-dshell-file-nav': 'reload',
         onClick: () => { reload(tab.id, state.root, signal) },
       }, createElement(IconRefreshOutline16, { size: 16 })),
+      // The way into the transfer view. Shown only where there is something to
+      // transfer TO: a device session whose binding has a mount directory, with
+      // this package's own transfer type registered in the composition.
+      transferAvailable()
+        ? createElement('button', {
+          type: 'button',
+          style: styles.navButtonStyle,
+          'aria-label': t('transfer.open'),
+          title: t('transfer.open'),
+          'data-dshell-file-nav': 'transfer',
+          onClick: () => { tabActions.openTab(TRANSFER_KIND) },
+        }, createElement(TransferGlyph, { size: 16 }))
+        : null,
     ),
     createElement('div', { style: styles.bodyStyle },
       createElement('ul', { style: styles.levelStyle }, rows),

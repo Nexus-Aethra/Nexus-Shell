@@ -162,20 +162,30 @@ when it contributes to model-visible state.
 
 ### `dshell-files`
 
-- Role: the right sidebar's file navigator, roaming without bound.
-  Two-faced Cordis package:
-  - **Host face** registers one connection route,
-    `/api/dshell/files`, with two actions. `list` resolves the
-    session's agent, then inside `withInitiator` resolves `stat` (must
-    be a directory) and `listDir` and answers with the canonical
-    absolute path in that session's own execution world. `cd` sends the
-    session's main shell into one such directory, through the terminal
-    bridge's own input path — the same one a keystroke takes, so the
-    command is tracked and rendered like any typed command. The route
-    exists because dsh's own `workspaceFiles.list` is fenced to the
-    workspace root; `ctx.fs` is the same seam, just without that fence,
-    and the sandbox only fences writes, so listing is at the same trust
-    level as `read`.
+- Role: the right sidebar's file navigator, roaming without bound, plus
+  the two-pane file transfer beside it. Two-faced Cordis package:
+  - **Host face** registers two connection routes. `/api/dshell/files`
+    has two actions: `list` resolves the session's agent, then inside
+    `withInitiator` resolves `stat` (must be a directory) and `listDir`
+    and answers with the canonical absolute path in that session's own
+    execution world; `cd` sends the session's main shell into one such
+    directory, through the terminal bridge's own input path — the same
+    one a keystroke takes, so the command is tracked and rendered like
+    any typed command. The route exists because dsh's own
+    `workspaceFiles.list` is fenced to the workspace root; `ctx.fs` is
+    the same seam, just without that fence, and the sandbox only fences
+    writes, so listing is at the same trust level as `read`.
+    `/api/dshell/transfer` serves the transfer view: `state` (both roots,
+    the device, whether a transfer is possible at all), `list` (one side's
+    directory), `copy` (starts a job and answers with it), `job` and
+    `cancel`. Its two worlds are the session's own (a device tree over the
+    same routing, this machine otherwise) and **this machine**, reached
+    through the explicit agentless boundary; reads go through `ctx.fs` as
+    each side, and writes go through `ctx.shell` with the payload riding
+    stdin as base64 (the filesystem seam has no byte write) for a device
+    destination, and through `node:fs` in process for a local one — which
+    is what that world already is, the same assumption the local pane's
+    root makes by asking `os.homedir()`.
   - **Browser face** registers its own `SidebarRightTabDefinition` for
     the `files` kind at `priority: 'extension'`, shadowing the stock
     body (which resumes if this row is removed) and contributing the
@@ -183,7 +193,8 @@ when it contributes to model-visible state.
     draws a `..` row, clickable path crumbs, back/forward history and a
     reload button, plus a jump button that moves the session's shell
     into the directory on screen — drawn only when the host reports it
-    can (no terminal bridge, no button). Directory rows and the `..` row
+    can (no terminal bridge, no button) — and, for a device session, the
+    button that opens the transfer tab. Directory rows and the `..` row
     are drag sources for the same jump, carried by pointer events rather
     than HTML5 drag and drop (a native drag session cannot be observed or
     corrected when the browser refuses the drop), released over the
@@ -191,12 +202,25 @@ when it contributes to model-visible state.
     pointer is over it. Navigation state lives in a declared
     per-session store bucketed by tab id, because the pane unmounts the
     inactive tab's body but the store survives.
+  - The transfer tab is the same package's second `SidebarRightTabDefinition`
+    (`kind: 'transfer'`, a page type, and deliberately **no guide entry**:
+    the pane's default page is the sole guide entry's kind, so a second entry
+    would move every session's default page onto the guide). Its body draws
+    two trees — this machine on the left, the device on the right — over the
+    navigator's own rows and levels, and drags an entry from one to the other
+    with the same pointer-event technique; a drop lands in the directory row
+    under the pointer, or in the receiving pane's own directory. Copies are
+    jobs the view polls, so a long directory copy has a progress line, a
+    cancel and a conflict question ("overwrite?") instead of a request that
+    hangs; the two tab types share one store instance.
 - dsh services depended on: host — `ctx.connection.fetch`,
-  `ctx.agents`, `ctx.sessionController`, `ctx.fs`, and optionally
-  `ctx.dshellTerminalBridge` for the shell jump; browser —
-  `ctx.slots`, `ctx.locale`, `ctx.sidebarRightTabs`, and the
-  `sidebar.right.pane.tab` standard props (`ctx.sessions` for the
-  session id and cwd).
+  `ctx.agents`, `ctx.sessionController`, `ctx.fs`, `ctx.shell` (the
+  byte-write seam of the transfer), optionally
+  `ctx.dshellTerminalBridge` for the shell jump and `ctx.dshellSshRouting`
+  for the device side of a transfer; browser — `ctx.slots`, `ctx.locale`,
+  `ctx.sidebarRightTabs`, optionally `ctx.dshellSsh` (is this session a
+  device session with a mount?), and the `sidebar.right.pane.tab` standard
+  props (`ctx.sessions` for the session id and cwd).
 - Introduced in: Phase 9.9.
 
 ## What is not a dshell package
@@ -233,8 +257,11 @@ dshell-bundle
   │     └── dshell-buffer     (optional: the sidebar `管道` entry)
   ├── dshell-buffer           (optional: reads dshell-ssh's routing face)
   │     └── dshell-ssh        (optional: target reachability probe)
-  └── dshell-files            (shadows the stock `files` sidebar tab)
-        └── dshell-terminal-bridge  (optional: the pane's shell jump)
+  └── dshell-files            (shadows the stock `files` sidebar tab; also
+        │                       registers the `transfer` page type)
+        ├── dshell-terminal-bridge  (optional: the pane's shell jump)
+        └── dshell-ssh              (optional: the device side of a transfer,
+                                     read as a structural seat)
 ```
 
 There are no cycles. `dshell-bundle` is the install root; the others
@@ -269,9 +296,19 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.sessions` — peer labels in the pipe panel (in `dshell-buffer`,
   browser face).
 - `ctx.connection.fetch` — registers the `/api/dshell/files` listing
-  route (in `dshell-files`, host face).
+  route and the `/api/dshell/transfer` job route (in `dshell-files`, host
+  face).
+- `ctx.shell` — resolves and runs one base64-payload command per file
+  written into a device world (in `dshell-files`, host face, the
+  transfer's byte-write seam).
+- `ctx.dshellSshRouting` — the device a session runs on, for the transfer's
+  remote side; optional, read structurally (in `dshell-files`, host face).
 - `ctx.sidebarRightTabs` — registers the `files` tab definition that
-  shadows the stock kind (in `dshell-files`, browser face).
+  shadows the stock kind, and the `transfer` page type beside it (in
+  `dshell-files`, browser face).
+- `ctx.dshellSsh` — whether a session is a device session with a mount,
+  which is what the transfer button's presence depends on; optional, read
+  structurally (in `dshell-files`, browser face).
 - `ctx.dshellTerminalBridge` — `feed` moves a session's shell into a
   directory for the pane's jump button; optional, and its absence is
   what the pane reports as `canCd: false` (in `dshell-files`, host face).

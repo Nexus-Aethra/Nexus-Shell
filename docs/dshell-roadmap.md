@@ -1086,6 +1086,114 @@ Acceptance check (driven from the browser):
   and still opens on two — the drag is the only thing the pointer tracking
   adds.
 
+## Phase 9.10 — Two-pane file transfer
+
+Goal: in a device session's sidebar, move files between this machine and
+the device by dragging them — SFTP's job, done with the seams dshell
+already has, and offered only in the UI (no model-facing tool).
+
+Shipped:
+
+- `dshell-files` grows a second sidebar type (`kind: 'transfer'`, a page
+  type) and a second route, `/api/dshell/transfer` (`state`, `list`,
+  `copy`, `job`, `cancel`). It is the same package rather than a new one
+  because it is the same subject seen twice: the two panes draw the
+  navigator's own rows and levels, and the two types share one store
+  instance, so neither view can hold a stale idea of which session it
+  belongs to.
+- **The two worlds are reached by the seams that already exist**, so the
+  transfer adds no transport. The device side is the session's own world:
+  `ctx.fs` reads and lists inside `withInitiator`, exactly as the
+  navigator does. This machine is the **explicit absence** of an initiator
+  (`ctx.agents.withoutInitiator`), stated rather than assumed, because a
+  request that happened to inherit a session would otherwise read the
+  device behind the local pane's back. Writes go through `ctx.shell` with
+  the payload on stdin as base64, because `ctx.fs` has no byte write —
+  both of its mutations take text — which is the same byte transport
+  `dshell-buffer` settled on for its cross-session copies.
+- **A local destination is written in process** (`node:fs`), and the
+  reason is measured rather than aesthetic: each harness-born process
+  costs roughly 0.4 s in this deployment, so the shell seam charges that
+  for every file, and the local side is not a place that needs a process
+  at all — it IS this process's filesystem, the same assumption the local
+  pane's root already makes by asking `os.homedir()`. A device
+  destination still gets one `ssh`-borne command per file, and that
+  command creates the parent, decides whether the target may be replaced,
+  decodes the payload and publishes it, because asking `ctx.fs` for a
+  resolve and a stat first would be two more round trips for answers the
+  command already has.
+- Bytes are published through a temporary file in the destination
+  directory and a rename, so a transfer that dies halfway cannot destroy
+  the file it was replacing; an overwrite keeps the target's mode and a
+  new file gets 0644 (a `mktemp` file's own 0600 would make every transfer
+  arrive private). The local world passes `danger-full-access` explicitly:
+  the actor here is the user — the route sits behind dsh's authenticated
+  fence, no tool reaches it — and the alternative, the session's own mode,
+  describes what the MODEL may do on this machine and defaults to the
+  session's mount directory.
+- A copy is a **job**, because a directory copy is a walk plus one write
+  per file and can outlast any sensible request. `copy` answers with the
+  job immediately, the view polls it every 400 ms, and the walk's entry and
+  byte totals are known before the first byte moves — so the line reads
+  `xfer-src → 传输中 16 KB 1/400 项` with a bar and a cancel. Cancel
+  aborts the run (the signal reaches the seam calls); a cancelled or failed
+  copy leaves whatever it had already written, which is why the conflict
+  question exists rather than a silent overwrite. A settled job stays
+  readable for five minutes, then the registry drops it: this state belongs
+  to the boot that started it.
+- Semantics worth stating: a dragged folder is copied **as itself** into
+  the destination directory (the reader sees the folder appear by name), a
+  drop lands in the directory row under the pointer or in the receiving
+  pane's own directory when there is none, files are capped at 32 MB
+  (the base64-stdin payload, the same ceiling as the buffer's copy), a
+  plan is capped at 20 000 entries and 2 GiB, and anything that is neither
+  a file nor a directory (a symlink, a socket) is skipped and counted.
+- The way in is a button in the navigator's header, drawn only when the
+  transfer type is registered AND the session is device-bound with a mount
+  directory — a binding without one routes only the shell, so its file
+  operations stay local and a transfer would silently mix the two
+  machines. A local session therefore shows no button at all. The transfer
+  type contributes **no guide entry** on purpose: the pane seeds its
+  default page from the sole guide entry's kind, so a second entry would
+  move every session's default page onto the guide itself.
+- The drag is the navigator's technique again — pointer events, not HTML5
+  drag and drop — extended for two panes: any row (files included) is a
+  drag source, the receiving pane is outlined and the directory row under
+  the pointer is washed while the pointer is over it, and the target pane
+  is told from the source pane by the two panes' own data attributes. The
+  gesture stays a click until it moves past a threshold, so a folder still
+  expands on one click and opens on two.
+- Two things were corrected after watching it in the browser. A folder
+  copied into the drop directory used to spread its *contents* there; it is
+  now copied as itself, one level below. And the view must **fill** the
+  pane it is mounted in: the docking kit puts a tab body in a BLOCK pane
+  body that scrolls, so `flex: 1` alone left the view at its content
+  height and pushed the progress strip below the fold — `height: 100%`
+  makes each tree scroll inside its own column and keeps the strip in
+  view. The panes have no separate "up" button either: the crumb line is
+  clickable, so an up control next to it was one control too many.
+
+Acceptance check (driven from the browser, against the throwaway local
+`sshd` rig as the device):
+
+- A device session's file pane shows the transfer button; a local
+  session's does not.
+- Opening it draws two trees — 本机 on the left at the harness user's
+  home, the device on the right at the session's directory on that device
+  — each with its own crumbs and reload, scrolling inside its own column.
+- Dragging a local folder onto the device pane creates that folder (with
+  its subdirectories) in the drop directory, byte-identical (`diff -r`);
+  dragging a device file onto the local pane lands it in the local
+  directory with a matching `md5sum`.
+- Dropping onto a directory row puts the entry **inside** that
+  directory; dropping on the pane's own area puts it in the pane's
+  current directory. Clicking an ancestor crumb moves that pane up.
+- A 400-file folder reports its totals and progress, and 取消 stops it
+  (state `cancelled`).
+- Copying a name that already exists fails with the overwrite question;
+  覆盖 replaces it and keeps the file's previous mode.
+- Files above 32 MB are refused by name; a symlink is skipped and counted.
+
 ## Phase 10 — Packaging
 
 Goal: `dshell-*` packages install with `pnpm add` and dsh loads them

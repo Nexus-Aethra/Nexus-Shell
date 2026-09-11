@@ -51,7 +51,9 @@
     "@deepseek-ai/dsh-client-ui-slots": "link:../../../dsh/packages/client/ui-slots",
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
     "@deepseek-ai/dsh-fs": "link:../../../dsh/packages/fs/fs",
-    "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session"
+    "@deepseek-ai/dsh-sandbox": "link:../../../dsh/packages/sandbox/sandbox",
+    "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
+    "@deepseek-ai/dsh-shell": "link:../../../dsh/packages/shell/shell"
   },
   "devDependencies": {
     "@types/node": "^24",
