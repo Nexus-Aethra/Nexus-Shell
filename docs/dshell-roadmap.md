@@ -1392,3 +1392,44 @@ Acceptance check:
 - Known limit: the desktop plugin window hardcodes the npmjs registry, so a
   private registry needs an upstream change to be usable from the app UI.
 
+## Phase 10.3 — Linux packaging (P2)
+
+Goal: produce a Linux artifact from this checkout; dsh ships mac and win targets
+only, and `dsh/` is a read-only reference, so the work lives here.
+
+Measured blockers — every stage of dsh's desktop pipeline resolves its target
+through a closed registry, and all three close over mac/win:
+
+| where | what it gates | observed failure on Linux |
+|---|---|---|
+| `apps/desktop/scripts/package-target.ts` (`TARGETS`, `hostTargetName`) | the packaging command itself | `pnpm package:dir` → `desktop package: unsupported build host linux-x64` |
+| `apps/desktop/scripts/desktop-build-paths.mjs` (`SUPPORTED_TARGETS`) | every artifact, runtime and download path | `pnpm prepare:runtime` → `desktop build paths: unsupported target linux-x64` |
+| `apps/desktop/scripts/desktop-auto-update-environment.mjs` (`UPDATE_TARGETS`) | `createElectronBuilderConfig` and the release record | `resolveDesktopAutoUpdateTarget` throws for anything but `darwin`/`win32`; the config module also demands a full release environment (app id, update origin, signing) just to be imported |
+
+What is already platform-general, and therefore worth reusing rather than
+rewriting:
+
+- `prepare-runtime.ts` handles `linux` (downloads `node-v24.17.0-linux-x64`,
+  verifies it against `SHASUMS256.txt`, copies the pinned pnpm).
+- `electron-builder.config.mjs` already declares `linux: { target:
+  ['AppImage'] }`.
+- `prepare-package-set.ts` and `prepare-seed.ts` do not branch on platform —
+  they inherit the paths registry and nothing else.
+
+Download path notes for this network: `prepare-runtime` hardcodes
+`https://nodejs.org/download/release/...` (reachable here, HTTP 200); Electron's
+binary is not in the local store yet (`electron@44.0.0`/`44.3.0` are installed
+without a `dist/`), and electron-builder fetches its AppImage tooling from
+GitHub releases, which this network resets — both are mirrored by npmmirror
+(`/mirrors/electron/`, `/mirrors/electron-builder-binaries/`, both reachable) and
+are honored through `ELECTRON_MIRROR` and
+`ELECTRON_BUILDER_BINARIES_MIRROR`.
+
+Plan: `scripts/package-linux.mjs` in this repo. The cheap shape is a Node module
+loader that widens the two registries (`desktop-build-paths`,
+`desktop-auto-update-environment`) with a synthetic `linux-x64` target, so dsh's
+own prepare scripts and its electron-builder config run unmodified; the
+alternative is duplicating the path/seed logic here, which is ~400 lines of
+upstream logic to keep in sync. Acceptance: an unpacked `--dir` build launches on
+Linux, then an AppImage; mac artifacts stay on a Mac/CI host.
+
