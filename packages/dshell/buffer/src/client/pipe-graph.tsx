@@ -15,7 +15,7 @@ import {
   Background, Handle, Position, ReactFlow, ReactFlowProvider,
   type Edge, type Node, type NodeChange, type NodeProps,
 } from '@xyflow/react'
-import { useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react'
 import type { BufferLink, BufferTicket } from '../protocol.js'
 import { FLOW_CSS } from './flow-css.js'
 
@@ -93,6 +93,47 @@ function SessionNode(props: NodeProps): ReactElement {
 
 const nodeTypes = { session: SessionNode }
 
+/** localStorage key for the user's node arrangement. */
+const POSITIONS_KEY = 'dshell-pipe-graph-positions'
+
+type NodePositions = Record<string, { x: number; y: number }>
+
+/**
+ * The arrangement the user dragged nodes into, kept across dialog opens.
+ *
+ * localStorage is the right home rather than the host state document: this is
+ * one browser's view preference, not shared feature state, and the graph must
+ * still render when the store is unavailable.
+ */
+function loadPositions(): NodePositions {
+  try {
+    const raw = localStorage.getItem(POSITIONS_KEY)
+    if (raw === null) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    const out: NodePositions = {}
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (
+        typeof value === 'object' && value !== null
+        && typeof (value as { x?: unknown }).x === 'number'
+        && typeof (value as { y?: unknown }).y === 'number'
+      ) {
+        const { x, y } = value as { x: number; y: number }
+        out[id] = { x, y }
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function savePositions(positions: NodePositions): void {
+  try {
+    localStorage.setItem(POSITIONS_KEY, JSON.stringify(positions))
+  } catch { /* a store that refuses writes just means no memory */ }
+}
+
 /** Count a link's unsettled tickets, for the animated-edge signal. */
 function openCount(tickets: readonly BufferTicket[], linkId: string): number {
   return tickets.filter(ticket => ticket.linkId === linkId
@@ -101,7 +142,11 @@ function openCount(tickets: readonly BufferTicket[], linkId: string): number {
 
 /** The graph pane. Wrap with {@link PipeGraphProvider} at the call site. */
 function PipeGraphInner(props: PipeGraphProps): ReactElement {
-  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
+  const [positions, setPositions] = useState<NodePositions>(loadPositions)
+  // Mirror for the drag-stop handler, which needs the live map to persist the
+  // merged arrangement without reading state inside a state updater.
+  const positionsRef = useRef(positions)
+  positionsRef.current = positions
   // The selected edge: clicking one highlights it and floats the action chip.
   const [selected, setSelected] = useState<string | undefined>(undefined)
   // Inject React Flow's stylesheet once: the bundle loader mounts only this
@@ -153,7 +198,8 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
   const onNodesChange = (changes: NodeChange[]): void => {
     // Only drags matter here: the node set is derived from the snapshot, so a
     // removed/added node recomposes on the next render anyway. Positions are
-    // the one piece of local state — the user's arrangement outlives polls.
+    // the one piece of local state — the user's arrangement outlives polls,
+    // and the drop event (below) also writes it to localStorage.
     setPositions(current => {
       let changed = false
       const next = { ...current }
@@ -165,6 +211,18 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
       }
       return changed ? next : current
     })
+  }
+
+  /** A drop ends the drag: persist the arrangement, pruned to current sessions. */
+  const onNodeDragStop = (_event: unknown, node: Node): void => {
+    const keep = new Set(props.sessions.map(session => session.id))
+    const next: NodePositions = {}
+    for (const [id, position] of Object.entries(positionsRef.current)) {
+      if (keep.has(id)) next[id] = position
+    }
+    next[node.id] = node.position
+    positionsRef.current = next
+    savePositions(next)
   }
 
   return (
@@ -180,6 +238,7 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
         maxZoom={1.6}
         nodesConnectable
         onNodesChange={onNodesChange}
+        onNodeDragStop={onNodeDragStop}
         onConnect={(connection) => {
           if (connection.source === undefined || connection.target === undefined) return
           if (connection.source === connection.target) return
@@ -202,6 +261,16 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
           <button style={chipButtonStyle} onClick={() => { setSelected(undefined) }}>✕</button>
         </div>
       )}
+      <div style={resetStyle}>
+        <button
+          style={chipButtonStyle}
+          title='清空记忆的节点位置，全部回到环形排布'
+          onClick={() => {
+            try { localStorage.removeItem(POSITIONS_KEY) } catch { /* same as empty */ }
+            setPositions({})
+          }}
+        >重置布局</button>
+      </div>
     </div>
   )
 }
@@ -220,6 +289,14 @@ const chipDimStyle: CSSProperties = { opacity: 0.6, marginRight: 2 }
 const chipButtonStyle: CSSProperties = {
   border: '0.5px solid var(--dsw-alias-border-l4)', background: 'transparent', color: 'inherit',
   cursor: 'pointer', fontSize: 12, padding: '2px 8px', borderRadius: 6,
+}
+const resetStyle: CSSProperties = {
+  position: 'absolute', bottom: 10, right: 10, zIndex: 5,
+  border: '0.5px solid var(--dsw-alias-border-l4)',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  padding: '3px 6px',
+  boxShadow: '0 4px 14px rgba(0,0,0,.3)',
 }
 
 /** The graph pane with the provider React Flow needs for measured layout. */
