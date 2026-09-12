@@ -143,6 +143,10 @@ export function DshellLeftControls(props: {
       }
       if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
       if (!inComposer) return
+      // A completion mid-gesture owns Enter: it accepts the highlight (see
+      // onCompletionKey), and running a half-built line is exactly what the
+      // user asked not to happen.
+      if (completion.store.getSnapshot() !== null) return
       if (!route()) return
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -203,6 +207,31 @@ export function DshellLeftControls(props: {
         clearDraft(text)
         window.setTimeout(dismissStock, 0)
       }
+      /**
+       * Ask the host for the candidates under `token` and put the answer up.
+       *
+       * Shared by a fresh Tab and by Enter descending into a directory, so both
+       * land the same way: one candidate is applied and closes the list (a
+       * directory with its slash, which is how the shell's rhythm resumes), and
+       * a bare word with no match stays silent rather than showing a card.
+       */
+      const ask = (sid: string, draftNow: string, token: string): void => {
+        dismissStock()
+        void completion.request(sid, draftNow, draftNow.length).then((state) => {
+          if (state === null) { completion.store.set(null); return }
+          // A bare word with no match is more likely a non-path argument
+          // (`echo hi<Tab>`) than a failed path completion, so it stays quiet:
+          // the shell's own answer to "no matches" is silence, not a card.
+          if (state.items.length === 0 && !pathLike(token)) { completion.store.set(null); return }
+          if (state.items.length === 1) {
+            const next = completion.apply(state, 0, draftNow)
+            if (next !== undefined) writeDraft(next.text)
+            completion.store.set(null)
+            return
+          }
+          completion.store.set(state)
+        }).catch(() => { completion.store.set(null) })
+      }
       const open = completion.store.getSnapshot()
       const key = event.key
       if (key === 'Escape') {
@@ -224,6 +253,27 @@ export function DshellLeftControls(props: {
           writeDraft(next.text)
           completion.store.set(next.state)
         }
+        return true
+      }
+      // Enter ACCEPTS the highlight instead of sending the line: a completion
+      // mid-gesture means the line is still being built, and running a
+      // half-finished path is never what was meant. A directory goes one level
+      // deeper (its contents become the next list); a file ends this token, so
+      // the list closes and the NEXT Enter runs the line.
+      if (key === 'Enter' && !event.shiftKey && open !== null) {
+        if (open.items.length === 0) {
+          // Nothing to accept — the card was saying so. Closing it is the whole
+          // answer, so this Enter does not fall through to the sender either.
+          completion.store.set(null)
+          return true
+        }
+        const item = open.items[open.index]
+        if (item === undefined) return false
+        const next = completion.apply(open, open.index, draftRef.current)
+        if (next === undefined) return false
+        writeDraft(next.text)
+        if (item.kind === 'directory') ask(sessionId, next.text, tokenOf(next.text).token)
+        else completion.store.set(null)
         return true
       }
       if (key !== 'Tab') {
@@ -256,26 +306,9 @@ export function DshellLeftControls(props: {
       // A visible stock menu here is a command list for what is really a path
       // (see stockCommand): close it before the one round trip, so the two
       // overlays never share the seat.
-      dismissStock()
       event.preventDefault()
       event.stopImmediatePropagation()
-      void completion.request(sessionId, draftNow, draftNow.length).then((state) => {
-        if (state === null) { completion.store.set(null); return }
-        // A bare word with no match is more likely a non-path argument
-        // (`echo hi<Tab>`) than a failed path completion, so it stays quiet:
-        // the shell's own answer to "no matches" is silence, not a card.
-        if (state.items.length === 0 && !pathLike(token)) { completion.store.set(null); return }
-        // One candidate is the whole answer: substitute it (a directory lands
-        // with its slash) and close the list. The next Tab asks again, which is
-        // how a directory's contents get listed — the shell's own rhythm.
-        if (state.items.length === 1) {
-          const next = completion.apply(state, 0, draftNow)
-          if (next !== undefined) writeDraft(next.text)
-          completion.store.set(null)
-          return
-        }
-        completion.store.set(state)
-      }).catch(() => { completion.store.set(null) })
+      ask(sessionId, draftNow, token)
       return true
     }
     const onKeyDownFull = (event: KeyboardEvent): void => {
@@ -333,7 +366,7 @@ export function DshellLeftControls(props: {
         ? (attachmentCount > 0
           ? '有附件：Enter 发送给 AI · 附件已转对话'
           : completeOpen
-            ? 'Tab 下一个 · ↑↓ 选择 · Esc 关闭'
+            ? 'Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭'
             : '直接输入 · Tab 补全路径 · Ctrl+C 中断')
         : 'Enter 发送对话 · /agent 切终端'),
   )
