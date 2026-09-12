@@ -302,6 +302,18 @@ export class DshellTerminalBridge extends Service {
       } else if (event.type === 'turn/end') {
         record.blocks.endTurn()
         this.broadcast(sessionId, { kind: 'blocks', blocks: record.blocks.snapshot() })
+      } else if (event.type === 'command/run') {
+        // A slash command (/permission, /model, …) is not a turn — no
+        // turn/start fires — but it is still a stretch of the session that
+        // must claim its place in the block timeline. Without this cut the
+        // command's marker falls back to tail insertion while every later
+        // PTY byte keeps appending to the still-open shell region, so the
+        // marker renders permanently below output that came after it.
+        record.blocks.startTurn(undefined)
+        this.broadcast(sessionId, { kind: 'blocks', blocks: record.blocks.snapshot() })
+      } else if (event.type === 'command/done') {
+        record.blocks.endTurn()
+        this.broadcast(sessionId, { kind: 'blocks', blocks: record.blocks.snapshot() })
       }
     }, { global: true })
     // Session dispose (sidebar delete, host-side cleanup) → mark the

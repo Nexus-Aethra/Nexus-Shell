@@ -275,6 +275,20 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
   }
   const rows = sessionRowsOf(event, fold.toolNames)
   if (rows.length === 0) return
+  if (event.type === 'command/run') {
+    // A new command closes the previous command's block: each switch reads as
+    // its own line in order, not as one ever-growing merged marker at the
+    // tail. An open real turn (non-command rows) is left alone — its rows
+    // belong to the task, and the command's outcome folds into it.
+    const open = fold.open
+    if (open === undefined || open.rows.every(row => row.role === 'command')) {
+      if (open !== undefined) { open.status = 'done'; fold.open = undefined }
+      const block = openBlock(fold, time, '')
+      block.rows.push(...rows)
+      noteStep(block, event)
+      return
+    }
+  }
   if (event.type === 'user/message') {
     const title = firstLineOf(rows[0]?.text ?? '')
     // `turn/start` usually opens the block first; a request adopts that empty
