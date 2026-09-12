@@ -35,6 +35,7 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
+import { CommandHistory, commandHistoryPath, MAX_COMMAND_HISTORY } from './history.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
 import {
@@ -46,9 +47,8 @@ export { DEFAULT_PTY_BUFFER_OPTIONS, PtyBuffer } from './buffer.js'
 export { sliceWindow, stripAnsi, sanitizeTerminalText, type TerminalCommandRecord } from './commands.js'
 export { DSHELL_PTY_PATH } from './route.js'
 export type { DshellPtyCommand, DshellPtyRequest, DshellPtyResponse } from './route.js'
-
-/** Completed-command history retained per shell (oldest drop first). */
-const MAX_COMMAND_HISTORY = 200
+export { MAX_COMMAND_HISTORY } from './history.js'
+export type { PersistedCommand } from './history.js'
 
 /**
  * Shell generation counter. A new record — spawn or `/clear` — takes the next
@@ -160,6 +160,8 @@ interface MainRecord extends ShellRecord {
   absOffset: number
   /** Completed commands, oldest drop first. */
   commands: TerminalCommandRecord[]
+  /** The same commands across boots: loaded at spawn, written as they close. */
+  history: CommandHistory
   /** Input-line assembly + output/marker splitter for this shell. */
   splitter: CommandSplitterState
   inputQueue: string[]
@@ -448,11 +450,22 @@ export class DshellTerminalBridge extends Service {
     const buffer = await PtyBuffer.open(logPath)
     const blocks = new BlockLog(blockLogPath(logPath))
     await blocks.load()
+    // The shell's history outlives the shell: a restart respawns bash, and
+    // without this the up-arrow list would start empty while the view replays a
+    // scrollback full of commands.
+    const history = new CommandHistory(commandHistoryPath(logPath))
+    await history.load()
     if (blocks.snapshot().length === 0 && buffer.text().length > 0) {
       // First run after this log was introduced (or after a clear): the
       // seeded history has no block yet, so give it the shell block it was.
       blocks.append(buffer.text(), Date.now())
     }
+    const splitter = createSplitter()
+    const carried = history.list()
+    // Continue the numbering after the carried commands: `seq` orders history
+    // and pairs new output with it, so a restart must not mint a second
+    // sequence that starts over at 1.
+    splitter.seq = carried.reduce((max, command) => Math.max(max, command.seq), 0)
     const record: MainRecord = {
       agent,
       dshSessionId,
@@ -464,8 +477,12 @@ export class DshellTerminalBridge extends Service {
       // The seeded log tail is history the previous shell already produced;
       // starting the cursor at its end keeps a respawn from replaying it.
       absOffset: Buffer.byteLength(buffer.text(), 'utf8'),
-      commands: [],
-      splitter: createSplitter(),
+      // The commands a previous shell ran, with the output dropped: bytes of
+      // past output live in the PTY and block logs, and a look-back that says
+      // "this is what was run" is what history is for.
+      commands: carried.map(command => ({ ...command, output: '' })),
+      history,
+      splitter,
       activeSend: undefined,
       inputQueue: [],
       initializing: true,
@@ -504,6 +521,14 @@ export class DshellTerminalBridge extends Service {
         if (record.commands.length > MAX_COMMAND_HISTORY) {
           record.commands.splice(0, record.commands.length - MAX_COMMAND_HISTORY)
         }
+        // Only the line and its outcome are kept across boots; the output is
+        // what the PTY and block logs are for.
+        record.history.append(closed.map(command => ({
+          seq: command.seq,
+          command: command.command,
+          exitCode: command.exitCode,
+          at: command.at,
+        })))
       }
       this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
     })
@@ -938,6 +963,9 @@ export class DshellTerminalBridge extends Service {
     record.generation = nextShellGeneration++
     record.absOffset = 0
     record.commands = []
+    // The file goes with the array: a clear that left the old commands on disk
+    // would hand them back at the next boot.
+    record.history.clear()
     record.splitter = createSplitter()
     void record.buffer.truncate()
     this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
@@ -1010,6 +1038,9 @@ export class DshellTerminalBridge extends Service {
   private async disposeRecord(record: MainRecord): Promise<void> {
     delete record.disposeTimer
     this.mains.delete(record.agent)
+    // The debounced write would otherwise die with the process; the last
+    // commands belong on disk.
+    await record.history.flush().catch(() => {})
     await record.buffer.close().catch(() => {})
   }
 
@@ -1050,6 +1081,7 @@ export class DshellTerminalBridge extends Service {
       if (record.disposeTimer !== undefined) clearTimeout(record.disposeTimer)
       record.stopOutput()
       record.stopExit()
+      await record.history.flush().catch(() => {})
       await record.buffer.close().catch(() => {})
     }
     for (const record of [...this.agents.values()]) {
