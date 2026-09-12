@@ -257,9 +257,10 @@ export function DshellLeftControls(props: {
       }
       // Enter ACCEPTS the highlight instead of sending the line: a completion
       // mid-gesture means the line is still being built, and running a
-      // half-finished path is never what was meant. A directory goes one level
-      // deeper (its contents become the next list); a file ends this token, so
-      // the list closes and the NEXT Enter runs the line.
+      // half-finished path is never what was meant. Accepting stops there —
+      // the highlighted name goes into the draft and the list closes. It does
+      // NOT descend into a directory, because walking deeper is the user's
+      // decision, not this key's: another Tab asks for the next list.
       if (key === 'Enter' && !event.shiftKey && open !== null) {
         if (open.items.length === 0) {
           // Nothing to accept — the card was saying so. Closing it is the whole
@@ -267,13 +268,10 @@ export function DshellLeftControls(props: {
           completion.store.set(null)
           return true
         }
-        const item = open.items[open.index]
-        if (item === undefined) return false
         const next = completion.apply(open, open.index, draftRef.current)
         if (next === undefined) return false
         writeDraft(next.text)
-        if (item.kind === 'directory') ask(sessionId, next.text, tokenOf(next.text).token)
-        else completion.store.set(null)
+        completion.store.set(null)
         return true
       }
       if (key !== 'Tab') {
