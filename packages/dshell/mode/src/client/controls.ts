@@ -232,10 +232,20 @@ export function DshellLeftControls(props: {
       // A fresh Tab: ask the host for the candidates under this token.
       const draftNow = draftRef.current
       const { token, argument } = tokenOf(draftNow)
+      // dsh's own triggers keep their keys: `@` is its file reference, whose
+      // menu the stock pipeline arbitrates (a leading slash never reaches here —
+      // see stockCommand).
+      if (token.startsWith('@')) return false
       // A token after the command word is an argument, so it names a path even
       // without a slash (`ls comp<Tab>` completes against the tracked cwd); a
       // lone first token could be a command name, which this does not do yet.
-      if (token.length === 0 || !(argument || pathLike(token))) return false
+      if (token.length === 0 || !(argument || pathLike(token))) {
+        // Nothing here to complete, but Tab still must not leave the input:
+        // the composer IS the terminal's input line, and a terminal's Tab never
+        // moves focus — letting it fall through is what landed the user on the
+        // composer's buttons. Shift+Tab is left alone as the way back out.
+        return !event.shiftKey
+      }
       // A visible stock menu here is a command list for what is really a path
       // (see stockCommand): close it before the one round trip, so the two
       // overlays never share the seat.
