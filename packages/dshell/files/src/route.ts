@@ -154,7 +154,13 @@ function lastToken(before: string): { start: number; dirPart: string; prefix: st
   }
   // An unterminated quote means the token is still being written: keep it whole.
   const token = before.slice(tokenStart)
-  if (token.length === 0) return undefined
+  if (token.length === 0) {
+    // A line that ends in whitespace is starting a NEW argument — `ls ` wants
+    // the shell's directory listed, so the completion is a bare prefix against
+    // it. Nothing before the space means there is no argument yet.
+    if (before.slice(0, tokenStart).trim().length === 0) return undefined
+    return { start: before.length, dirPart: '', prefix: '' }
+  }
   // A leading dash is a flag, not a path.
   if (token.startsWith('-')) return undefined
   const slash = token.lastIndexOf('/')

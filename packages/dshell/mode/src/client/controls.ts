@@ -174,14 +174,19 @@ export function DshellLeftControls(props: {
       token.startsWith('/') || token.startsWith('.') || token.startsWith('~') || token.includes('/')
     // The line's last whitespace-delimited token, plus whether a word precedes
     // it. The caret is assumed to be at the end of the draft, which is where
-    // shell lines are typed.
+    // shell lines are typed. Whitespace at the end is NOT trimmed: a draft
+    // ending in a space is starting a NEW argument, and that empty token is
+    // what makes `ls <Tab>` list the directory instead of reading the whole
+    // draft as the bare command word `ls`.
     const tokenOf = (text: string): { token: string; argument: boolean } => {
-      const trimmed = text.replace(/\s+$/u, '')
       const cut = Math.max(
-        trimmed.lastIndexOf(' '), trimmed.lastIndexOf('\t'), trimmed.lastIndexOf('\n'),
+        text.lastIndexOf(' '), text.lastIndexOf('\t'), text.lastIndexOf('\n'),
       )
-      if (cut < 0) return { token: trimmed, argument: false }
-      return { token: trimmed.slice(cut + 1), argument: trimmed.slice(0, cut).trim().length > 0 }
+      if (cut < 0) return { token: text, argument: false }
+      return {
+        token: text.slice(cut + 1),
+        argument: text.slice(0, cut).trim().length > 0,
+      }
     }
     const onCompletionKey = (event: KeyboardEvent): boolean => {
       const sessionId = sessionIdRef.current
@@ -237,9 +242,11 @@ export function DshellLeftControls(props: {
       // see stockCommand).
       if (token.startsWith('@')) return false
       // A token after the command word is an argument, so it names a path even
-      // without a slash (`ls comp<Tab>` completes against the tracked cwd); a
-      // lone first token could be a command name, which this does not do yet.
-      if (token.length === 0 || !(argument || pathLike(token))) {
+      // without a slash (`ls comp<Tab>` completes against the tracked cwd) — and
+      // an EMPTY token there is the start of one, which is `ls <Tab>` listing
+      // the directory. A lone first token could be a command name, which this
+      // does not do yet.
+      if (!argument && !pathLike(token)) {
         // Nothing here to complete, but Tab still must not leave the input:
         // the composer IS the terminal's input line, and a terminal's Tab never
         // moves focus — letting it fall through is what landed the user on the
