@@ -135,6 +135,8 @@ function rowLabel(row: SessionRow): string {
 /** Delete confirmation; the purge is irreversible, so it always asks. */
 function DeleteDialog(props: {
   title: string
+  /** Batch mode: the number of sessions the confirmation covers. */
+  count: number | undefined
   busy: boolean
   error: string | undefined
   onCancel: () => void
@@ -147,9 +149,11 @@ function DeleteDialog(props: {
     },
   },
     createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
-      createElement('div', { style: dialogTitleStyle }, '删除会话'),
+      createElement('div', { style: dialogTitleStyle }, props.count === undefined ? '删除会话' : `删除 ${String(props.count)} 个会话`),
       createElement('div', { style: dialogBodyStyle },
-        `将清除「${props.title}」的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`,
+        props.count === undefined
+          ? `将清除「${props.title}」的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`
+          : `将清除选中的 ${String(props.count)} 个会话的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`,
         createElement('div', { style: { marginTop: 6, opacity: 0.75 } },
           '仍然装载在本进程里的会话会先释放终端并收进「已归档」，日志在下次启动 dsh 时清除。')),
       props.error !== undefined ? createElement('div', { style: dialogErrorStyle }, props.error) : null,
@@ -214,6 +218,14 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
   const [deleteTarget, setDeleteTarget] = useState<{ id: SessionId; title: string } | undefined>(undefined)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
+  // The archive group's multi-select: checked holds archived session ids.
+  // Entering multi mode clears the previous selection — a stale set from the
+  // last round would otherwise delete rows the reader no longer sees checked.
+  const [multi, setMulti] = useState(false)
+  const [checked, setChecked] = useState<readonly string[]>([])
+  const [batchBusy, setBatchBusy] = useState(false)
+  /** Set while the batch delete confirmation shows; holds the selection size. */
+  const [batchTarget, setBatchTarget] = useState<number | undefined>(undefined)
 
   useEffect(injectListCss, [])
   useEffect(() => { void props.panel.load() }, [props.panel])
@@ -235,6 +247,50 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
   } satisfies SessionRow)
 
   const pendingSet = new Set(archive.pending)
+  // Multi-select operates on what is actually listed and not already scheduled
+  // for purge — a pending row's removal is committed, so deleting it again
+  // would only re-schedule the same purge.
+  const selectable = archivedRows.filter(row => !pendingSet.has(String(row.id))).map(row => String(row.id))
+  const checkedRows = selectable.filter(id => checked.includes(id))
+  const allChecked = selectable.length > 0 && checkedRows.length === selectable.length
+
+  const toggleChecked = (id: string): void => {
+    setChecked(current => current.includes(id) ? current.filter(entry => entry !== id) : [...current, id])
+  }
+
+  const confirmBatchDelete = async (): Promise<void> => {
+    if (batchBusy || checkedRows.length === 0) return
+    setBatchBusy(true)
+    setDeleteError(undefined)
+    const refusals: string[] = []
+    for (const id of checkedRows) {
+      // Same step-off rule as a single delete: never leave the shell pointing
+      // at a session dshell just released.
+      if (String(state.current) === id) {
+        const next = active.find(row => String(row.id) !== id)
+        if (next === undefined) await props.createSession(undefined, undefined, undefined)
+        else props.open(next.id)
+      }
+      const refusal = await props.panel.remove(id)
+      if (refusal !== undefined) refusals.push(`${id.slice(0, 8)}: ${refusal}`)
+    }
+    setBatchBusy(false)
+    if (refusals.length > 0) {
+      setDeleteError(refusals.join('；'))
+      return
+    }
+    setChecked([])
+    await props.refresh()
+  }
+
+  const batchRestore = async (): Promise<void> => {
+    if (batchBusy || checkedRows.length === 0) return
+    setBatchBusy(true)
+    for (const id of checkedRows) await props.panel.unarchive(id)
+    setBatchBusy(false)
+    setChecked([])
+    await props.refresh()
+  }
 
   const confirmDelete = async (): Promise<void> => {
     if (deleteTarget === undefined || deleting) return
@@ -313,24 +369,72 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           createElement(Chevron, { open: archivedOpen }),
           createElement('span', null, '已归档'),
           createElement('span', { style: groupCountStyle }, String(archive.archived.length)),
+          // Multi-select controls live on the header line. The click handlers
+          // stop propagation: the header itself folds the group.
+          createElement('span', { style: { ...rowActionsStyle, marginLeft: 6 }, onClick: (event: ReactMouseEvent) => { event.stopPropagation() } },
+            multi ? createElement('button', {
+              style: rowActionStyle,
+              title: allChecked ? '全不选' : '全选',
+              onClick: () => { setChecked(allChecked ? [] : selectable) },
+            }, allChecked ? '全不选' : '全选')
+              : null,
+            multi ? createElement('button', {
+              style: rowActionStyle,
+              disabled: batchBusy || checkedRows.length === 0,
+              title: '恢复选中会话到主列表',
+              onClick: () => { void batchRestore() },
+            }, `恢复(${String(checkedRows.length)})`)
+              : null,
+            multi ? createElement('button', {
+              style: rowActionStyle,
+              disabled: batchBusy || checkedRows.length === 0,
+              title: '清除选中会话的全部历史',
+              onClick: () => { setDeleteError(undefined); setBatchTarget(checkedRows.length) },
+            }, `删除(${String(checkedRows.length)})`)
+              : null,
+            createElement('button', {
+              style: rowActionStyle,
+              title: multi ? '退出多选' : '多选：批量恢复或删除归档会话',
+              onClick: () => {
+                setChecked([])
+                setBatchTarget(undefined)
+                setMulti(current => !current)
+              },
+            }, multi ? '取消' : '多选'),
+          ),
         ),
         ...archivedOpen
           ? archivedRows.map((row) => {
             const pending = pendingSet.has(String(row.id))
+            const id = String(row.id)
+            const isChecked = checked.includes(id)
             return createElement('div', {
               key: `archived-${row.id}`,
               'data-dshell-row': 'archived',
-              style: { ...archivedRowStyle, fontWeight: state.current === row.id ? 600 : 400 },
-              onClick: () => { props.open(row.id) },
+              style: {
+                ...archivedRowStyle,
+                fontWeight: state.current === row.id ? 600 : 400,
+                ...(multi && !pending ? { background: isChecked ? 'rgba(127,127,127,.18)' : undefined } : {}),
+              },
+              onClick: () => {
+                // Multi-select rows toggle their check instead of opening:
+                // opening mid-selection would both lose the ticked set's
+                // context and surprise a reader aiming at the checkbox.
+                if (multi && !pending) toggleChecked(id)
+                else props.open(row.id)
+              },
             },
+              multi && !pending
+                ? createElement('span', { style: { ...rowTitleStyle, flex: '0 0 auto' } }, isChecked ? '☑' : '☐')
+                : null,
               rowMain(row, pending ? ' · 重启后清除' : ''),
-              createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
+              multi && !pending ? null : createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
                 createElement('button', {
                   style: rowActionStyle,
                   title: pending ? '取消：撤销删除并移回主列表' : '恢复：移回主列表',
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                     event.stopPropagation()
-                    void props.panel.unarchive(String(row.id))
+                    void props.panel.unarchive(id)
                   },
                 }, pending ? '取消' : '恢复'),
                 // A scheduled row's removal is already committed; deleting it
@@ -379,9 +483,21 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
       : createElement(DeleteDialog, {
         key: 'delete',
         title: deleteTarget.title,
+        count: undefined,
         busy: deleting,
         error: deleteError,
         onCancel: () => { setDeleteTarget(undefined); setDeleteError(undefined) },
         onConfirm: () => { void confirmDelete() },
+      }),
+    batchTarget === undefined
+      ? null
+      : createElement(DeleteDialog, {
+        key: 'batch-delete',
+        title: '',
+        count: batchTarget,
+        busy: batchBusy,
+        error: deleteError,
+        onCancel: () => { setBatchTarget(undefined); setDeleteError(undefined) },
+        onConfirm: () => { void confirmBatchDelete() },
       }))
 }

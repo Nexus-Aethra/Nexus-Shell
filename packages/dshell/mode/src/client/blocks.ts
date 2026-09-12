@@ -289,6 +289,20 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
       return
     }
   }
+  if (event.type === 'command/done') {
+    // A command block closes here, at its own outcome. Left open it would be
+    // adopted by the next turn/start (its turn is still undefined), which
+    // splits the reader's real message across a phantom running block and a
+    // second card.
+    const open = fold.open
+    if (open !== undefined && open.rows.every(row => row.role === 'command')) {
+      open.rows.push(...rows)
+      noteStep(open, event)
+      open.status = 'done'
+      fold.open = undefined
+      return
+    }
+  }
   if (event.type === 'user/message') {
     const title = firstLineOf(rows[0]?.text ?? '')
     // `turn/start` usually opens the block first; a request adopts that empty

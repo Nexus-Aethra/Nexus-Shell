@@ -22,6 +22,7 @@
 
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react'
 import type { TurnBlock } from './blocks.js'
+import { agentItemOf } from './block-model.js'
 import { useDshellTheme, type Theme } from './theme.js'
 import { sanitizeRowText } from './session-rows.js'
 
@@ -61,10 +62,18 @@ export interface Bookmark {
   readonly status: TurnBlock['status']
 }
 
-/** Build the list the rail renders, oldest first; fold order is the same. */
+/** Build the list the rail renders, oldest first; fold order is the same.
+ *
+ * Only blocks that render as agent cards are bookmarked. Slash-command
+ * blocks (a permission switch and friends) draw one quiet marker line with
+ * no card and no jump anchor, and collapsed no-op turns draw nothing at
+ * all — a bookmark for either would read as an empty conversation.
+ */
 export function bookmarksOf(blocks: readonly TurnBlock[]): readonly Bookmark[] {
   const out: Bookmark[] = []
   for (const block of blocks) {
+    const item = agentItemOf(block)
+    if (item === undefined || item.kind !== 'agent') continue
     const asked = block.rows.find(row => row.role === 'user')
     const raw = asked?.text ?? block.title
     const line = sanitizeRowText(raw).split('\n').map(part => part.trim()).find(part => part.length > 0) ?? ''

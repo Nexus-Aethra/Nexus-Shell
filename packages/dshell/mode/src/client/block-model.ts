@@ -51,7 +51,7 @@ function visible(text: string): boolean {
  * and no tokens at all (an aborted submission — it becomes nothing). Everything
  * else is a task card.
  */
-function agentItemOf(block: TurnBlock): ViewItem | undefined {
+export function agentItemOf(block: TurnBlock): ViewItem | undefined {
   if (block.rows.length > 0 && block.steps === 0 && block.stream === undefined
     && block.rows.every(row => row.role === 'command')) {
     // The first row is the command as it was typed; a slash marks it as the
