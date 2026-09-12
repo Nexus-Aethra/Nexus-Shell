@@ -32,10 +32,17 @@ import { useDshellTheme } from './theme.js'
 /** The files route, restated: dshell-files owns it (`DSHELL_FILES_PATH`). */
 const FILES_PATH = '/api/dshell/files'
 
-/** One candidate, as the route answers it. */
+/**
+ * The bridge's history route, restated: dshell-terminal-bridge owns it
+ * (`DSHELL_PTY_PATH`), and importing its root would drag node-pty and the host
+ * half into this bundle.
+ */
+const HISTORY_PATH = '/api/dshell/pty'
+
+/** One candidate, as a route answers it. */
 export interface CompletionCandidate {
   readonly name: string
-  readonly kind: 'file' | 'directory' | 'other'
+  readonly kind: 'file' | 'directory' | 'other' | 'command'
   readonly size?: number | undefined
   readonly hint?: string | undefined
 }
@@ -43,6 +50,8 @@ export interface CompletionCandidate {
 /** One open completion over the composer's draft. */
 export interface CompletionState {
   readonly sessionId: string
+  /** Where the candidates came from; history replaces the whole line. */
+  readonly source: 'path' | 'history'
   /** Offsets in the draft the candidates replace (the basename, not the prefix). */
   readonly start: number
   readonly end: number
@@ -94,13 +103,23 @@ export interface ShellCompletion {
    *   was possible, or the token is not a path).
    */
   request(sessionId: string, line: string, cursor: number): Promise<CompletionState | null>
+  /**
+   * The session's command history, as the up-arrow list.
+   *
+   * `draft` is the query: entries sharing a longer prefix with it rank first,
+   * so a half-typed line pulls its own past spellings to the top; an empty
+   * draft is plain history, newest first.
+   *
+   * @returns the state to show, or null when the shell has no history yet.
+   */
+  requestHistory(sessionId: string, draft: string): Promise<CompletionState | null>
   /** The draft with candidate `index` substituted, and the state that follows. */
   apply(state: CompletionState, index: number, draft: string): { text: string; state: CompletionState } | undefined
 }
 
 /** One route call; the same shape the file navigator uses. */
-async function post(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fetch(FILES_PATH, {
+async function post(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await fetch(path, {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },
@@ -108,6 +127,17 @@ async function post(body: Record<string, unknown>): Promise<Record<string, unkno
   })
   return await response.json() as Record<string, unknown>
 }
+
+/** How much of two strings matches from the start. */
+function commonPrefix(a: string, b: string): number {
+  const max = Math.min(a.length, b.length)
+  let at = 0
+  while (at < max && a[at] === b[at]) at += 1
+  return at
+}
+
+/** Candidates one history answer lists. */
+const MAX_HISTORY_ITEMS = 60
 
 /** A `cd` argument the composer can hand to the host, or undefined for none. */
 export function cdTargetOf(line: string): string | undefined | null {
@@ -136,7 +166,13 @@ export function createShellCompletion(): ShellCompletion {
     trackCd(sessionId, line) {
       const target = cdTargetOf(line)
       if (target === undefined || target === null) return
-      void post({ action: 'resolve', sessionId, path: target, ...(cwds.get(sessionId) === undefined ? {} : { cwd: cwds.get(sessionId) as string }) })
+      const cwd = cwds.get(sessionId)
+      void post(FILES_PATH, {
+        action: 'resolve',
+        sessionId,
+        path: target,
+        ...cwd === undefined ? {} : { cwd },
+      })
         .then((body) => {
           const resolved = body.resolved
           if (typeof resolved === 'string' && resolved.length > 0) cwds.set(sessionId, resolved)
@@ -146,7 +182,7 @@ export function createShellCompletion(): ShellCompletion {
 
     async request(sessionId, line, cursor) {
       const cwd = cwds.get(sessionId)
-      const body = await post({
+      const body = await post(FILES_PATH, {
         action: 'complete',
         sessionId,
         line,
@@ -164,6 +200,7 @@ export function createShellCompletion(): ShellCompletion {
       }
       return {
         sessionId,
+        source: 'path',
         start: value.start,
         end: value.end,
         dir: value.dir,
@@ -171,6 +208,39 @@ export function createShellCompletion(): ShellCompletion {
         index: 0,
         note: value.note,
         draft: line,
+      }
+    },
+
+    async requestHistory(sessionId, draft) {
+      const body = await post(HISTORY_PATH, { action: 'history', sessionId })
+      const raw = Array.isArray(body.commands) ? body.commands : []
+      const entries = raw.flatMap((entry) => {
+        const command = (entry as { command?: unknown }).command
+        return typeof command === 'string' && command.trim().length > 0 ? [command] : []
+      })
+      if (entries.length === 0) return null
+      // The route answers oldest first (the order they ran in); history reads
+      // the other way, and a query only re-orders — it never hides what the
+      // session actually ran.
+      const newestFirst = entries.slice().reverse()
+      const query = draft.trim().length === 0 ? '' : draft
+      const ranked = newestFirst
+        .map((command, rank) => ({ command, rank, shared: commonPrefix(command, query) }))
+        .filter(entry => query === '' || entry.shared > 0)
+        .sort((left, right) => right.shared - left.shared || left.rank - right.rank)
+        .slice(0, MAX_HISTORY_ITEMS)
+      if (ranked.length === 0) return null
+      return {
+        sessionId,
+        source: 'history',
+        // A command replaces the whole line, so the span is all of it.
+        start: 0,
+        end: draft.length,
+        dir: '',
+        items: ranked.map(entry => ({ name: entry.command, kind: 'command' as const })),
+        index: 0,
+        note: undefined,
+        draft,
       }
     },
 
@@ -245,10 +315,16 @@ function row(
     },
   },
     createElement('span', { style: { display: 'flex', alignItems: 'center', flex: '0 0 auto', opacity: 0.85 } },
-      createElement(FileTypeIcon, {
-        kind: item.kind === 'directory' ? 'folder' : classifyFileType(item.name),
-        size: 14,
-      })),
+      item.kind === 'command'
+        // A command is not a file: a prompt glyph says "something this shell
+        // ran", where any file icon would lie about it.
+        ? createElement('span', {
+          style: { width: 14, textAlign: 'center', fontSize: 11, opacity: 0.6 },
+        }, '$')
+        : createElement(FileTypeIcon, {
+          kind: item.kind === 'directory' ? 'folder' : classifyFileType(item.name),
+          size: 14,
+        })),
     createElement('span', {
       style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
     }, item.kind === 'directory' ? `${item.name}/` : item.name),
@@ -300,8 +376,9 @@ export function ShellCompletionList(
     ref: listRef,
     style: listStyle(theme, maxHeight),
     'data-dshell-completion': '',
+    'data-dshell-completion-source': state.source,
     role: 'listbox',
-    title: state.dir,
+    title: state.source === 'history' ? `${String(state.items.length)} 条历史命令` : state.dir,
   },
     state.items.length === 0
       ? createElement('div', { style: { padding: '3px 10px', opacity: 0.6 } }, state.note ?? '无匹配')

@@ -36,6 +36,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
+import { createPtyRoute } from './route.js'
 import {
   createSplitter, sanitizeTerminalText, sliceWindow, splitOutput, stripAnsi, trackInput,
   type CommandSplitterState, type TerminalCommandRecord,
@@ -43,6 +44,8 @@ import {
 
 export { DEFAULT_PTY_BUFFER_OPTIONS, PtyBuffer } from './buffer.js'
 export { sliceWindow, stripAnsi, sanitizeTerminalText, type TerminalCommandRecord } from './commands.js'
+export { DSHELL_PTY_PATH } from './route.js'
+export type { DshellPtyCommand, DshellPtyRequest, DshellPtyResponse } from './route.js'
 
 /** Completed-command history retained per shell (oldest drop first). */
 const MAX_COMMAND_HISTORY = 200
@@ -362,6 +365,11 @@ export class DshellTerminalBridge extends Service {
         },
       }
       webCtx.effect(() => webCtx.webServer.registerUpgrade(route), 'dshell-bridge: /dshell/pty')
+      // The read side of the same subject: the composer's up-arrow history.
+      webCtx.effect(
+        () => webCtx.connection.fetch.register(createPtyRoute(this)),
+        'dshell-bridge: history route',
+      )
     })
   }
 

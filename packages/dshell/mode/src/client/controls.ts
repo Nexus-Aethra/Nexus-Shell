@@ -246,8 +246,12 @@ export function DshellLeftControls(props: {
       // would send.
       const cycling = open !== null && open.items.length > 0
       if (cycling && (key === 'Tab' || key === 'ArrowDown' || key === 'ArrowUp')) {
-        const back = key === 'ArrowUp' || (key === 'Tab' && event.shiftKey)
-        const index = (open.index + (back ? -1 : 1) + open.items.length) % open.items.length
+        const older = key === 'ArrowUp' || (key === 'Tab' && event.shiftKey)
+        // Up means older, down means newer. History is stored newest-first, so
+        // "older" is the forward direction there — the same word as in a
+        // directory listing, the opposite array direction.
+        const forward = open.source === 'history' ? older : !older
+        const index = (open.index + (forward ? 1 : -1) + open.items.length) % open.items.length
         const next = completion.apply(open, index, draftRef.current)
         if (next !== undefined) {
           writeDraft(next.text)
@@ -272,6 +276,23 @@ export function DshellLeftControls(props: {
         if (next === undefined) return false
         writeDraft(next.text)
         completion.store.set(null)
+        return true
+      }
+      // Up without a list to walk is the shell's own gesture: the history list,
+      // with the draft as its query (entries sharing a longer prefix with it
+      // rank first, so a half-typed line pulls its own past spellings to the
+      // top). An empty card counts as nothing to walk. The newest match goes
+      // into the line as the list opens, keeping the highlight and the draft in
+      // step — the same rule the cycling branch enforces on every move.
+      if (key === 'ArrowUp' && !cycling) {
+        const draftNow = draftRef.current
+        void completion.requestHistory(sessionId, draftNow).then((state) => {
+          if (state === null) { completion.store.set(null); return }
+          const next = completion.apply(state, 0, draftNow)
+          if (next === undefined) { completion.store.set(state); return }
+          writeDraft(next.text)
+          completion.store.set(next.state)
+        }).catch(() => { completion.store.set(null) })
         return true
       }
       if (key !== 'Tab') {
@@ -365,7 +386,7 @@ export function DshellLeftControls(props: {
           ? '有附件：Enter 发送给 AI · 附件已转对话'
           : completeOpen
             ? 'Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭'
-            : '直接输入 · Tab 补全路径 · Ctrl+C 中断')
+            : '直接输入 · Tab 补全 · ↑ 历史 · Ctrl+C 中断')
         : 'Enter 发送对话 · /agent 切终端'),
   )
 }
