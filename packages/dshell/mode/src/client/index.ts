@@ -30,6 +30,7 @@ import { BlockView, type SshSeat } from './block-view.js'
 import type { PipeSeat, PipeTicket } from './status-card.js'
 import { injectSidebarCompactCss } from './sidebar-compact.js'
 import { DshellLeftControls } from './controls.js'
+import { DshellComposerStats } from './composer-stats.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
@@ -367,6 +368,17 @@ export function apply(ctx: Context): void {
       }),
     },
     BlockView,
+  ))
+  // The composer dock's readings — turn/step counts with output speed, token
+  // total with cache-hit share — ride `conversation.composer.dock`, the row
+  // under the composer card. Stock ui-chat owned it (`StatsPills`); disabling
+  // that client row to stop it duplicating the view tab took the row with it,
+  // so dshell re-registers the same readings from their own packages'
+  // projections (`sessionStats`, `tokenUsage`) rather than re-enabling a row
+  // that would bring the duplicate tab back. See `composer-stats.ts`.
+  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
+    { name: 'conversation.composer.dock', id: 'dshell-stats', order: 0 },
+    DshellComposerStats,
   ))
   // Hide the dsh local-build product label + version pill that sit to the
   // right of the logo in the expanded brand row. The slot is `kind: 'single'`,

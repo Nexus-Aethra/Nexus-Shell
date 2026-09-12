@@ -304,6 +304,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-session':
+        specifier: link:../../../dsh/packages/client/ui-session
+        version: link:../../../dsh/packages/client/ui-session
       '@deepseek-ai/dsh-client-ui-settings':
         specifier: link:../../../dsh/packages/client/ui-settings
         version: link:../../../dsh/packages/client/ui-settings
@@ -313,6 +316,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-sidebar':
         specifier: link:../../../dsh/packages/client/ui-sidebar
         version: link:../../../dsh/packages/client/ui-sidebar
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
@@ -322,9 +328,15 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-session-stats':
+        specifier: link:../../../dsh/packages/session/session-stats
+        version: link:../../../dsh/packages/session/session-stats
       '@deepseek-ai/dsh-settings':
         specifier: link:../../../dsh/packages/settings/settings
         version: link:../../../dsh/packages/settings/settings
+      '@deepseek-ai/dsh-token-meter':
+        specifier: link:../../../dsh/packages/llm/token-meter
+        version: link:../../../dsh/packages/llm/token-meter
       '@deepseek-ai/schemastery':
         specifier: link:../../../dsh/vendor/schemastery
         version: link:../../../dsh/vendor/schemastery
