@@ -81,11 +81,25 @@ function jobDuration(job: JobView, now: number): string {
  * bundle, and a composition without it passes nothing — the pipe rows then
  * simply never appear.
  */
+/** The pipe state slice the card reads — links, tickets, in-flight transfers. */
+export interface PipeState {
+  readonly links: readonly { readonly id: string; readonly a: string; readonly b: string }[]
+  readonly tickets: readonly PipeTicket[]
+  /** Chunked buffer transfers in flight (and the freshly settled). */
+  readonly transfers?: readonly {
+    readonly id: string
+    readonly sessionId: string
+    readonly label: string
+    readonly bytesDone: number
+    readonly bytesTotal: number
+    readonly startedAt: number
+    readonly finishedAt?: number | undefined
+    readonly error?: string | undefined
+  }[]
+}
+
 export interface PipeSeat {
-  getSnapshot(): {
-    readonly links: readonly { readonly id: string; readonly a: string; readonly b: string }[]
-    readonly tickets: readonly PipeTicket[]
-  }
+  getSnapshot(): PipeState
   subscribe(listener: () => void): () => void
   /** Re-read the committed pipe state from the host. */
   load(): Promise<void>
@@ -108,8 +122,8 @@ export interface PipeTicket {
 }
 
 /** The card renders without a pipe in a composition that has no buffer. */
-const EMPTY_PIPE_STATE = { links: [], tickets: [] } as const
-const getEmptyPipeState = (): typeof EMPTY_PIPE_STATE => EMPTY_PIPE_STATE
+const EMPTY_PIPE_STATE: PipeState = { links: [], tickets: [] }
+const getEmptyPipeState = (): PipeState => EMPTY_PIPE_STATE
 const NO_PIPE_SUBSCRIBE = (): (() => void) => () => {}
 
 /** Ticket states that are still running; everything else is settled. */
@@ -395,6 +409,16 @@ export function StatusCard(props: {
     : (list.subagentsByParent?.[sessionId as SessionId]?.entries ?? []).filter(entry => entry.kind === 'child')
   const runningChildren = children.filter(entry => entry.activity === 'running').length
 
+  // This session's chunked buffer transfers. One progresses per tick of the
+  // card; the poll that feeds it lives on the pipe service (it keeps its own
+  // 1s cadence while anything is in flight).
+  const transfersHere = (pipeState.transfers ?? []).filter(entry => entry.sessionId === sessionId)
+  const liveTransfers = transfersHere.filter(entry => entry.finishedAt === undefined)
+  const transferPct = (entry: (typeof transfersHere)[number]): number => {
+    const total = Math.max(1, entry.bytesTotal)
+    return Math.min(100, Math.round((entry.bytesDone / total) * 100))
+  }
+
   // This session's background jobs, from the same store mirror dsh's header
   // widget reads. Live jobs first in start order, then settled newest-first —
   // the ordering a reader would ask for.
@@ -444,14 +468,15 @@ export function StatusCard(props: {
           : owed.length > 0 ? `⇄ ${String(owed.length)} 个管道任务待处理`
             : live ? '▚ AI 终端运行中'
               : runningChildren > 0 ? `⎇ ${String(runningChildren)} 个智能体运行中`
-                : liveJobs.length > 0 ? `⟳ ${String(liveJobs.length)} 个后台任务运行中`
+                : liveTransfers.length > 0 ? `⇅ 传输中 ${String(transferPct(liveTransfers[0]))}%`
+                  : liveJobs.length > 0 ? `⟳ ${String(liveJobs.length)} 个后台任务运行中`
                   : pendingTodo !== undefined ? `○ ${pendingTodo.content}`
                     : dead ? 'AI 终端已结束'
                       : linkBroken ? '终端连接中断'
                         : idleHeadline()
   const idle = !running && activeTodo === undefined && !live && runningChildren === 0
     && pendingTodo === undefined && !dead && !linkBroken && waiting.length === 0 && owed.length === 0
-    && liveJobs.length === 0
+    && liveJobs.length === 0 && liveTransfers.length === 0
 
   const rows: StatusRow[] = []
   if (todos.length > 0) {
@@ -549,6 +574,53 @@ export function StatusCard(props: {
               title: job.detail ?? JOB_STATUS_LABEL[job.status],
               style: { color: theme.muted, fontSize: 11, whiteSpace: 'nowrap' },
             }, `${job.detail ?? JOB_STATUS_LABEL[job.status]} · ${jobDuration(job, now)}`),
+          )
+        }),
+      ),
+    })
+  }
+  if (transfersHere.length > 0) {
+    rows.push({
+      id: 'transfers', glyph: '⇅', label: '缓冲区传输',
+      active: liveTransfers.length > 0,
+      value: liveTransfers.length > 0
+        ? `${String(liveTransfers.length)} 个传输中 · ${String(transferPct(liveTransfers[0]))}%`
+        : '刚刚完成',
+      detail: createElement('div', { style: { display: 'grid', gap: '5px' } },
+        ...transfersHere.map(entry => {
+          const pct = transferPct(entry)
+          const live = entry.finishedAt === undefined
+          return createElement('div', { key: entry.id, style: { display: 'grid', gap: '2px' } },
+            createElement('div', {
+              title: entry.label,
+              style: {
+                display: 'flex', justifyContent: 'space-between', gap: 8,
+                color: entry.error !== undefined ? '#f87171' : live ? theme.text : theme.muted,
+                fontSize: 11.5, lineHeight: '16px',
+              },
+            },
+              createElement('span', {
+                style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              }, entry.label),
+              createElement('span', { style: { flex: '0 0 auto', opacity: 0.75 } },
+                entry.error !== undefined ? '失败' : `${String(pct)}%`),
+            ),
+            createElement('div', {
+              style: {
+                height: 3, borderRadius: 2, overflow: 'hidden',
+                background: theme.border,
+              },
+            },
+              createElement('div', {
+                style: {
+                  height: '100%', width: `${String(pct)}%`,
+                  background: entry.error !== undefined ? '#f87171' : theme.accent,
+                  transition: 'width .4s ease',
+                },
+              })),
+            entry.error !== undefined
+              ? line(entry.error, theme)
+              : null,
           )
         }),
       ),

@@ -105,11 +105,35 @@ export interface BufferGrant {
   revokedAt?: number | undefined
 }
 
+/**
+ * One cross-world chunked transfer, in flight or freshly finished.
+ *
+ * In-memory only: it exists so progress surfaces (the status card) can show
+ * live movement, and entries drop shortly after they settle. Nothing here is
+ * durable state — a restart simply loses the progress view, never the data.
+ */
+export interface BufferTransfer {
+  readonly id: string
+  /** The session whose tool call drives the transfer. */
+  readonly sessionId: string
+  /** Human label: source path → destination path. */
+  readonly label: string
+  readonly bytesDone: number
+  readonly bytesTotal: number
+  readonly chunksDone: number
+  readonly chunksTotal: number
+  readonly startedAt: number
+  readonly finishedAt?: number | undefined
+  readonly error?: string | undefined
+}
+
 /** Everything the pipe UI renders from. */
 export interface BufferState {
   readonly links: readonly BufferLink[]
   readonly tickets: readonly BufferTicket[]
   readonly grants: readonly BufferGrant[]
+  /** Transfers in flight, plus the freshly settled ones (pruned after a beat). */
+  readonly transfers: readonly BufferTransfer[]
 }
 
 /** One browser face request. `state` also travels as the GET shape. */

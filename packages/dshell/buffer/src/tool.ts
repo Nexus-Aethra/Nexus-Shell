@@ -248,7 +248,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       content: { type: 'string', description: 'write: the full text to write.' },
       dest: { type: 'string', description: 'transfer: the path in THIS session\'s own machine; omitted means the same relative path as path.' },
       side: { type: 'string', enum: ['from', 'to'], description: 'transfer: "from" pulls from the granted area into this session (needs read); "to" pushes this session\'s file into the granted area (needs write). Default "from".' },
-      max_bytes: { type: 'number', description: 'transfer: size ceiling in bytes. Default 8 MiB, hard cap 32 MiB.' },
+      max_bytes: { type: 'number', description: 'transfer: whole-file size ceiling in bytes. Files up to 32 MiB move inline; larger files transfer automatically in 16 MiB chunks with sha256 verification (default ceiling 1 GiB, hard cap 4 GiB).' },
     },
     output: {
       schema: {

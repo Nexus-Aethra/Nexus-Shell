@@ -27,4 +27,5 @@ export const BUFFER_PROMPT_TEXT =
   + 'hold; paths outside the granted areas are refused. When a file must actually cross between the two '
   + 'machines — binary, or simply kept byte-for-byte — use action="transfer" instead of read/write: it '
   + 'moves one file between the granted area and your own machine, and with no dest it lands at the same '
-  + 'relative path on the other side.'
+  + 'relative path on the other side. Files up to 32 MiB move inline; anything larger is relayed in 16 MiB'
+  + ' chunks with sha256 verification automatically, up to 4 GiB — no special action is needed.'

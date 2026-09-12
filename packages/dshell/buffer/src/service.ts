@@ -49,6 +49,7 @@ import {
   type BufferState,
   type BufferTicket,
   type BufferTicketState,
+  type BufferTransfer,
 } from './protocol.js'
 import { readDocument, writeDocument } from './store.js'
 
@@ -62,8 +63,18 @@ export const MAX_DEADLINE_MS = 2 * 60 * 60_000
 const WATCHDOG_INTERVAL_MS = 15_000
 /** Bytes one transfer moves when the caller names no ceiling. */
 export const DEFAULT_TRANSFER_BYTES = 8 * 1024 * 1024
-/** Hard ceiling on one transfer: the payload rides stdin as base64. */
+/** Hard ceiling on one INLINE transfer: the payload rides stdin as base64. */
 export const MAX_TRANSFER_BYTES = 32 * 1024 * 1024
+/** Files above this size take the chunked path instead of one inline move. */
+export const CHUNK_THRESHOLD_BYTES = MAX_TRANSFER_BYTES
+/** Byte size of one relayed chunk: a read plus one base64 stdin write. */
+export const CHUNK_BYTES = 16 * 1024 * 1024
+/** Default ceiling for a chunked transfer's WHOLE size. */
+export const DEFAULT_BIG_BYTES = 1024 * 1024 * 1024
+/** Hard ceiling on a chunked transfer's whole size. */
+export const MAX_BIG_BYTES = 4 * 1024 * 1024 * 1024
+/** How long a settled transfer stays in the snapshot for progress surfaces. */
+const TRANSFER_TAIL_MS = 15_000
 
 /** Which end of a transfer is the source. */
 export type TransferSide = 'from' | 'to'
@@ -76,6 +87,8 @@ export interface TransferOutcome {
   /** The destination's path, as its own world spells it. */
   readonly destination: string
   readonly side: TransferSide
+  /** Chunked transfers only: how many relayed slices made the file. */
+  readonly chunks?: number | undefined
 }
 
 /** One inline grant a delegation asks to create. */
@@ -116,6 +129,8 @@ export class BufferService {
   private links: BufferLink[] = []
   private tickets: BufferTicket[] = []
   private grants: BufferGrant[] = []
+  /** Chunked transfers in flight (and the freshly settled), for progress UI. */
+  private readonly transfers = new Map<string, BufferTransfer>()
   private readonly feasibility: Feasibility
   /**
    * A context carrying `subprocess`, for the device probe only.
@@ -167,7 +182,12 @@ export class BufferService {
 
   /** The whole state, for the pipe UI and the tool's listings. */
   snapshot(): BufferState {
-    return { links: [...this.links], tickets: [...this.tickets], grants: [...this.grants] }
+    return {
+      links: [...this.links],
+      tickets: [...this.tickets],
+      grants: [...this.grants],
+      transfers: [...this.transfers.values()],
+    }
   }
 
   /** Links one session is an end of. */
@@ -511,20 +531,35 @@ export class BufferService {
       () => this.ctx.fs.resolve(callerPath, this.resolveOptions(caller, signal)),
     )
     const source = side === 'from' ? access.target : callerTarget
-    const destination = side === 'from' ? callerTarget : access.target
+    const destination = side === 'to' ? access.target : callerTarget
     const sourceWorld = side === 'from' ? access.granter : caller
-    const destinationWorld = side === 'from' ? caller : access.granter
+    const destinationWorld = side === 'to' ? access.granter : caller
 
-    const cap = clampTransfer(maxBytes)
     const info = await this.ctx.agents.withInitiator(sourceWorld, () => this.ctx.fs.stat(source, signal))
     if (info === undefined) throw new Error(`源文件不存在：${source.displayPath}`)
     if (info.type !== 'file') throw new Error(`源不是普通文件：${source.displayPath}（${info.type}）`)
+
+    // Dispatch by size: one inline move up to the stdin ceiling, a chunked
+    // relay above it. With no ceiling named, any file the inline path can
+    // carry just goes (the 8 MiB default predates the chunked path and would
+    // otherwise refuse 8-32 MiB files that need no relay at all); a named
+    // ceiling applies to the WHOLE file in either mode.
+    const big = info.size !== undefined && info.size > CHUNK_THRESHOLD_BYTES
+    const cap = big
+      ? clampBig(maxBytes)
+      : maxBytes === undefined ? MAX_TRANSFER_BYTES : clampTransfer(maxBytes)
     if (info.size !== undefined && info.size > cap) {
       throw new Error(
-        `源文件 ${String(info.size)} 字节，超过单次传输上限 ${String(cap)} 字节；`
-        + '请提高 max_bytes（上限 ' + String(MAX_TRANSFER_BYTES) + '）或换更小的文件',
+        `源文件 ${fmtBytes(info.size)}，超过本次上限 ${fmtBytes(cap)}；`
+        + (big
+          ? `分块传输默认上限 ${fmtBytes(DEFAULT_BIG_BYTES)}，硬上限 ${fmtBytes(MAX_BIG_BYTES)}，可用 max_bytes 提高。`
+          : `inline 上限 ${fmtBytes(MAX_TRANSFER_BYTES)}；更大的文件会自动走分块传输。`),
       )
     }
+    if (big) {
+      return await this.transferChunked(callerId, side, source, destination, sourceWorld, destinationWorld, info.size, signal)
+    }
+
     const bytes = await this.ctx.agents.withInitiator(
       sourceWorld,
       () => this.ctx.fs.readBytes(source, signal, cap),
@@ -536,6 +571,171 @@ export class BufferService {
       destination: destination.displayPath,
       side,
     }
+  }
+
+  /**
+   * Relay one oversized file in chunks.
+   *
+   * The two worlds share no filesystem, so the file moves through the harness
+   * in bounded pieces: the source world `split`s it into {@link CHUNK_BYTES}
+   * slices under a scratch directory, every slice is read as bytes and written
+   * into the destination world's scratch directory through the same
+   * base64-over-stdin path the inline move uses, and the destination world
+   * `cat`s the slices back together. Both ends checksum the whole file and the
+   * transfer refuses to report success on a mismatch; the scratch directories
+   * are cleaned on success and left in place on failure for inspection.
+   */
+  private async transferChunked(
+    callerId: string,
+    side: TransferSide,
+    source: FsTarget,
+    destination: FsTarget,
+    sourceWorld: Agent,
+    destinationWorld: Agent,
+    total: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<TransferOutcome> {
+    const size = Math.max(0, total ?? 0)
+    const chunksTotal = Math.max(1, Math.ceil(size / CHUNK_BYTES))
+    const id = newId('xfer')
+    const record: BufferTransfer = {
+      id,
+      sessionId: callerId,
+      label: `${source.displayPath} → ${destination.displayPath}`,
+      bytesDone: 0,
+      bytesTotal: size,
+      chunksDone: 0,
+      chunksTotal,
+      startedAt: Date.now(),
+      finishedAt: undefined,
+      error: undefined,
+    }
+    this.transfers.set(id, record)
+    // Scratch directories live INSIDE each world's workspace, not /tmp: the
+    // slicing and reassembly run through that world's sandboxed shell, and a
+    // 工作区内修改 policy refuses writes outside the workspace.
+    const scratchOf = (world: Agent): string => {
+      const cwd = world.session.header.cwd
+      return `${(cwd ?? '/tmp').replace(/\/+$/u, '')}/.dshell-xfer-${id.slice(5)}`
+    }
+    const sourceScratch = scratchOf(sourceWorld)
+    const destinationScratch = scratchOf(destinationWorld)
+    try {
+      // Slice in the source world and pin the whole-file checksum.
+      const sourcePath = this.ctx.fs.processPath(source)
+      await this.execAs(
+        sourceWorld,
+        `mkdir -p -- ${quote(sourceScratch)} && split -b ${String(CHUNK_BYTES)} -d -a 4 -- ${quote(sourcePath)} ${quote(sourceScratch + '/p')}`
+        + ` && sha256sum ${quote(sourcePath)} > ${quote(sourceScratch + '/sum')}`,
+        signal,
+      )
+      const sumOf = (text: string): string =>
+        text.split('\n').map(line => line.trim()).find(line => line.length > 0)?.split(/\s+/u)[0] ?? ''
+      const sourceSha = sumOf(await this.readWorldFile(sourceWorld, `${sourceScratch}/sum`, signal))
+      const entries = await this.ctx.agents.withInitiator(
+        sourceWorld,
+        async () => await this.ctx.fs.listDir(
+          await this.ctx.fs.resolve(sourceScratch, this.resolveOptions(sourceWorld, signal)),
+          signal,
+        ),
+      )
+      const names = entries.filter(entry => entry.type === 'file' && entry.name.startsWith('p')).map(entry => entry.name).sort()
+      if (names.length !== chunksTotal) {
+        throw new Error(`分块数量不符：预期 ${String(chunksTotal)}，实际 ${String(names.length)}`)
+      }
+      const destinationPath = this.ctx.fs.processPath(destination)
+      await this.execAs(destinationWorld, `mkdir -p -- ${quote(destinationScratch)}`, signal)
+      let bytesDone = 0
+      for (const [index, name] of names.entries()) {
+        signal?.throwIfAborted()
+        const bytes = await this.ctx.agents.withInitiator(
+          sourceWorld,
+          async () => await this.ctx.fs.readBytes(
+            await this.ctx.fs.resolve(`${sourceScratch}/${name}`, this.resolveOptions(sourceWorld, signal)),
+            signal,
+            CHUNK_BYTES,
+          ),
+        )
+        await this.ctx.agents.withInitiator(
+          destinationWorld,
+          async () => await this.writeBytesAs(
+            destinationWorld,
+            await this.ctx.fs.resolve(`${destinationScratch}/${name}`, this.resolveOptions(destinationWorld, signal)),
+            bytes,
+            signal,
+          ),
+        )
+        bytesDone += bytes.byteLength
+        this.transfers.set(id, { ...record, bytesDone, chunksDone: index + 1 })
+      }
+      // Reassemble in the destination world and verify the whole-file digest.
+      await this.execAs(
+        destinationWorld,
+        `mkdir -p -- ${quote(posixDirname(destinationPath))} && cat ${quote(destinationScratch)}/p* > ${quote(destinationPath)}`
+        + ` && sha256sum ${quote(destinationPath)} > ${quote(destinationScratch + '/sum')}`,
+        signal,
+      )
+      const destinationSha = sumOf(await this.readWorldFile(destinationWorld, `${destinationScratch}/sum`, signal))
+      if (sourceSha === '' || destinationSha !== sourceSha) {
+        throw new Error(`分块传输校验不一致：源 ${sourceSha || '未知'}，目标 ${destinationSha || '未知'}。中间数据保留在 ${sourceScratch} 与 ${destinationScratch}`)
+      }
+      await this.execAs(sourceWorld, `rm -rf -- ${quote(sourceScratch)}`, signal)
+      await this.execAs(destinationWorld, `rm -rf -- ${quote(destinationScratch)}`, signal)
+      const finished: BufferTransfer = { ...record, bytesDone: size, chunksDone: chunksTotal, finishedAt: Date.now() }
+      this.transfers.set(id, finished)
+      this.pruneTransfer(id)
+      return {
+        bytes: size,
+        source: source.displayPath,
+        destination: destination.displayPath,
+        side,
+        chunks: chunksTotal,
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.transfers.set(id, { ...record, finishedAt: Date.now(), error: reason })
+      this.pruneTransfer(id)
+      throw error
+    }
+  }
+
+  /** Convenience: resolve an absolute scratch path as one world and read it. */
+  private async readWorldFile(world: Agent, path: string, signal?: AbortSignal): Promise<string> {
+    return await this.ctx.agents.withInitiator(
+      world,
+      async () => await this.ctx.fs.readText(
+        await this.ctx.fs.resolve(path, this.resolveOptions(world, signal)),
+        signal,
+      ),
+    )
+  }
+
+  /** Run one shell command AS one world, fenced by that world's own policy. */
+  private async execAs(world: Agent, command: string, signal?: AbortSignal): Promise<void> {
+    const shell = this.ctx.get('shell')
+    if (shell === undefined) {
+      throw new Error('本次组合没有 shell 服务，无法执行跨世界传输')
+    }
+    const cwd = world.session.header.cwd
+    const policy = this.ctx.get('sandboxPolicy')?.resolve({ session: world.session })
+    const spec = this.ctx.agents.withInitiator(world, () => shell.resolve({
+      command,
+      ...cwd === undefined ? {} : { workdir: cwd },
+      ...policy === undefined ? {} : { sandboxPolicy: policy },
+      ...signal === undefined ? {} : { signal },
+    }))
+    const result = await shell.run({ ...spec, stdin: undefined })
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.text.trim()
+      throw new Error(
+        `命令执行失败：${detail.length > 0 ? detail : `退出码 ${String(result.exitCode ?? result.signal ?? 'unknown')}`}`)
+    }
+  }
+
+  /** Drop a settled transfer from the snapshot after progress surfaces catch it. */
+  private pruneTransfer(id: string): void {
+    const timer = setTimeout(() => { this.transfers.delete(id) }, TRANSFER_TAIL_MS)
+    timer.unref?.()
   }
 
   /**
@@ -831,6 +1031,19 @@ function clampDeadline(requested: number | undefined): number {
 function clampTransfer(requested: number | undefined): number {
   if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_TRANSFER_BYTES
   return Math.min(MAX_TRANSFER_BYTES, Math.max(1, Math.floor(requested)))
+}
+
+/** Clamp a chunked transfer's WHOLE-size ceiling. */
+function clampBig(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return DEFAULT_BIG_BYTES
+  return Math.min(MAX_BIG_BYTES, Math.max(CHUNK_BYTES, Math.floor(requested)))
+}
+
+/** Human-readable byte count for error text. */
+function fmtBytes(size: number): string {
+  return size >= 1024 * 1024 * 1024
+    ? `${(size / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+    : `${Math.max(1, Math.round(size / (1024 * 1024)))} MiB`
 }
 
 /**

@@ -11,7 +11,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import {
   DSHELL_BUFFER_PATH, type BufferGrant, type BufferLink, type BufferRequest, type BufferResponse,
-  type BufferTicket,
+  type BufferTicket, type BufferTransfer,
 } from '../protocol.js'
 
 declare module '@deepseek-ai/cordis' {
@@ -26,6 +26,8 @@ export interface BufferSnapshot {
   readonly links: readonly BufferLink[]
   readonly tickets: readonly BufferTicket[]
   readonly grants: readonly BufferGrant[]
+  /** Chunked transfers in flight (and the freshly settled), for progress UI. */
+  readonly transfers: readonly BufferTransfer[]
   /** The last refusal or transport failure, shown until the next call. */
   readonly error: string | undefined
   /** Whether the host has answered at least once. */
@@ -35,11 +37,13 @@ export interface BufferSnapshot {
 }
 
 const EMPTY: BufferSnapshot = {
-  links: [], tickets: [], grants: [], error: undefined, loaded: false, open: false,
+  links: [], tickets: [], grants: [], transfers: [], error: undefined, loaded: false, open: false,
 }
 
 /** How often an open panel re-reads the state, so progress is visible live. */
 const POLL_MS = 3000
+/** How fast progress moves while a chunked transfer is in flight. */
+const TRANSFER_POLL_MS = 1000
 
 /** The slice of the session list the panel renders peer labels from. */
 export interface SessionSeat {
@@ -77,12 +81,21 @@ export class BufferClientService extends Service {
   setOpen(open: boolean): void {
     if (this.snapshot.open === open) return
     this.publish({ ...this.snapshot, open })
-    if (open) {
-      void this.load()
-      if (this.poll === undefined) {
-        this.poll = setInterval(() => { void this.load() }, POLL_MS)
-      }
-    } else if (this.poll !== undefined) {
+    this.syncPoll()
+    if (open) void this.load()
+  }
+
+  /**
+   * Keep exactly one poll alive while it is needed: the panel is open, or a
+   * chunked transfer is in flight (its progress surfaces in the status card
+   * whether or not the pipe panel is on screen).
+   */
+  private syncPoll(): void {
+    const needed = this.snapshot.open
+      || this.snapshot.transfers.some(entry => entry.finishedAt === undefined)
+    if (needed && this.poll === undefined) {
+      this.poll = setInterval(() => { void this.load() }, this.snapshot.open ? POLL_MS : TRANSFER_POLL_MS)
+    } else if (!needed && this.poll !== undefined) {
       clearInterval(this.poll)
       this.poll = undefined
     }
@@ -152,10 +165,12 @@ export class BufferClientService extends Service {
       links: body.links,
       tickets: body.tickets,
       grants: body.grants,
+      transfers: body.transfers ?? [],
       error: body.error,
       loaded: true,
       open: this.snapshot.open,
     })
+    this.syncPoll()
     if (strict && body.error !== undefined) throw new Error(body.error)
     return body
   }
