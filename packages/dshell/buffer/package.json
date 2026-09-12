@@ -43,6 +43,7 @@
     "@deepseek-ai/dsh-client-connection": "link:../../../dsh/packages/client/connection",
     "@deepseek-ai/dsh-client-ui-layout": "link:../../../dsh/packages/client/ui-layout",
     "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
+    "@deepseek-ai/dsh-dshell-std": "link:../std",
     "@deepseek-ai/dsh-fs": "link:../../../dsh/packages/fs/fs",
     "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
     "@deepseek-ai/dsh-sandbox-policy": "link:../../../dsh/packages/sandbox/sandbox-policy",

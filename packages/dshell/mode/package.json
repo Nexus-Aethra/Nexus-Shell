@@ -46,6 +46,7 @@
     "@deepseek-ai/dsh-client-ui-settings-plugins": "link:../../../dsh/packages/client/ui-settings-plugins",
     "@deepseek-ai/dsh-client-ui-sidebar": "link:../../../dsh/packages/client/ui-sidebar",
     "@deepseek-ai/dsh-client-ui-slots": "link:../../../dsh/packages/client/ui-slots",
+    "@deepseek-ai/dsh-dshell-std": "link:../std",
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
     "@deepseek-ai/dsh-llm": "link:../../../dsh/packages/llm/llm",
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",

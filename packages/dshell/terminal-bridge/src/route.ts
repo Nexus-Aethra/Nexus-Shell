@@ -14,38 +14,17 @@
  */
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
+import { DSHELL_PTY_PATH, type DshellPtyCommand, type DshellPtyRequest, type DshellPtyResponse } from '@deepseek-ai/dsh-dshell-std'
 import type { DshellTerminalBridge } from './index.js'
 
-/** The exact `/api` path the bridge answers on. */
-export const DSHELL_PTY_PATH = '/api/dshell/pty'
+// The wire contract lives in the shared standard layer and is re-exported here,
+// so the bridge's own public surface (and every existing importer) is unchanged
+// while there is exactly one declaration of it.
+export { DSHELL_PTY_PATH }
+export type { DshellPtyCommand, DshellPtyRequest, DshellPtyResponse }
 
 /** Commands one answer carries. Mirrors the bridge's own retention cap. */
 const MAX_HISTORY = 200
-
-/** One browser face request. */
-export interface DshellPtyRequest {
-  readonly action: 'history'
-  /** The session whose shell history to read. */
-  readonly sessionId: string
-  /** Newest-commands cap; omitted means {@link MAX_HISTORY}. */
-  readonly limit?: number | undefined
-}
-
-/** One command the shell ran, as the composer lists it. */
-export interface DshellPtyCommand {
-  /** The assembled command line. */
-  readonly command: string
-  /** Bash's exit status, or null when the marker carried none. */
-  readonly exitCode: number | null
-  /** Epoch ms the command finished. */
-  readonly at: number
-}
-
-/** One answer: the commands, oldest first (the order they ran in). */
-export interface DshellPtyResponse {
-  readonly commands?: readonly DshellPtyCommand[] | undefined
-  readonly error?: string | undefined
-}
 
 /** JSON response in the shape the browser face parses. */
 function respond(body: DshellPtyResponse, status = 200): Response {

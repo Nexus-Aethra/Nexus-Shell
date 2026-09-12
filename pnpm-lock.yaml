@@ -38,6 +38,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-fs':
         specifier: link:../../../dsh/packages/fs/fs
         version: link:../../../dsh/packages/fs/fs
@@ -108,6 +111,9 @@ importers:
       '@deepseek-ai/dsh-dshell-ssh':
         specifier: link:../ssh
         version: link:../ssh
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
@@ -243,6 +249,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-slots':
         specifier: link:../../../dsh/packages/client/ui-slots
         version: link:../../../dsh/packages/client/ui-slots
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
@@ -319,6 +328,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-slots':
         specifier: link:../../../dsh/packages/client/ui-slots
         version: link:../../../dsh/packages/client/ui-slots
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-dshell-terminal-bridge':
         specifier: link:../terminal-bridge
         version: link:../terminal-bridge
@@ -386,6 +398,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-settings-plugins':
         specifier: link:../../../dsh/packages/client/ui-settings-plugins
         version: link:../../../dsh/packages/client/ui-settings-plugins
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-fs':
         specifier: link:../../../dsh/packages/fs/fs
         version: link:../../../dsh/packages/fs/fs
@@ -433,6 +448,12 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/dshell/std:
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/dshell/terminal-bridge:
     dependencies:
       '@deepseek-ai/cordis':
@@ -450,6 +471,9 @@ importers:
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-host-webserver':
         specifier: link:../../../dsh/packages/host/webserver
         version: link:../../../dsh/packages/host/webserver
@@ -532,6 +556,9 @@ importers:
       '@deepseek-ai/dsh-dshell-ssh':
         specifier: link:../ssh
         version: link:../ssh
+      '@deepseek-ai/dsh-dshell-std':
+        specifier: link:../std
+        version: link:../std
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session

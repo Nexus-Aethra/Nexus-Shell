@@ -44,6 +44,7 @@
     "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer",
     "@deepseek-ai/dsh-client-ui-settings": "link:../../../dsh/packages/client/ui-settings",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "link:../../../dsh/packages/client/ui-settings-plugins",
+    "@deepseek-ai/dsh-dshell-std": "link:../std",
     "@deepseek-ai/dsh-fs": "link:../../../dsh/packages/fs/fs",
     "@deepseek-ai/dsh-fs-local": "link:../../../dsh/packages/fs/fs-local",
     "@deepseek-ai/dsh-fs-sandbox": "link:../../../dsh/packages/fs/fs-sandbox",

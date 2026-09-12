@@ -19,9 +19,10 @@
  * (`node:os`, the terminal bridge) into this bundle.
  */
 
+import { createElement, useEffect, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from 'react'
 import {
-  createElement, useEffect, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject,
-} from 'react'
+  DSHELL_FILES_PATH, DSHELL_PTY_PATH, type DshellCompletionCandidate, type DshellFileKind,
+} from '@deepseek-ai/dsh-dshell-std'
 import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: pulls the Conversation SlotMap (`conversation.input.overlay`) and
 // the SessionStandardProps that hand a slot its `useInput`/`inputActions`.
@@ -29,22 +30,21 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { useDshellTheme } from './theme.js'
 
-/** The files route, restated: dshell-files owns it (`DSHELL_FILES_PATH`). */
-const FILES_PATH = '/api/dshell/files'
+/** The files route, from the shared contract: dshell-files owns it. */
+const FILES_PATH = DSHELL_FILES_PATH
 
 /**
- * The bridge's history route, restated: dshell-terminal-bridge owns it
- * (`DSHELL_PTY_PATH`), and importing its root would drag node-pty and the host
- * half into this bundle.
+ * The bridge's history route, from the same place (`DSHELL_PTY_PATH`). Both
+ * paths used to be restated here by hand because the client could not import a
+ * host module; the standard layer exists so that drift like that is a compile
+ * error instead of a 404 the user finds.
  */
-const HISTORY_PATH = '/api/dshell/pty'
+const HISTORY_PATH = DSHELL_PTY_PATH
 
-/** One candidate, as a route answers it. */
-export interface CompletionCandidate {
-  readonly name: string
-  readonly kind: 'file' | 'directory' | 'other' | 'command'
-  readonly size?: number | undefined
-  readonly hint?: string | undefined
+/** One candidate, with the client's own extension of the wire kinds. */
+export type CompletionCandidate = Omit<DshellCompletionCandidate, 'kind'> & {
+  /** `command` is the history source's: the wire never sends it. */
+  readonly kind: DshellFileKind | 'command'
 }
 
 /** One open completion over the composer's draft. */

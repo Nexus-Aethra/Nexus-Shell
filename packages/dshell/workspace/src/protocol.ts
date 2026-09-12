@@ -16,28 +16,9 @@
  */
 
 /** Exact `/api` route path owned by the dshell session panel. */
-export const DSHELL_SESSIONS_PATH = '/api/dshell/sessions'
 
-/** One request body the route accepts; `list` is also the GET shape. */
-export type SessionRequest =
-  | { readonly action: 'list' }
-  | { readonly action: 'archive'; readonly sessionId: string }
-  | { readonly action: 'unarchive'; readonly sessionId: string }
-  | { readonly action: 'delete'; readonly sessionId: string }
-
-/**
- * One response body. `archived` rides on every response — the tag set after
- * the request, so one round trip leaves the caller's snapshot current.
- * `error` is a refusal the sidebar shows verbatim; it is not a transport
- * failure, so the response still carries a 2xx status.
- */
-export interface SessionResponse {
-  readonly archived: readonly string[]
-  /**
-   * Archived ids whose log is scheduled for removal at the next start (the
-   * session was still loaded in this process, so its writer would have
-   * recreated the directory). Always a subset of `archived`.
-   */
-  readonly pendingPurge?: readonly string[]
-  readonly error?: string
-}
+// Moved to the shared standard layer: these are wire contracts, not this
+// package's, and both halves of every plugin read the same declaration there.
+// Re-exported so existing importers keep one import site per package.
+export { DSHELL_SESSIONS_PATH } from '@deepseek-ai/dsh-dshell-std'
+export type { SessionRequest, SessionResponse } from '@deepseek-ai/dsh-dshell-std'

@@ -17,9 +17,11 @@ PROFILE="${1:-web}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 DSH_PKG="${DSH_CMD:-pnpm dsh}"
 
-# Order matters: bundle must be added last so its deps are already present
-# when dsh's reconcile pass promotes it into dsh.profile.bundles.
+# Order matters: the standard layer first (every plugin depends on its
+# contracts), and bundle last so its deps are already present when dsh's
+# reconcile pass promotes it into dsh.profile.bundles.
 PLUGINS=(
+  std
   conversation
   terminal-bridge
   mode

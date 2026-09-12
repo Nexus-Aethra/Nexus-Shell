@@ -30,10 +30,13 @@ interface DshellClientBundleConfig {
   outputOptions: {
     entryFileNames: string
     sourcemapExcludeSources: false
+    // The closure handoff lives here rather than at the top level: tsdown
+    // honors a top-level `banner` but not a top-level `intro`, and the intro is
+    // what defines the `module`/`exports` bindings the CJS interop writes to.
+    banner: string
+    footer: string
+    intro: string
   }
-  banner: string
-  footer: string
-  intro: string
 }
 
 /**
@@ -59,6 +62,14 @@ export function dshellClientBundle(
     dts: false,
     sourcemap: true,
     clean: false,
+    // dsh's module table only serves its own PLATFORM_MODULES plus registered
+    // client plugins, so a `require` of one of OUR support packages fails the
+    // plugin load — which is exactly what happened when the contracts moved
+    // into `dshell-std` and the bundler externalized it as a dependency. The
+    // standard layer is contracts and seam helpers: tiny, stateless, and safe
+    // to inline into every face, so it is always inlined rather than listed
+    // per package.
+    noExternal: ['@deepseek-ai/dsh-dshell-std', ...inline],
     // Inlined libraries reference Node's `process.env.NODE_ENV` for their
     // dev/prod switches; the closure bundle runs in a browser with no
     // `process`, so the reference is baked to production at build time.
@@ -77,7 +88,6 @@ export function dshellClientBundle(
       // bundling a second copy.
       '@deepseek-ai/dsh-client-ui-primitives',
     ],
-    noExternal: inline,
     outputOptions: {
       entryFileNames: 'client.js',
       sourcemapExcludeSources: false,

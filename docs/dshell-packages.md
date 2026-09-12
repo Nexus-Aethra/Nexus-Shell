@@ -24,10 +24,39 @@ when it contributes to model-visible state.
   set.
 
 - Each package name uses one dash-separated role token after `dshell`:
-  `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`,
+  `std`, `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`,
   `workspace`, `ssh`, `buffer`.
 
 ## The packages
+
+### `dshell-std`
+
+- Role: **the standard layer**. It owns what every other package would
+  otherwise re-implement: the `/api/dshell/*` paths and the wire shapes
+  that cross them (`src/contracts.ts`), and — as the refactor continues —
+  the dsh seam adapters (route definition, session/world addressing,
+  capability probing).
+- Why it exists: a dsh interface change used to land N times, once per
+  package that had grown its own copy of the seam. Measured before the
+  split: six `respond()` helpers, five per-package protocol modules and
+  six path constants, two independent session/world resolvers, 61
+  type-only merge imports with no registry, and two styling systems on
+  the browser side. The browser faces even restated host contracts by
+  hand because there was nowhere shared to put them — drift there is a
+  404 at runtime, not a compile error.
+- The rule that keeps it useful: it declares FACTS (paths, shapes,
+  adapters), never feature behaviour, and it is the only dshell package
+  allowed to care how dsh spells things.
+- dsh services depended on: none. This is deliberate — it is the layer
+  that absorbs dsh changes, so it must not be spread across the graph.
+- Introduced in: the standard-layer refactor (contracts extraction,
+  2026-09-12). Feature packages keep their own `protocol.ts` as a
+  re-export shim, so the single declaration lives here while existing
+  import sites stay unchanged.
+- Touches decisions: for the browser bundle, `dshell-std` is always
+  inlined (see `tsdown.dshell.preset.ts`) because dsh's client module
+  table only serves its own PLATFORM_MODULES plus registered client
+  plugins; a `require` of a support package fails the plugin load.
 
 ### `dshell-bundle`
 
@@ -260,6 +289,10 @@ so the inventory is complete; do not introduce wrappers for them.
 ## Dependency graph
 
 ```
+dshell-std                    (the standard layer: contracts + seam adapters)
+  ▲
+  │ every package below imports its wire contracts from here
+  │
 dshell-bundle
   ├── dshell-conversation
   │     ├── dshell-terminal-bridge (host face)
@@ -280,10 +313,12 @@ dshell-bundle
                                      read as a structural seat)
 ```
 
-There are no cycles. `dshell-bundle` is the install root; the others
-  are leaves or single-level consumers of the bridge. The two optional
-  edges exist only when both rows are composed — each side reads the
-  other through a structural seat, never an import.
+There are no cycles. `dshell-std` has no dependency at all: it is the
+  layer that keeps a dsh change from landing once per package.
+  `dshell-bundle` is the install root; the others are leaves or
+  single-level consumers of the bridge. The two optional edges exist only
+  when both rows are composed — each side reads the other through a
+  structural seat, never an import.
 
 ## Cordis `ctx` keys dshell publishes or subscribes to
 

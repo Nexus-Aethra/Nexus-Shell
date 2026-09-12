@@ -37,6 +37,7 @@
     "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
     "@deepseek-ai/dsh-client-connection": "link:../../../dsh/packages/client/connection",
     "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
+    "@deepseek-ai/dsh-dshell-std": "link:../std",
     "@deepseek-ai/dsh-host-webserver": "link:../../../dsh/packages/host/webserver",
     "@deepseek-ai/dsh-session": "link:../../../dsh/packages/core/session",
     "@deepseek-ai/dsh-terminal": "link:../../../dsh/packages/terminal/terminal",

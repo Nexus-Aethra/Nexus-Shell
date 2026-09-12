@@ -37,6 +37,7 @@
     "@deepseek-ai/dsh-dshell-files": "link:../files",
     "@deepseek-ai/dsh-dshell-mode": "link:../mode",
     "@deepseek-ai/dsh-dshell-ssh": "link:../ssh",
+    "@deepseek-ai/dsh-dshell-std": "link:../std",
     "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
     "@deepseek-ai/dsh-dshell-workspace": "link:../workspace",
     "@deepseek-ai/dsh-sandbox-local": "link:../../../dsh/packages/sandbox/sandbox-local",
