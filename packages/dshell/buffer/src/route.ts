@@ -50,6 +50,10 @@ export function createBufferRoute(deps: BufferRouteDeps): ConnectionFetchRoute {
       case 'cancel':
         await deps.service.cancelByUser(input.ticketId)
         return state()
+      case 'buffer-ls': {
+        const listing = await deps.service.userListing(input.linkId, input.grantId, input.path)
+        return { ...state(), listing }
+      }
       default:
         return { ...state(), error: '未知操作' }
     }

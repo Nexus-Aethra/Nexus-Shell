@@ -48,9 +48,9 @@ const DESCRIPTION =
   + '- cancel: withdraw an outstanding ticket from either end.\n'
   + '- grants: grants other sessions handed to you, with their provenance, description and remaining '
   + 'reference count, and grants you issued, so you can see what is still open.\n'
-  + '- ls: with no path, list the buffer roots this session holds — each mapped area as name/ with '
+  + '- ls: with no path, list the buffer roots this session holds (path "/" or none) — each mapped area as /name/ with '
   + 'its rights and origin. With a buffer path, list that directory.\n'
-  + '- read: one text file from the buffer, addressed by buffer path (mappedName/sub/file). offset '
+  + '- read: one text file from the buffer, addressed by buffer path (/mappedName/sub/file). offset '
   + 'is a 1-based line to start from and limit caps lines, so big files page instead of flooding.\n'
 
   + '- edit: replace old_string with new_string inside one buffer file, in place — for targeted '
@@ -60,7 +60,8 @@ const DESCRIPTION =
   + 'file to dest in this session\'s own world; upload pushes this session\'s src file into the buffer '
   + 'at path. Binary-safe, capped by max_bytes; files up to 32 MiB move inline, anything larger is '
   + 'relayed in 16 MiB chunks with sha256 verification (up to 4 GiB).\n'
-  + 'Buffer paths always start with the as name a grant declared, and each pipe has its own namespace — '
+  + 'Buffer paths are rooted at /: a grant with as name "study" is addressed as /study/sub/file, and '
+  + 'action=ls with no path (or path "/") lists the mapped roots. Each pipe has its own namespace — '
   + 'this is the only addressing the file actions need. A grant stays alive only while a ticket references '
   + 'it: settle the ticket and its mapped paths end with it.'
 
@@ -144,9 +145,11 @@ function renderGrants(service: BufferService, viewer: string): string {
     for (const grant of received) {
       lines.push(`- ${grant.id} · 授予方 ${service.label(grant.from)} · 剩余引用 ${String(grant.count)}`)
       if (grant.description.trim().length > 0) lines.push(`  用途：${grant.description.trim()}`)
-      for (const area of grant.areas) lines.push(`  区域：${area.path}（${rightsLabel(area.rights)}）`)
+      for (const area of grant.areas) {
+        lines.push(`  区域：${area.as === undefined ? area.path : `/${area.as}/ ← ${area.path}`}（${rightsLabel(area.rights)}）`)
+      }
     }
-    lines.push('', '用 read / ls / write 访问，参数为 grant_id 与相对区域根的路径。')
+    lines.push('', '映射了 as 名字的区域用 ls / read / edit / download / upload 以缓冲路径访问（根为 /，如 /名字/子/文件）；未映射的区域用 grant_id 加相对路径访问。')
   }
   lines.push('', '本会话发出的访问权：')
   if (issued.length === 0) {
@@ -155,7 +158,9 @@ function renderGrants(service: BufferService, viewer: string): string {
     for (const grant of issued) {
       const state = grant.revokedAt === undefined ? `剩余引用 ${String(grant.count)}` : '已回收'
       lines.push(`- ${grant.id} · 给 ${service.label(grant.to)} · ${state}`)
-      for (const area of grant.areas) lines.push(`  区域：${area.path}（${rightsLabel(area.rights)}）`)
+      for (const area of grant.areas) {
+        lines.push(`  区域：${area.as === undefined ? area.path : `/${area.as}/ ← ${area.path}`}（${rightsLabel(area.rights)}）`)
+      }
     }
   }
   return lines.join('\n')
@@ -254,8 +259,8 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       text: { type: 'string', description: 'progress: what to report.' },
       result: { type: 'string', description: 'finish: the outcome handed back to the requester.' },
       error: { type: 'string', description: 'fail: why the request could not be completed.' },
-      grant_id: { type: 'string', description: 'Legacy fallback for grants created before mappings existed. Prefer the buffer path (mappedName/sub/file) — it resolves the grant for you.' },
-      path: { type: 'string', description: 'Buffer path: mappedName/sub/file — the name the delegating side declared with as. ls with no path lists every mapped root.' },
+      grant_id: { type: 'string', description: 'Legacy fallback for grants created before mappings existed. Prefer the buffer path (/mappedName/sub/file) — it resolves the grant for you.' },
+      path: { type: 'string', description: 'Buffer path rooted at /: /mappedName/sub/file — the name the delegating side declared with as. ls with no path (or "/") lists every mapped root.' },
       offset: { type: 'number', description: 'read: 1-based line number to start from, for paging through a big text file.' },
       limit: { type: 'number', description: 'read: maximum lines to return.' },
       old_string: { type: 'string', description: 'edit: the exact text to replace; must already exist in the file (edit cannot create files — use upload for that), and must occur exactly once unless replace_all.' },
@@ -283,7 +288,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
 }
 
 /** 
- * Resolve the file actions' target: a buffer path (mappedName/sub/file) picks
+ * Resolve the file actions' target: a buffer path (/mappedName/sub/file) picks
  * its grant by name; an explicit grant_id keeps the area-relative path.
  */
 function resolveTarget(service: BufferService, viewer: string, args: { grant_id?: string; path?: string }): { grantId: string; path: string } {
@@ -440,12 +445,13 @@ async function run(
     }
 
     case 'ls': {
-      if ((args.grant_id === undefined || args.grant_id === '') && (args.path === undefined || args.path === '')) {
+      const rawPath = (args.path ?? '').trim()
+      if ((args.grant_id === undefined || args.grant_id === '') && (rawPath === '' || /^\/+$/u.test(rawPath))) {
         return service.bufferTree(viewer)
       }
       const target = resolveTarget(service, viewer, args)
       const listing = await service.listGranted(viewer, target.grantId, target.path, signal)
-      return `目录 ${target.path}：\n${listing}`
+      return `目录 /${target.path === '.' ? '' : target.path.replace(/^\/+/u, '')}：\n${listing}`
     }
 
     default:

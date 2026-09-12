@@ -173,6 +173,10 @@ function Job({
     job.skipped > 0
       ? createElement('span', { style: styles.jobStateStyle }, t('transfer.skipped', { count: String(job.skipped) }))
       : null,
+    running && job.chunksTotal !== undefined && job.chunksTotal > 0
+      ? createElement('span', { style: styles.jobStateStyle },
+        t('transfer.chunks', { done: String(job.chunksDone ?? 0), total: String(job.chunksTotal) }))
+      : null,
     running
       ? createElement('button', {
         type: 'button',

@@ -144,6 +144,38 @@ export interface BufferState {
   readonly transfers: readonly BufferTransfer[]
 }
 
+/**
+ * One row of the pipe detail page's buffer browser.
+ *
+ * A ROOT entry (one per mapped area) carries the grant it belongs to and its
+ * provenance, so the user can see which side offered it and descend into it;
+ * entries below the root are plain directory children.
+ */
+export interface BufferUserEntry {
+  /** Last segment for children; the mapped name (`as`) for a root. */
+  readonly name: string
+  readonly kind: 'directory' | 'file' | 'other'
+  readonly size?: number | undefined
+  /** Root entries only: the grant this mapping belongs to. */
+  readonly grantId?: string
+  /** Root entries only: the mapped name and its rights. */
+  readonly as?: string
+  readonly rights?: readonly string[]
+  /** Root entries only: the two ends of the grant (granter → grantee). */
+  readonly from?: string
+  readonly to?: string
+  /** Root entries only: the real path behind the mapping, in the granter's world. */
+  readonly origin?: string
+}
+
+/** One answer to a `buffer-ls` request. */
+export interface BufferListing {
+  /** The real path listed (root listings answer `/`). */
+  readonly path: string
+  readonly entries: readonly BufferUserEntry[]
+  readonly truncated: boolean
+}
+
 /** One browser face request. `state` also travels as the GET shape. */
 export type BufferRequest =
   | { readonly action: 'state' }
@@ -151,8 +183,11 @@ export type BufferRequest =
   | { readonly action: 'unlink'; readonly linkId: string }
   | { readonly action: 'revoke'; readonly grantId: string }
   | { readonly action: 'cancel'; readonly ticketId: string }
+  | { readonly action: 'buffer-ls'; readonly linkId: string; readonly grantId?: string; readonly path?: string }
 
 /** One browser face response: the committed state plus an optional refusal. */
 export interface BufferResponse extends BufferState {
   readonly error?: string | undefined
+  /** Present only on a `buffer-ls` request. */
+  readonly listing?: BufferListing | undefined
 }

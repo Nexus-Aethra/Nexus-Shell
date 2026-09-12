@@ -15,10 +15,10 @@
  */
 
 import {
-  createElement, useEffect, useMemo, useState, useSyncExternalStore,
+  createElement, useEffect, useMemo, useRef, useState, useSyncExternalStore,
   type CSSProperties, type ReactElement,
 } from 'react'
-import type { BufferGrant, BufferTicket } from '../protocol.js'
+import type { BufferGrant, BufferTicket, BufferUserEntry } from '../protocol.js'
 import type { BufferClientService, SessionSeat } from './service.js'
 import { PipeGraph, type GraphSession } from './pipe-graph.js'
 
@@ -364,6 +364,7 @@ function DetailPane(props: ListSideProps & {
         onClick: () => { void props.buffer.unlink(link.id).catch(() => {}) },
       }, '解除管道'),
     ),
+    createElement(BufferBrowser, { buffer: props.buffer, linkId: link.id, sessions }),
     createElement('div', { style: sectionTitleStyle }, `进行中的请求 (${String(open.length)})`),
     open.length === 0
       ? createElement('div', { style: emptyStyle }, '没有进行中的请求。')
@@ -434,7 +435,185 @@ function grantRow(grant: BufferGrant, sessions: SessionSeat | undefined): ReactE
       ...grant.areas.map((area, index) => createElement('span', {
         key: `${grant.id}:${String(index)}`,
         style: dimStyle,
-      }, `${area.path}（${rightsLabel(area.rights)}）`)),
+      }, area.as === undefined
+        ? `${area.path}（${rightsLabel(area.rights)}，未映射）`
+        : `/${area.as}/ ← ${area.path}（${rightsLabel(area.rights)}）`)),
     ),
   )
+}
+
+// --------------------------------------------------------------------------
+// The buffer browser: the pipe detail page's view over the namespace.
+
+/** Where in the namespace the browser currently stands. */
+interface BrowserLocation {
+  /** The mapped root descended into; absent means standing at `/`. */
+  readonly root: BufferUserEntry | undefined
+  /** Directory below that root, area-relative; empty means the root itself. */
+  readonly rel: string
+  readonly entries: readonly BufferUserEntry[]
+  readonly truncated: boolean
+  /** The real path the server listed, shown as provenance once inside. */
+  readonly realPath: string | undefined
+}
+
+const browserHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }
+const crumbStyle: CSSProperties = {
+  border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer',
+  fontSize: 12, padding: '2px 4px', borderRadius: 6, opacity: 0.85,
+}
+const browserRowStyle: CSSProperties = {
+  ...clickableRowStyle, padding: '3px 6px', fontFamily: 'ui-monospace, monospace', fontSize: 12,
+}
+const glyphStyle: CSSProperties = { flex: '0 0 auto', opacity: 0.55, width: 12 }
+const sizeStyle: CSSProperties = { ...dimStyle, flex: '0 0 auto', fontVariantNumeric: 'tabular-nums' }
+
+/**
+ * Walk the pipe's buffer namespace: at `/` the mapped roots (with rights and
+ * origin), below one root its directories, as the same view the two agents'
+ * `ls` answers from. Read-only: the browser is for looking, every mutation
+ * stays a tool call.
+ */
+function BufferBrowser(props: {
+  readonly buffer: BufferClientService
+  readonly linkId: string
+  readonly sessions?: SessionSeat | undefined
+}): ReactElement {
+  const [location, setLocation] = useState<BrowserLocation | undefined>(undefined)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+  // Races one-liner: only the newest request may land, so a slow deep listing
+  // cannot overwrite the view the user has since navigated away from.
+  const seq = useRef(0)
+
+  useEffect(() => {
+    // A new pipe's detail starts at `/`; the old view must not leak through.
+    const mine = ++seq.current
+    setLocation(undefined)
+    setError(undefined)
+    setLoading(true)
+    props.buffer.listBuffer(props.linkId).then(listing => {
+      if (seq.current !== mine) return
+      setLocation({ root: undefined, rel: '', entries: listing.entries, truncated: listing.truncated, realPath: '/' })
+    }).catch(reason => {
+      if (seq.current !== mine) return
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => {
+      if (seq.current === mine) setLoading(false)
+    })
+  }, [props.buffer, props.linkId])
+
+  /** List one directory below a mapped root. */
+  const open = (root: BufferUserEntry, rel: string): void => {
+    const mine = ++seq.current
+    setLoading(true)
+    setError(undefined)
+    props.buffer.listBuffer(props.linkId, root.grantId, rel === '' ? '.' : rel).then(listing => {
+      if (seq.current !== mine) return
+      setLocation({ root, rel, entries: listing.entries, truncated: listing.truncated, realPath: listing.path })
+    }).catch(reason => {
+      if (seq.current !== mine) return
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => {
+      if (seq.current === mine) setLoading(false)
+    })
+  }
+
+  const back = (): void => {
+    const current = location
+    if (current === undefined || current.root === undefined) return
+    if (current.rel === '') {
+      const mine = ++seq.current
+      setLoading(true)
+      props.buffer.listBuffer(props.linkId).then(listing => {
+        if (seq.current !== mine) return
+        setLocation({ root: undefined, rel: '', entries: listing.entries, truncated: listing.truncated, realPath: '/' })
+      }).catch(() => {}).finally(() => { if (seq.current === mine) setLoading(false) })
+      return
+    }
+    open(current.root, current.rel.split('/').slice(0, -1).join(''))
+  }
+
+  const refresh = (): void => {
+    const current = location
+    if (current === undefined) return
+    if (current.root === undefined) {
+      const mine = ++seq.current
+      setLoading(true)
+      props.buffer.listBuffer(props.linkId).then(listing => {
+        if (seq.current !== mine) return
+        setLocation({ root: undefined, rel: '', entries: listing.entries, truncated: listing.truncated, realPath: '/' })
+      }).catch(reason => {
+        if (seq.current !== mine) return
+        setError(reason instanceof Error ? reason.message : String(reason))
+      }).finally(() => { if (seq.current === mine) setLoading(false) })
+    } else {
+      open(current.root, current.rel)
+    }
+  }
+
+  const root = location?.root
+  const relSegments = location === undefined || location.rel === '' ? [] : location.rel.split('/')
+
+  return createElement('div', null,
+    createElement('div', { style: sectionTitleStyle }, `缓冲区 (${root === undefined ? '/' : `/${root.name}/${relSegments.length === 0 ? '' : String(location?.rel)}`})`),
+    createElement('div', { style: cardStyle },
+      createElement('div', { style: browserHeaderStyle },
+        root === undefined ? null : createElement('span', { style: dimStyle }, String(location?.realPath)),
+        createElement('span', { style: { flex: '1 1 auto' } }),
+        createElement('button', { style: smallButtonStyle, onClick: refresh, disabled: loading }, '⟳ 刷新'),
+      ),
+      createElement('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2, marginBottom: 4 } },
+        createElement('button', { style: crumbStyle, onClick: back }, '/'),
+        root === undefined ? null : createElement('button', {
+          style: crumbStyle, onClick: () => { if (root.grantId !== undefined) open(root, '') },
+        }, `/${root.name}`),
+        ...relSegments.map((segment, index) => {
+          const target = relSegments.slice(0, index + 1).join('')
+          return createElement('button', {
+            key: target,
+            style: crumbStyle,
+            onClick: () => { if (root?.grantId !== undefined) open(root, target) },
+          }, `/${segment}`)
+        }),
+      ),
+      error === undefined ? null : createElement('div', { style: { ...dimStyle, color: '#f87171' } }, error),
+      loading && location === undefined ? createElement('div', { style: emptyStyle }, '读取中…') : null,
+      !loading && location === undefined && error === undefined
+        ? createElement('div', { style: emptyStyle }, '缓冲区为空。委派任务时带上带 as 名字的授权，映射目录会出现在这里。')
+        : null,
+      location === undefined ? null : location.entries.length === 0
+        ? createElement('div', { style: emptyStyle }, '（空目录）')
+        : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 1 } },
+          ...location.entries.map(entry => {
+            const isRoot = entry.grantId !== undefined
+            const childRel = location.rel === '' ? entry.name : `${location.rel}/${entry.name}`
+            return createElement('div', {
+              key: `${entry.grantId ?? ''}:${entry.name}`,
+              style: entry.kind === 'directory' || isRoot ? browserRowStyle : rowStyle,
+              title: isRoot ? `${entry.origin}（${rightsLabel(entry.rights ?? [])}）` : entry.kind === 'directory' ? '进入' : undefined,
+              onClick: entry.kind === 'directory' || isRoot
+                ? () => { if (isRoot) open(entry, ''); else if (root !== undefined && root.grantId !== undefined) open(root, childRel) }
+                : undefined,
+            },
+              createElement('span', { style: glyphStyle }, isRoot || entry.kind === 'directory' ? 'd' : entry.kind === 'file' ? '-' : '?'),
+              createElement('span', { style: growStyle }, isRoot ? `/${entry.name}/` : entry.name),
+              isRoot
+                ? createElement('span', { style: dimStyle },
+                  `← ${entry.origin} · ${rightsLabel(entry.rights ?? [])} · ${shortLabel(props.sessions, entry.from ?? '')} → ${shortLabel(props.sessions, entry.to ?? '')}`)
+                : entry.size === undefined ? null : createElement('span', { style: sizeStyle }, fmtSize(entry.size)),
+            )
+          }),
+          location.truncated ? createElement('div', { style: emptyStyle }, '（条目过多，已截断到前 1000 项）') : null,
+        ),
+    ),
+  )
+}
+
+/** One compact byte count for the browser's file rows. */
+function fmtSize(size: number): string {
+  if (size < 1024) return `${String(size)} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`
 }

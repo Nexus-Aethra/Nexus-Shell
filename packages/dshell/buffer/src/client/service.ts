@@ -10,8 +10,8 @@
 
 import { Service, type Context } from '@deepseek-ai/cordis'
 import {
-  DSHELL_BUFFER_PATH, type BufferGrant, type BufferLink, type BufferRequest, type BufferResponse,
-  type BufferTicket, type BufferTransfer,
+  DSHELL_BUFFER_PATH, type BufferGrant, type BufferLink, type BufferListing, type BufferRequest,
+  type BufferResponse, type BufferTicket, type BufferTransfer,
 } from '../protocol.js'
 
 declare module '@deepseek-ai/cordis' {
@@ -129,6 +129,29 @@ export class BufferClientService extends Service {
   /** Withdraw an outstanding ticket. */
   async cancel(ticketId: string): Promise<void> {
     await this.send({ action: 'cancel', ticketId }, { strict: true })
+  }
+
+  /**
+   * One buffer-browser listing for the pipe detail page. Deliberately outside
+   * the snapshot: a browsing session is per-component state with its own
+   * loading and error display, not shared pipe state every panel re-renders on.
+   */
+  async listBuffer(linkId: string, grantId?: string, path?: string): Promise<BufferListing> {
+    const response = await fetch(DSHELL_BUFFER_PATH, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'buffer-ls',
+        linkId,
+        ...grantId === undefined ? {} : { grantId },
+        ...path === undefined ? {} : { path },
+      }),
+    })
+    const body = await response.json() as BufferResponse
+    if (body.error !== undefined) throw new Error(body.error)
+    if (body.listing === undefined) throw new Error('响应缺少目录内容')
+    return body.listing
   }
 
   /** Clear the last error line. */

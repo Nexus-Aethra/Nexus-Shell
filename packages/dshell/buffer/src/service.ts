@@ -45,11 +45,13 @@ import {
   type BufferArea,
   type BufferGrant,
   type BufferLink,
+  type BufferListing,
   type BufferRight,
   type BufferState,
   type BufferTicket,
   type BufferTicketState,
   type BufferTransfer,
+  type BufferUserEntry,
 } from './protocol.js'
 import { readDocument, writeDocument } from './store.js'
 
@@ -73,6 +75,9 @@ export const CHUNK_BYTES = 16 * 1024 * 1024
 export const DEFAULT_BIG_BYTES = 1024 * 1024 * 1024
 /** Hard ceiling on a chunked transfer's whole size. */
 export const MAX_BIG_BYTES = 4 * 1024 * 1024 * 1024
+
+/** Entries one browser listing returns before it is reported truncated. */
+const MAX_USER_ENTRIES = 1000
 /** How long a settled transfer stays in the snapshot for progress surfaces. */
 const TRANSFER_TAIL_MS = 15_000
 
@@ -206,7 +211,7 @@ export class BufferService {
   resolveBufferPath(callerId: string, bufferPath: string): { grantId: string; path: string } {
     const clean = bufferPath.replace(/^\/+$/u, '').replace(/^\/+/u, '')
     const first = clean.split('/')[0] ?? ''
-    if (first.length === 0) throw new Error('缓冲路径为空；用 action=ls 查看缓冲区结构')
+    if (first.length === 0) throw new Error('缓冲区根 `/` 下没有文件，映射目录挂在其下一层；用 action=ls 查看缓冲区结构')
     const rest = clean.slice(first.length).replace(/^\/+$/u, '')
     const matches: { grantId: string }[] = []
     for (const grant of this.heldGrants(callerId)) {
@@ -230,13 +235,13 @@ export class BufferService {
       for (const area of grant.areas) {
         if (area.as === undefined) continue
         const rights = area.rights.includes('write') ? '读写' : '只读'
-        lines.push(`${area.as}/  ← ${this.labelOf(grant.from)} 的 ${area.path}（${rights}，${grant.id}）`)
+        lines.push(`/${area.as}/  ← ${this.labelOf(grant.from)} 的 ${area.path}（${rights}，${grant.id}）`)
       }
     }
     if (lines.length === 0) {
-      return '当前缓冲区为空：没有映射目录。委派任务时在 grants 的 areas 里给 path 配一个 as 名字，双方就能用缓冲路径操作它。'
+      return '当前缓冲区为空：根 `/` 下没有映射目录。委派任务时在 grants 的 areas 里给 path 配一个 as 名字，双方就能用缓冲路径操作它。'
     }
-    return `缓冲区结构（缓冲路径 → 真实来源）：\n${lines.join('\n')}`
+    return `缓冲区结构（缓冲路径 → 真实来源；根为 \`/\`）：\n${lines.join('\n')}`
   }
 
   /** Tickets one session is an end of. */
@@ -571,6 +576,80 @@ export class BufferService {
     return entries
       .map(entry => `${entry.type === 'directory' ? 'd' : entry.type === 'file' ? '-' : '?'} ${entry.name}`)
       .join('\n')
+  }
+
+  /**
+   * One listing for the pipe detail page's buffer browser — the USER walking
+   * the namespace, not an agent. With no grant id the answer is the pipe's
+   * mapped roots (every live grant between the pair, both directions, `as`
+   * areas only); with one, it is that grant's directory read through the same
+   * containment test the tool uses. The user may browse grants whose reference
+   * count has not yet drained even though no agent could exercise them —
+   * "live" here is `revokedAt === undefined`, matching the grants the detail
+   * page already renders.
+   */
+  async userListing(linkId: string, grantId?: string, relPath?: string): Promise<BufferListing> {
+    const link = this.links.find(candidate => candidate.id === linkId)
+    if (link === undefined) throw new Error(`没有这个管道：${linkId}`)
+    const live = this.grants.filter(grant => grant.revokedAt === undefined
+      && ((grant.from === link.a && grant.to === link.b) || (grant.from === link.b && grant.to === link.a)))
+
+    if (grantId === undefined || grantId.trim().length === 0) {
+      const entries: BufferUserEntry[] = []
+      for (const grant of live) {
+        for (const area of grant.areas) {
+          if (area.as === undefined) continue
+          entries.push({
+            name: area.as,
+            kind: 'directory',
+            as: area.as,
+            grantId: grant.id,
+            rights: [...area.rights],
+            from: grant.from,
+            to: grant.to,
+            origin: area.path,
+          })
+        }
+      }
+      entries.sort((x, y) => x.name.localeCompare(y.name))
+      return { path: '/', entries, truncated: false }
+    }
+
+    const grant = live.find(candidate => candidate.id === grantId)
+    if (grant === undefined) throw new Error('授权不属于这条管道，或已被回收')
+    const access = await this.authorizeInGrant(
+      grant, relPath === undefined || relPath.trim().length === 0 ? '.' : relPath.trim(), 'read',
+    )
+    const info = await this.ctx.agents.withInitiator(
+      access.granter,
+      () => this.ctx.fs.stat(access.target),
+    )
+    if (info !== undefined && info.type !== 'directory') {
+      const name = access.target.displayPath.split('/').pop() ?? access.target.displayPath
+      return {
+        path: access.target.displayPath,
+        entries: [{ name, kind: 'file', ...info.size === undefined ? {} : { size: info.size } }],
+        truncated: false,
+      }
+    }
+    const children = await this.ctx.agents.withInitiator(
+      access.granter,
+      () => this.ctx.fs.listDir(access.target),
+    )
+    const entries: BufferUserEntry[] = children.slice(0, MAX_USER_ENTRIES).map(child => ({
+      name: child.name,
+      kind: child.type === 'directory' ? 'directory' : child.type === 'file' ? 'file' : 'other',
+      ...child.size === undefined ? {} : { size: child.size },
+    }))
+    entries.sort((x, y) => {
+      if (x.kind !== y.kind) return x.kind === 'directory' ? -1 : 1
+      return x.name.localeCompare(y.name)
+    })
+    return {
+      path: access.target.displayPath,
+      entries,
+      truncated: children.length > MAX_USER_ENTRIES,
+    }
   }
 
   /**
@@ -932,8 +1011,22 @@ export class BufferService {
     if (grant.revokedAt !== undefined) throw new Error(`授权已回收：${grantId}`)
     if (grant.to !== callerId) throw new Error(`授权 ${grantId} 不是发给本会话的`)
     if (grant.count <= 0) throw new Error(`授权 ${grantId} 已无未结算任务，已回收`)
+    return await this.authorizeInGrant(grant, path, right, signal)
+  }
+
+  /**
+   * The containment test for one area of one grant, with no view-side checks —
+   * the caller (session authorize above, or the user's browser below) has
+   * already decided this grant may be exercised at all.
+   */
+  private async authorizeInGrant(
+    grant: BufferGrant,
+    path: string,
+    right: BufferRight,
+    signal?: AbortSignal,
+  ): Promise<{ granter: Agent; target: FsTarget; area: BufferArea }> {
     const areas = grant.areas.filter(area => area.rights.includes(right))
-    if (areas.length === 0) throw new Error(`授权 ${grantId} 不含「${right}」权限`)
+    if (areas.length === 0) throw new Error(`授权 ${grant.id} 不含「${right}」权限`)
     const resolved = await this.ctx.sessionController.resolveAgent(SessionId(grant.from))
     if ('error' in resolved) throw new Error(`授权方会话不可用：${resolved.error.code}`)
     const granter = resolved.agent

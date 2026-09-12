@@ -84,6 +84,9 @@ export interface TransferJobView {
   readonly bytes: number
   /** Known after the walk: how large the copy is. */
   readonly totalBytes?: number | undefined
+  /** Chunked relay progress, when the current file rides it. */
+  readonly chunksDone?: number | undefined
+  readonly chunksTotal?: number | undefined
   /** The entry being written, relative to the copied root; empty for one file. */
   readonly current?: string | undefined
   /** Source entries that are neither files nor directories, so were not copied. */

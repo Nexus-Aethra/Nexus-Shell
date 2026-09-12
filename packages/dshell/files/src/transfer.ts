@@ -2,7 +2,7 @@
  * The file-transfer engine: two execution worlds, a walk over one, and the
  * copies that land entries in the other.
  *
- * ## Why there is no new transport here
+ * ## Why the transport is mostly seams, with one relay
  *
  * A transfer moves bytes between THIS machine and the device a session is bound
  * to, and the two existing seams already reach both:
@@ -16,6 +16,12 @@
  *    so the payload rides stdin as base64 and the destination world's own
  *    `base64 -d` decodes it. This is the same byte transport dshell-buffer
  *    uses for its cross-session copies.
+ *
+ * One payload per file stops scaling at tens of MiB, so files above the inline
+ * ceiling go through the same chunked relay dshell-buffer runs: the source is
+ * sliced (in process for this machine, `split` on the device), chunks cross one
+ * 16 MiB base64 round trip at a time, the destination reassembles, and
+ * whole-file sha256 digests pin both ends. See {@link TransferEngine.copyChunked}.
  *
  * The local side passes `danger-full-access` explicitly. The alternative — the
  * sandbox policy of the *device* session — describes what the MODEL may do on
@@ -35,8 +41,8 @@
  * something nobody is watching.
  */
 
-import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, rename, rm, stat as statPath, writeFile } from 'node:fs/promises'
+import { randomUUID, createHash } from 'node:crypto'
+import { chmod, mkdir, open, rename, rm, stat as statPath, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -62,20 +68,38 @@ import {
 const MAX_ENTRIES = 1000
 
 /**
- * Bytes one file may be.
+ * Bytes one file may ride the inline path.
  *
  * A ceiling rather than a choice: the payload rides the shell seam's stdin as
  * base64, which is one string in memory on this side and one command on the
  * other, and dshell-buffer's cross-session copy settled on the same number for
- * the same transport. A larger file is refused by name, not silently cut.
+ * the same transport. Above it a file goes through the chunked relay instead —
+ * refused only past {@link MAX_BIG_BYTES}.
  */
 const MAX_FILE_BYTES = 32 * 1024 * 1024
+
+/**
+ * One relay chunk: the slice a chunked copy moves per round trip.
+ *
+ * The same 16 MiB dshell-buffer's relay uses — small enough that one base64
+ * payload stays a comfortable string on both sides, large enough that a
+ * multi-gigabyte file is tens of trips, not thousands.
+ */
+const CHUNK_BYTES = 16 * 1024 * 1024
+
+/**
+ * Bytes one FILE may be at all, inline or chunked.
+ *
+ * The chunked relay has no structural ceiling, only patience; 4 GiB is the
+ * same hard cap dshell-buffer settled on for the same transport.
+ */
+const MAX_BIG_BYTES = 4 * 1024 * 1024 * 1024
 
 /** Entries one copy's walk may visit before the copy is refused. */
 const MAX_PLAN_ENTRIES = 20_000
 
 /** Total bytes one copy's walk may plan before the copy is refused. */
-const MAX_PLAN_BYTES = 2 * 1024 * 1024 * 1024
+const MAX_PLAN_BYTES = 4 * 1024 * 1024 * 1024
 
 /**
  * Timeout for one shell run.
@@ -321,11 +345,11 @@ export class TransferEngine {
       const name = baseName(rootPath)
       if (info.type === 'file') {
         const size = info.size ?? 0
-        if (size > MAX_FILE_BYTES) throw new Error(this.tooLarge(name, size))
+        if (size > MAX_BIG_BYTES) throw new Error(this.tooLarge(name, size))
         record.view.totalFiles = 1
         record.view.totalBytes = size
         record.view.state = 'copying'
-        await this.copyOne(record, source, sourceTarget, destination, joinPath(input.toDir, name), input.overwrite)
+        await this.copyOne(record, source, sourceTarget, destination, joinPath(input.toDir, name), input.overwrite, size)
         this.settle(record, 'done')
         return
       }
@@ -349,7 +373,7 @@ export class TransferEngine {
         if (signal.aborted) throw new Error('已取消')
         record.view.current = file.relative
         await this.copyOne(
-          record, source, file.target, destination, joinPath(root, file.relative), input.overwrite,
+          record, source, file.target, destination, joinPath(root, file.relative), input.overwrite, file.size,
         )
       }
       this.settle(record, 'done')
@@ -368,7 +392,7 @@ export class TransferEngine {
 
   /** `tooLarge`'s sentence, kept in one place so the plan and the single-file path agree. */
   private tooLarge(name: string, size: number): string {
-    return `${name} 有 ${String(size)} 字节，超过单次传输上限 ${String(MAX_FILE_BYTES)} 字节。`
+    return `${name} 有 ${String(size)} 字节，超过分块传输上限 ${String(MAX_BIG_BYTES)} 字节。`
   }
 
   /**
@@ -403,7 +427,7 @@ export class TransferEngine {
           queue.push(child.target)
         } else if (child.type === 'file') {
           const size = child.size ?? 0
-          if (size > MAX_FILE_BYTES) throw new Error(this.tooLarge(child.name, size))
+          if (size > MAX_BIG_BYTES) throw new Error(this.tooLarge(child.name, size))
           bytes += size
           files.push({ relative, size, target: child.target })
         } else {
@@ -470,13 +494,254 @@ export class TransferEngine {
     destination: World,
     toPath: string,
     overwrite: boolean,
+    size?: number,
   ): Promise<void> {
     const signal = record.controller.signal
+    if (size !== undefined && size > MAX_FILE_BYTES) {
+      await this.copyChunked(record, source, sourceTarget, destination, toPath, size, overwrite)
+      record.view.files += 1
+      return
+    }
     const bytes = await this.in(source, () => this.ctx.fs.readBytes(sourceTarget, signal, MAX_FILE_BYTES))
     if (destination.agent === undefined) await this.writeLocal(toPath, bytes, overwrite, signal)
     else await this.writeRemote(destination, toPath, bytes, overwrite, signal)
     record.view.files += 1
     record.view.bytes += bytes.byteLength
+  }
+
+  /**
+   * Move one file too big for a single stdin payload: split, relay, reassemble,
+   * verify — the relay dshell-buffer's cross-session copy runs, adapted to this
+   * engine's worlds.
+   *
+   * Every copy here has exactly one device side, and each side needs different
+   * readers and writers:
+   *
+   *  - a LOCAL side needs no scratch at all — this process IS that world — so a
+   *    local source is read at offsets in process, and a local destination is
+   *    appended to a temp file that renames into place once verified;
+   *  - a REMOTE side slices its source with `split` into a scratch directory
+   *    (its `ctx.fs` has no offset read), and a remote destination reassembles
+   *    with one `cat` whose whole-file `sha256sum` is captured before the scratch
+   *    goes.
+   *
+   * Chunks travel one at a time — 16 MiB per round trip, base64 on the wire — so
+   * a multi-gigabyte file moves with steady per-chunk progress instead of one
+   * enormous payload. Two digests guard the relay: the digest of the chunks AS
+   * READ is checked against the source file's own `sha256sum` when the source is
+   * remote, and the reassembled file's `sha256sum` is checked against it when the
+   * destination is remote; a local destination is this process's own write and
+   * needs no check. A mismatch fails the copy loudly and KEEPS the scratch
+   * directories for inspection (the error names where); any other failure,
+   * cancellation included, cleans up best-effort.
+   */
+  private async copyChunked(
+    record: JobRecord,
+    source: World,
+    sourceTarget: FsTarget,
+    destination: World,
+    toPath: string,
+    size: number,
+    overwrite: boolean,
+  ): Promise<void> {
+    const signal = record.controller.signal
+    const chunksTotal = Math.max(1, Math.ceil(size / CHUNK_BYTES))
+    const stamp = randomUUID().slice(0, 8)
+    const sourceScratch = `${source.root.replace(/\/+$/u, '')}/.dshell-xfer-${stamp}`
+    const destinationScratch = `${destination.root.replace(/\/+$/u, '')}/.dshell-xfer-${stamp}`
+    const part = (index: number): string => `p${String(index).padStart(4, '0')}`
+    const sourcePath = String(sourceTarget.targetKey)
+    record.view.chunksTotal = chunksTotal
+    // The digest of the chunks AS READ, folded in while they move.
+    const readDigest = createHash('sha256')
+    let sourceSha = ''
+    // A local destination appends through one handle, opened after the conflict
+    // check and closed on every exit path.
+    let localHandle: Awaited<ReturnType<typeof open>> | undefined
+    const localTemp = `${toPath}.dshell-xfer-${stamp}`
+
+    const cleanup = async (): Promise<void> => {
+      await localHandle?.close().catch(() => {})
+      localHandle = undefined
+      await rm(localTemp, { force: true }).catch(() => {})
+      if (source.agent !== undefined) await this.runIn(source, `rm -rf -- ${quote(sourceScratch)}`).catch(() => {})
+      if (destination.agent !== undefined) {
+        await this.runIn(destination, `rm -rf -- ${quote(destinationScratch)}`).catch(() => {})
+      }
+    }
+
+    try {
+      // The destination refuses the copy before a byte moves, with the same two
+      // refusals the inline writers produce.
+      if (destination.agent === undefined) {
+        const existing = await statPath(toPath).catch(() => undefined)
+        if (existing?.isDirectory()) throw new Error(`${toPath} 已经是一个目录，不能覆盖。`)
+        if (existing !== undefined && !overwrite) throw new Error(`${CONFLICT}${toPath} 已存在，要覆盖它请确认。`)
+        localHandle = await open(localTemp, 'w')
+      } else {
+        await this.precheckRemoteDestination(destination, toPath, overwrite, signal)
+        await this.runIn(destination, `mkdir -p -- ${quote(destinationScratch)}`, signal)
+      }
+
+      if (source.agent === undefined) {
+        // A local source: no scratch, offset reads straight from the file.
+        const handle = await open(sourcePath, 'r')
+        try {
+          for (let index = 0; index < chunksTotal; index += 1) {
+            signal.throwIfAborted()
+            const length = Math.min(CHUNK_BYTES, size - index * CHUNK_BYTES)
+            const buffer = Buffer.alloc(length)
+            const read = await handle.read(buffer, 0, length, index * CHUNK_BYTES)
+            const chunk = buffer.subarray(0, read.bytesRead)
+            readDigest.update(chunk)
+            if (destination.agent === undefined) await localHandle!.write(chunk)
+            else await this.writeChunkRemote(destination, destinationScratch, part(index), chunk, signal)
+            record.view.bytes += chunk.byteLength
+            record.view.chunksDone = index + 1
+          }
+        } finally {
+          await handle.close()
+        }
+        // The bytes never left this process, so the digest of what was read IS
+        // the source digest the destination side will be checked against.
+        sourceSha = readDigest.copy().digest('hex')
+      } else {
+        // A remote source: slice into scratch parts and pin the file's own digest.
+        const listing = await this.runCapture(
+          source,
+          `mkdir -p -- ${quote(sourceScratch)} && split -b ${String(CHUNK_BYTES)} -d -a 4 -- ${quote(sourcePath)} `
+          + `${quote(`${sourceScratch}/p`)} && sha256sum ${quote(sourcePath)}`,
+          signal,
+        )
+        sourceSha = listing.trim().split(/\s+/u)[0] ?? ''
+        for (let index = 0; index < chunksTotal; index += 1) {
+          signal.throwIfAborted()
+          const bytes = await this.in(source, async () => await this.ctx.fs.readBytes(
+            await this.ctx.fs.resolve(`${sourceScratch}/${part(index)}`, { cwd: source.root }),
+            signal,
+            CHUNK_BYTES,
+          ))
+          readDigest.update(bytes)
+          if (destination.agent === undefined) await localHandle!.write(bytes)
+          else await this.writeChunkRemote(destination, destinationScratch, part(index), bytes, signal)
+          record.view.bytes += bytes.byteLength
+          record.view.chunksDone = index + 1
+        }
+        // What was read must be what the source file holds.
+        const readSha = readDigest.digest('hex')
+        if (sourceSha === '' || readSha !== sourceSha) {
+          throw new Error(`分块传输校验不一致：源文件 ${sourceSha || '未知'}，实际读取 ${readSha}。中间数据保留在 ${sourceScratch}`)
+        }
+      }
+
+      // Publish: a remote destination reassembles its parts and reports the
+      // whole-file digest; a local destination closes its temp file and renames.
+      if (destination.agent === undefined) {
+        await localHandle?.close()
+        localHandle = undefined
+        const existing = await statPath(toPath).catch(() => undefined)
+        await chmod(localTemp, existing === undefined ? 0o644 : existing.mode & 0o7777).catch(() => {})
+        await rename(localTemp, toPath)
+      } else {
+        const destinationSha = (await this.runCapture(
+          destination,
+          `mkdir -p -- ${quote(dirname(toPath))} && cat ${quote(destinationScratch)}/p* > ${quote(toPath)} `
+          + `&& sha256sum ${quote(toPath)}`,
+          signal,
+        )).trim().split(/\s+/u)[0] ?? ''
+        if (destinationSha === '') {
+          throw new Error(`重组 ${toPath} 后没有取得校验和，传输结果不可信。`)
+        }
+        if (destinationSha !== sourceSha) {
+          throw new Error(
+            `分块传输校验不一致：源 ${sourceSha || '未知'}，目标 ${destinationSha}。`
+            + `中间数据保留在 ${destinationScratch}${source.agent === undefined ? '' : ` 与 ${sourceScratch}`}`,
+          )
+        }
+      }
+      if (source.agent !== undefined) await this.runIn(source, `rm -rf -- ${quote(sourceScratch)}`).catch(() => {})
+      if (destination.agent !== undefined) {
+        await this.runIn(destination, `rm -rf -- ${quote(destinationScratch)}`).catch(() => {})
+      }
+    } catch (error) {
+      // The digest-mismatch paths want their scratch KEPT for inspection; the
+      // messages above name where. Everything else cleans up behind itself.
+      const keep = error instanceof Error && error.message.startsWith('分块传输校验不一致')
+      if (!keep) await cleanup()
+      throw error
+    } finally {
+      await localHandle?.close().catch(() => {})
+      localHandle = undefined
+    }
+  }
+
+  /**
+   * One relay chunk onto a REMOTE destination: one stdin payload the device's
+   * own `base64 -d` lands in its scratch part; reassembly happens once at the end.
+   */
+  private async writeChunkRemote(
+    destination: World,
+    destinationScratch: string,
+    name: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const spec = this.in(destination, () => this.ctx.shell.resolve({
+      command: `sh -c ${quote('base64 -d > "$1"')} sh ${quote(`${destinationScratch}/${name}`)}`,
+      workdir: destination.root,
+      sandboxPolicy: this.writePolicy(destination),
+      timeoutMs: TRANSFER_TIMEOUT_MS,
+      signal,
+    }))
+    const result = await this.ctx.shell.run({ ...spec, stdin: Buffer.from(bytes).toString('base64') })
+    if (result.exitCode === 0) return
+    const detail = result.stderr.text.trim()
+    throw new Error(
+      `写入 ${destinationScratch}/${name} 失败：${detail.length > 0 ? detail : `退出码 ${String(result.exitCode ?? result.signal ?? 'unknown')}`}`,
+    )
+  }
+
+  /** The destination's refusal, checked on the device before any byte moves. */
+  private async precheckRemoteDestination(
+    destination: World,
+    toPath: string,
+    overwrite: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const command = [
+      'if [ -d "$1" ]; then echo dshell-target-is-directory >&2; exit 11; fi',
+      'if [ -e "$1" ] && [ "$2" != yes ]; then echo dshell-target-exists >&2; exit 10; fi',
+    ].join('\n')
+    const spec = this.in(destination, () => this.ctx.shell.resolve({
+      command: `sh -c ${quote(command)} sh ${quote(toPath)} ${overwrite ? 'yes' : 'no'}`,
+      workdir: destination.root,
+      sandboxPolicy: this.writePolicy(destination),
+      timeoutMs: TRANSFER_TIMEOUT_MS,
+      signal,
+    }))
+    const result = await this.ctx.shell.run(spec)
+    if (result.exitCode === 0) return
+    if (result.exitCode === 10) throw new Error(`${CONFLICT}${toPath} 已存在，要覆盖它请确认。`)
+    if (result.exitCode === 11) throw new Error(`${toPath} 已经是一个目录，不能覆盖。`)
+    const detail = result.stderr.text.trim()
+    throw new Error(`无法写入 ${toPath}：${detail.length > 0 ? detail : `退出码 ${String(result.exitCode ?? result.signal ?? 'unknown')}`}`)
+  }
+
+  /** Run one command for its stdout, failing on its exit status. */
+  private async runCapture(world: World, command: string, signal?: AbortSignal): Promise<string> {
+    const spec = this.in(world, () => this.ctx.shell.resolve({
+      command,
+      workdir: world.root,
+      sandboxPolicy: this.writePolicy(world),
+      timeoutMs: TRANSFER_TIMEOUT_MS,
+      signal,
+    }))
+    const result = await this.ctx.shell.run(spec)
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.text.trim()
+      throw new Error(detail.length > 0 ? detail : `命令失败（退出码 ${String(result.exitCode ?? result.signal ?? 'unknown')}）`)
+    }
+    return result.stdout.text
   }
 
   /** Write bytes onto this machine, in process: temp file, mode, rename. */
@@ -541,12 +806,13 @@ export class TransferEngine {
   }
 
   /** Run one command for its exit status alone, through one world. */
-  private async runIn(world: World, command: string): Promise<void> {
+  private async runIn(world: World, command: string, signal?: AbortSignal): Promise<void> {
     const spec = this.in(world, () => this.ctx.shell.resolve({
       command,
       workdir: world.root,
       sandboxPolicy: this.writePolicy(world),
       timeoutMs: TRANSFER_TIMEOUT_MS,
+      signal,
     }))
     const result = await this.ctx.shell.run(spec)
     if (result.exitCode !== 0) {

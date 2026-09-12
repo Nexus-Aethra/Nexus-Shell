@@ -50,6 +50,7 @@ export const zh = {
   'transfer.state.failed': '失败',
   'transfer.state.cancelled': '已取消',
   'transfer.counts': '{done}/{total} 项',
+  'transfer.chunks': '分块 {done}/{total}',
   'transfer.skipped': '跳过 {count} 个',
 } satisfies Record<string, string>
 
@@ -91,5 +92,6 @@ export const en = {
   'transfer.state.failed': 'Failed',
   'transfer.state.cancelled': 'Cancelled',
   'transfer.counts': '{done}/{total} items',
+  'transfer.chunks': 'chunk {done}/{total}',
   'transfer.skipped': '{count} skipped',
 } satisfies Record<DshellFilesKey, string>
