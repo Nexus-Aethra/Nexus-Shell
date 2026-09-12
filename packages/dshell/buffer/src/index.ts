@@ -12,7 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { BUFFER_PROMPT_TEXT } from './prompt.js'
+import { renderBufferPrompt } from './prompt.js'
 import { createBufferRoute } from './route.js'
 import { BufferService } from './service.js'
 import { registerBufferTool } from './tool.js'
@@ -67,10 +67,13 @@ export function apply(ctx: Context): void {
 
     bufferCtx.effect(() => registerBufferTool(bufferCtx, service), 'dshell-buffer: tool')
 
+    // Assembled per turn WITH the agent, so the section can state this
+    // session's live pipes (and where each peer runs) instead of describing
+    // pipes in the abstract — see renderBufferPrompt.
     bufferCtx.effect(() => bufferCtx.systemPrompt.section({
       name: 'tool:dshell-buffer',
       order: PROMPT_ORDER,
-      text: BUFFER_PROMPT_TEXT,
+      text: ({ agent }) => agent === undefined ? '' : renderBufferPrompt(service.promptPipes(String(agent.id))),
     }), 'dshell-buffer: prompt section')
 
     // The route needs the same service instance, so it is registered from

@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
+import { sessionLabel } from './notice.js'
 import type { BufferGrant, BufferTicket } from './protocol.js'
 import type { DelegateInput, GrantRequest, BufferService } from './service.js'
 
@@ -34,8 +35,11 @@ const ACTION_KINDS: Record<string, GenericCallView['kind']> = {
 }
 
 const DESCRIPTION =
-  'Cross-session pipe. Use it to hand a task to a session the user connected to this one, '
-  + 'and to work on requests other sessions handed to you. Actions:\n'
+  'Cross-session pipe. Reach for this when a task belongs to another machine or another session — the user '
+  + 'names a server or device, or the files and environment you need are not in this session\'s own world: '
+  + 'action="links" tells you whether a peer is connected and where it runs, and a task you would otherwise '
+  + 'be unable to complete here is handed over with action="delegate" instead of improvised with ssh/scp. '
+  + 'Use it as well to serve requests other sessions handed to you. Actions:\n'
   + '- links: the pipes this session is an end of (how you learn the peer session ids and link ids).\n'
   + '- delegate: send a request to the session on the other end of a pipe. Supply to or link_id, a '
   + 'subject, optional detail, an optional deadline_ms, and optionally grants — files or directories '
@@ -137,7 +141,10 @@ function renderLinks(service: BufferService, viewer: string): string {
   const lines = ['本会话的管道：']
   for (const link of links) {
     const peer = service.peerOf(link, viewer)
-    lines.push(`- link_id=${link.id} · 对端 session id=${peer} · ${service.label(peer)}${link.label === undefined ? '' : ` · ${link.label}`}`)
+    // The pipe's own label is NOT the peer's name (labelOf falls back to it), so
+    // state it separately instead of printing the same words twice.
+    lines.push(`- link_id=${link.id} · 对端 session id=${peer} · ${sessionLabel(peer, undefined, undefined)}`
+      + (link.label === undefined ? '' : ` · 管道标签「${link.label}」`))
   }
   lines.push('', 'delegate 时 to 填对端 session id（上面每行都有），或 link_id 填管道 id——两者任选其一。')
   return lines.join('\n')

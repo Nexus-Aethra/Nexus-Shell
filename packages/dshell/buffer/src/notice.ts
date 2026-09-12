@@ -27,9 +27,17 @@ function rightsLabel(rights: readonly string[]): string {
   return parts.length > 0 ? parts.join('/') : '无'
 }
 
-/** A readable handle for a session inside message text. */
+/**
+ * A readable handle for a session inside message text.
+ *
+ * The id fallback drops the `session-` prefix first: every id starts with it,
+ * so a first-8 slice named every peer `session-`. What is left is the leading
+ * part of the random component, which distinguishes peers.
+ */
 export function sessionLabel(sessionId: string, title: string | undefined, cwd: string | undefined): string {
-  const name = title !== undefined && title.trim().length > 0 ? title.trim() : sessionId.slice(0, 8)
+  const name = title !== undefined && title.trim().length > 0
+    ? title.trim()
+    : sessionId.replace(/^session-/u, '').slice(0, 8) || sessionId.slice(0, 8)
   return cwd === undefined ? name : `${name}（${cwd}）`
 }
 

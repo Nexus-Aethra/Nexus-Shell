@@ -1,39 +1,76 @@
 /**
  * The one system-prompt section this plugin contributes.
  *
- * A single tool with twelve actions is affordable for the model only if the
- * protocol is also stated in words: when delegation is appropriate, that the
- * answer arrives as a later message rather than a return value, and that a
- * request received here must be settled. The tool description carries the
- * mechanics; this section carries the standing policy that applies whether or
- * not a buffer call is in flight.
+ * Two jobs, and the second is why the text is built per assembly rather than
+ * kept constant:
+ *
+ *  - **Say when the pipe applies.** A model told only what a pipe IS never
+ *    reaches for one: asked to move something to another machine or to hand
+ *    work to another session, it decides it cannot, or improvises a remote copy
+ *    with ssh. So the section leads with the triggers and the discipline
+ *    (hand it over, do not improvise) and then states the protocol.
+ *  - **Say whether one exists, right now.** The section is assembled per turn
+ *    with the agent in hand, so it lists this session's live pipes — peer, link
+ *    id, and the device the peer runs on — or states plainly that there is
+ *    none and a pipe must be asked for. That is the difference between "pipes
+ *    exist in this system" and "you have a pipe to the server the user just
+ *    named"; without it the model would have to probe with `links` to find out,
+ *    which is the step it was skipping.
  */
 
-/** The prompt text. One paragraph, no interpolation: the state lives in tool output. */
-export const BUFFER_PROMPT_TEXT =
-  'Some sessions may be connected to this one by a cross-session pipe, which only the user can create. '
-  + 'Use the dshell_buffer tool to see those connections and to hand work to a connected session, or to '
-  + 'serve work handed to you. Delegation is asynchronous by design: dshell_buffer action="delegate" '
-  + 'returns a ticket id immediately and the answer arrives later as a new message that reopens this '
-  + 'turn, so do not wait, poll, or sleep on it — end the turn or continue other work. When you delegate, '
-  + 'state the request completely (subject, detail, acceptance criteria) because the other session sees '
-  + 'only what you send. When a request arrives for you, claim it and drive it to a settlement with '
-  + 'action="finish" (a result) or action="fail" (a reason); a request left unsettled is settled as a '
-  + 'timeout by the watchdog and reported as a failure, which is worse than an honest failure. A '
-  + 'delegation may carry grants — directories of this session opened to the other side, each with read '
-  + 'and/or write rights. A grant lives only while its ticket is unsettled, and it is the only way that '
-  + 'session can reach this one tree, so open the narrowest areas that let the task be finished. Use '
-  + 'action="grants" to see the mapped paths you hold and the ones you opened. Every granted area gets a '
-  + 'name — the `as` you gave it, or the path\'s last segment — and that name IS the path the other side '
-  + 'uses: files and directories live in a per-SESSION buffer namespace rooted at / (the areas of all your '
-  + 'live grants merge under one root, so a name taken once cannot be reused), and action="ls" with no path '
-  + '(or "/") lists the roots. read / edit / download / upload all take buffer paths: /name for an area '
-  + 'mapped from a file, /name/sub/file for one mapped from a directory; '
-  + 'there is no other addressing, and paths outside the mapped areas are refused. Mind the direction: the '
-  + 'HOLDER of a grant acts inside the other side\'s world, so to hand a file over you grant read and ask '
-  + 'the other side to download it, while receiving one requires the other side to grant you write. '
-  + 'read pages text (offset is a 1-based line, limit caps lines); edit replaces old_string with '
-  + 'new_string in place (edit edits existing files; new files arrive by upload). download and upload are the explicit byte moves '
-  + 'between the two machines: download copies a buffer file to dest in your own world, upload pushes '
-  + 'your src file into the buffer at path. Files up to 32 MiB move inline; anything larger is relayed '
-  + 'in 16 MiB chunks with sha256 verification automatically, up to 4 GiB — no special action is needed.'
+/** One live pipe, as the standing prompt states it. */
+export interface PipeLine {
+  readonly linkId: string
+  /** The peer's display label (the link's label, else a short session id). */
+  readonly peer: string
+  /** Where the peer runs: this machine, or a named device and its directory. */
+  readonly where: string
+}
+
+/** The standing policy; independent of whether a pipe exists right now. */
+const POLICY =
+  'Delegation is asynchronous: action="delegate" returns a ticket id at once and the answer arrives later '
+  + 'as a new message that reopens this turn — never wait, poll or sleep on it; end the turn or do other '
+  + 'work. State the request completely (subject, detail, acceptance criteria): the peer sees only what you '
+  + 'send. A request that arrives for you must be claimed and driven to action="finish" (a result) or '
+  + 'action="fail" (a reason); one left unsettled is settled as a timeout by the watchdog, which is worse '
+  + 'than an honest failure. A delegation may carry grants — files or directories of THIS session opened to '
+  + 'the peer, each with read and/or write rights, and each named by the host. That buffer path is the whole '
+  + 'contract between the two sessions: /name for an area that is a file, /name/sub/file below one that is a '
+  + 'directory. The namespace is per session — the areas of every live grant merge under one root, so a name '
+  + 'is taken once. read / edit act inside the granter\'s world in place; download copies a buffer file into '
+  + 'your own world (name its dest) and upload pushes one of your files in; files above 32 MiB relay in '
+  + 'chunks with sha256 verification automatically. The HOLDER of a grant is the side that acts — handing a '
+  + 'file over means granting read and telling the peer to download it, while receiving one means the peer '
+  + 'grants write and you upload. action="grants" lists the paths you hold and the ones you opened; paths '
+  + 'outside the mapped areas are refused.'
+
+/** The trigger paragraph, which depends on whether there is anywhere to delegate TO. */
+function trigger(pipes: readonly PipeLine[]): string {
+  return pipes.length > 0
+    ? 'A task that belongs to another machine or another session — the user names a server or device, asks '
+      + 'for something another session is working on, or the files and environment you need are not in this '
+      + 'session\'s own world — should be handed to a peer over a pipe instead of attempted here. Do NOT '
+      + 'improvise a remote copy with ssh/scp: the pipe carries the user\'s authorization, its grants expire '
+      + 'with the ticket, and the peer acts inside its own world.'
+    : 'If a task needs another machine or another session\'s context and this session cannot reach it, say so '
+      + 'and ask the user to create a pipe (only the user can) — do not improvise a remote copy with ssh/scp.'
+}
+
+/** The live state, so the model never has to guess whether a pipe exists. */
+function state(pipes: readonly PipeLine[]): string {
+  if (pipes.length === 0) return 'This session has NO cross-session pipe right now.'
+  return 'Cross-session pipes live right now for this session (detail: dshell_buffer action="links"):\n'
+    + pipes.map(pipe => `- ${pipe.linkId} ↔ ${pipe.peer} · ${pipe.where}`).join('\n')
+}
+
+/**
+ * The section, for one assembly.
+ *
+ * @param pipes - this session's live pipes; empty means there is nothing to
+ *   delegate over, and the text says so rather than staying silent.
+ * @returns the section text.
+ */
+export function renderBufferPrompt(pipes: readonly PipeLine[]): string {
+  return `${state(pipes)}\n\n${trigger(pipes)}\n\n${POLICY}`
+}

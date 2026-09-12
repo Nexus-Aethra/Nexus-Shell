@@ -39,6 +39,7 @@ import {
   sessionLabel, renderRequestNotice, renderSettlementNotice, requestSummary, settlementSummary,
 } from './notice.js'
 import { isUnder } from './paths.js'
+import type { PipeLine } from './prompt.js'
 import {
   BUFFER_PLUGIN,
   SETTLED_STATES,
@@ -147,6 +148,8 @@ export interface GrantsForResult {
 }
 
 export class BufferService {
+  /** dshell-ssh's router when composed; read for where a peer runs. */
+  private readonly routing: DeviceRoutingSeat | undefined
   private links: BufferLink[] = []
   private tickets: BufferTicket[] = []
   private grants: BufferGrant[] = []
@@ -180,6 +183,7 @@ export class BufferService {
     // Structural, optional: a composition without dshell-ssh has no device to
     // probe, and this package must not depend on that bundle.
     const routing = this.ctx.get('dshellSshRouting') as unknown as DeviceRoutingSeat | undefined
+    this.routing = routing
     this.feasibility = new Feasibility(this.ctx, routing)
     this.ctx.inject(['subprocess'], (probeCtx) => { this.probeCtx = probeCtx })
   }
@@ -213,6 +217,25 @@ export class BufferService {
       grants: [...this.grants],
       transfers: [...this.transfers.values()],
     }
+  }
+
+  /**
+   * This session's live pipes, for the standing prompt: the model should not
+   * have to probe to learn that a pipe exists, nor guess whether a peer is the
+   * machine the user just named. A peer with no device binding is this machine;
+   * one with a binding names its device and the directory it runs in.
+   */
+  promptPipes(sessionId: string): readonly PipeLine[] {
+    return this.linksFor(sessionId).map(link => {
+      const peer = this.peerOf(link, sessionId)
+      const target = this.routing?.targetForSession(peer)
+      const device = target === undefined ? undefined : target.device
+      const where = device === undefined
+        ? '运行在本机'
+        : `运行在设备「${device.name ?? device.id}」`
+          + (target?.remoteRoot === undefined ? '' : `，工作目录 ${target.remoteRoot}`)
+      return { linkId: link.id, peer: this.labelOf(peer), where }
+    })
   }
 
   /** Links one session is an end of. */

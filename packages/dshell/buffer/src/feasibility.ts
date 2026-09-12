@@ -33,8 +33,16 @@ import { SessionId } from '@deepseek-ai/dsh-session/types'
  * simply has no device to probe.
  */
 export interface DeviceRoutingSeat {
-  /** The device a session is assigned to, when it is bound at all. */
-  targetForSession(sessionId: string): { device: { id: string } } | undefined
+  /**
+   * The device a session is assigned to, when it is bound at all. `name` and
+   * `remoteRoot` are optional because this package reads the seat structurally:
+   * the real router provides them, and a composition whose router does not
+   * simply gets the device id and no directory.
+   */
+  targetForSession(sessionId: string): {
+    readonly device: { readonly id: string; readonly name?: string | undefined }
+    readonly remoteRoot?: string | undefined
+  } | undefined
   /** Open one connection and report what answered; throws when it cannot. */
   test(deviceId: string, ctx: Context, remoteRoot?: string | null): Promise<string>
 }
