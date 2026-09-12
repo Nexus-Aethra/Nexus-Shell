@@ -52,16 +52,17 @@ const DESCRIPTION =
   + 'its rights and origin. With a buffer path, list that directory.\n'
   + '- read: one text file from the buffer, addressed by buffer path (mappedName/sub/file). offset '
   + 'is a 1-based line to start from and limit caps lines, so big files page instead of flooding.\n'
-  + '- write: replace one buffer file\'s whole text with content.\n'
+
   + '- edit: replace old_string with new_string inside one buffer file, in place — for targeted '
-  + 'changes this beats read-then-write. old_string must be unique unless replace_all is set.\n'
+  + 'changes this beats download-then-upload. old_string must already exist and be unique unless '
+  + 'replace_all is set; edit cannot create files, upload does that.\n'
   + '- download / upload: the explicit byte moves between the two machines. download copies a buffer '
   + 'file to dest in this session\'s own world; upload pushes this session\'s src file into the buffer '
   + 'at path. Binary-safe, capped by max_bytes; files up to 32 MiB move inline, anything larger is '
   + 'relayed in 16 MiB chunks with sha256 verification (up to 4 GiB).\n'
-  + 'Buffer paths always start with the as name a grant declared, and each pipe has its own namespace. '
-  + 'Older grants without a mapping are still reachable by grant_id plus an area-relative path. A grant '
-  + 'stays alive only while a ticket references it — settle the ticket and its buffer paths end with it.'
+  + 'Buffer paths always start with the as name a grant declared, and each pipe has its own namespace — '
+  + 'this is the only addressing the file actions need. A grant stays alive only while a ticket references '
+  + 'it: settle the ticket and its mapped paths end with it.'
 
 /**
  * One delegation's inline grant, as the model writes it.
@@ -125,9 +126,9 @@ function renderLinks(service: BufferService, viewer: string): string {
   const lines = ['本会话的管道：']
   for (const link of links) {
     const peer = service.peerOf(link, viewer)
-    lines.push(`- ${link.id} ↔ ${service.label(peer)}（session ${peer}）${link.label === undefined ? '' : ` · ${link.label}`}`)
+    lines.push(`- link_id=${link.id} · 对端 session id=${peer} · ${service.label(peer)}${link.label === undefined ? '' : ` · ${link.label}`}`)
   }
-  lines.push('', '用 delegate 时把 to 设成对方 session id，或把 link_id 设成上面的管道 id。')
+  lines.push('', 'delegate 时 to 填对端 session id（上面每行都有），或 link_id 填管道 id——两者任选其一。')
   return lines.join('\n')
 }
 
@@ -212,7 +213,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       action: {
         type: 'string',
         required: true,
-        enum: ['links', 'delegate', 'tickets', 'claim', 'progress', 'finish', 'fail', 'cancel', 'grants', 'read', 'ls', 'write', 'edit', 'download', 'upload'],
+        enum: ['links', 'delegate', 'tickets', 'claim', 'progress', 'finish', 'fail', 'cancel', 'grants', 'read', 'ls', 'edit', 'download', 'upload'],
         description: 'Which buffer operation to perform.',
       },
       to: { type: 'string', description: 'delegate: target session id (the peer of a pipe).' },
@@ -234,7 +235,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  path: { type: 'string', required: true },
+                  path: { type: 'string', required: true, description: 'A real directory or file in THIS session\'s world to map into the buffer.' },
                   rights: { type: 'array', required: true, items: { type: 'string', enum: ['read', 'write'] } },
                 },
               },
@@ -253,12 +254,11 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       text: { type: 'string', description: 'progress: what to report.' },
       result: { type: 'string', description: 'finish: the outcome handed back to the requester.' },
       error: { type: 'string', description: 'fail: why the request could not be completed.' },
-      grant_id: { type: 'string', description: 'read / ls / write / edit / download / upload: the grant being exercised. Omit it and give a buffer path instead — the mapped name resolves the grant.' },
-      path: { type: 'string', description: 'Buffer path: mappedName/sub/file (see ls). With grant_id given, it is instead relative to that granted area root. ls with no path lists the buffer roots.' },
+      grant_id: { type: 'string', description: 'Legacy fallback for grants created before mappings existed. Prefer the buffer path (mappedName/sub/file) — it resolves the grant for you.' },
+      path: { type: 'string', description: 'Buffer path: mappedName/sub/file — the name the delegating side declared with as. ls with no path lists every mapped root.' },
       offset: { type: 'number', description: 'read: 1-based line number to start from, for paging through a big text file.' },
       limit: { type: 'number', description: 'read: maximum lines to return.' },
-      content: { type: 'string', description: 'write: the full text to write (whole-file replace).' },
-      old_string: { type: 'string', description: 'edit: the exact text to replace; must occur at least once, and exactly once unless replace_all.' },
+      old_string: { type: 'string', description: 'edit: the exact text to replace; must already exist in the file (edit cannot create files — use upload for that), and must occur exactly once unless replace_all.' },
       new_string: { type: 'string', description: 'edit: the replacement text (may be empty to delete).' },
       replace_all: { type: 'boolean', description: 'edit: replace every occurrence of old_string. Default false.' },
       dest: { type: 'string', description: 'download: the full destination file path in THIS session\'s own world; omitted means the same relative path as path.' },
@@ -446,13 +446,6 @@ async function run(
       const target = resolveTarget(service, viewer, args)
       const listing = await service.listGranted(viewer, target.grantId, target.path, signal)
       return `目录 ${target.path}：\n${listing}`
-    }
-
-    case 'write': {
-      const target = resolveTarget(service, viewer, args)
-      if (args.content === undefined) throw new Error('缺少参数 content')
-      await service.writeGranted(viewer, target.grantId, target.path, args.content, signal)
-      return `已写入 ${target.path}（${String(args.content.length)} 字符）。`
     }
 
     default:

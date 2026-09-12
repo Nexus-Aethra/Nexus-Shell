@@ -60,10 +60,11 @@ export function renderRequestNotice(
     lines.push('', '说明：', ticket.detail.trim())
   }
   if (grants.length > 0) {
-    lines.push('', '为完成它，对方授予了你对这些位置的访问权（用 dshell_buffer action="grants" 查看全文）：')
+    lines.push('', '为完成它，对方把下面的目录映射进了你们的缓冲区——用 dshell_buffer 以缓冲路径直接操作（先 action=ls 看结构）：')
     for (const grant of grants) {
       for (const area of grant.areas) {
-        lines.push(`- ${area.path}（${rightsLabel(area.rights)}）`)
+        const name = area.as === undefined ? `（未映射，需用 grant ${grant.id} + 相对路径）` : `${area.as}/`
+        lines.push(`- ${name} ← ${area.path}（${rightsLabel(area.rights)}）`)
       }
       if (grant.description.trim().length > 0) lines.push(`  用途说明：${grant.description.trim()}`)
     }

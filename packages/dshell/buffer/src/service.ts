@@ -76,9 +76,6 @@ export const MAX_BIG_BYTES = 4 * 1024 * 1024 * 1024
 /** How long a settled transfer stays in the snapshot for progress surfaces. */
 const TRANSFER_TAIL_MS = 15_000
 
-/** Which end of a transfer is the source. */
-export type TransferSide = 'from' | 'to'
-
 /** What one cross-world copy moved, and between which paths. */
 export interface TransferOutcome {
   readonly bytes: number
@@ -556,6 +553,16 @@ export class BufferService {
   /** List a directory inside a granted area, as the granter. */
   async listGranted(callerId: string, grantId: string, path: string, signal?: AbortSignal): Promise<string> {
     const access = await this.authorize(callerId, grantId, path, 'read', signal)
+    // A FILE grant is legal: the area itself is the file, and listing it names
+    // the file instead of failing on a directory operation.
+    const info = await this.ctx.agents.withInitiator(
+      access.granter,
+      () => this.ctx.fs.stat(access.target, signal),
+    )
+    if (info !== undefined && info.type !== 'directory') {
+      const name = access.target.displayPath.split('/').pop() ?? access.target.displayPath
+      return `- ${name}（${info.size === undefined ? '未知大小' : String(info.size) + ' 字节'}）——这个授权本身是一个文件：用 read 的 path="." 读取，或 download 的 path="." 拉取。`
+    }
     const entries = await this.ctx.agents.withInitiator(
       access.granter,
       () => this.ctx.fs.listDir(access.target, signal),
@@ -564,28 +571,6 @@ export class BufferService {
     return entries
       .map(entry => `${entry.type === 'directory' ? 'd' : entry.type === 'file' ? '-' : '?'} ${entry.name}`)
       .join('\n')
-  }
-
-  /** Write a file inside a granted area, as the granter, under the granter's policy. */
-  async writeGranted(
-    callerId: string,
-    grantId: string,
-    path: string,
-    content: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const access = await this.authorize(callerId, grantId, path, 'write', signal)
-    // The policy is resolved against the GRANTER's session: without it the
-    // sandbox falls back to its fail-safe default and refuses every local
-    // write, and the grant would be read-only in practice. Resolving it here
-    // also means the granter's own mode is the ceiling — a grant can never
-    // widen it. Structural, optional: a composition that mounts no policy
-    // service leaves the backend its own default.
-    const policy = this.ctx.get('sandboxPolicy')?.resolve({ session: access.granter.session })
-    await this.ctx.agents.withInitiator(
-      access.granter,
-      () => this.ctx.fs.writeText(access.target, content, undefined, signal, policy),
-    )
   }
 
   /**
