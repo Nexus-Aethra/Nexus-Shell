@@ -241,12 +241,17 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
     if (active === undefined || active === fold.phase) return
     fold.phase = active
     // A supervised phase change closes the running block and pushes a new one;
-    // a first plan (nothing rendered yet) just titles the open block.
+    // a first plan (nothing rendered yet) just titles the open block. The new
+    // block carries the turn forward: phase blocks belong to the same turn,
+    // and a block left with no turn number can never be matched by the
+    // turn's own end — it would stay "running" after the turn is over.
+    const carried = fold.open?.turn
     if (fold.open !== undefined && fold.open.rows.length > 0) {
       fold.open.status = 'done'
       fold.open = undefined
     }
     const block = fold.open ?? openBlock(fold, time, active)
+    if (block.turn === undefined && carried !== undefined) block.turn = carried
     block.title = active
     return
   }
@@ -265,6 +270,16 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
     if (block === fold.open) {
       fold.open = undefined
       fold.phase = undefined
+    }
+    // A phased turn is several blocks wearing one turn number: every other
+    // still-running block carrying this turn ends with it. Left open, the
+    // earliest one (the reader's message) would tick 已工作 forever after the
+    // host has settled — the "agent stopped but still running" split.
+    const endStatus = statusOfReason(event.data.reason)
+    for (const candidate of fold.blocks) {
+      if (candidate !== block && candidate.status === 'running' && candidate.turn === turn) {
+        candidate.status = endStatus
+      }
     }
     const text = noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }, time)
     // The block view draws the notice with its block; the canvas keeps the
