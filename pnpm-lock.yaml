@@ -502,6 +502,9 @@ importers:
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: link:../../../dsh/packages/client/ui-primitives
+        version: link:../../../dsh/packages/client/ui-primitives
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer

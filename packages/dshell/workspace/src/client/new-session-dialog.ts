@@ -17,7 +17,7 @@
 
 import {
   createElement, useEffect, useState,
-  type CSSProperties, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactElement,
+  type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { newSessionDialog } from './dialog-store.js'
@@ -25,8 +25,9 @@ import type { PresetChoice } from './rows.js'
 import {
   backdropStyle, cancelButtonStyle, createButtonStyle, dialogActionsStyle, dialogErrorStyle,
   dialogStyle, dialogTitleStyle, emptyDeviceStyle, fieldInputStyle, fieldLabelStyle,
-  fieldSelectStyle, linkButtonStyle,
+  linkButtonStyle,
 } from './list-styles.js'
+import { SelectMenu } from './select-menu.js'
 
 /** Where a new session runs. */
 type SessionTarget = 'local' | 'ssh'
@@ -238,15 +239,22 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
     ? null
     : createElement('div', null,
       createElement('div', { style: fieldLabelStyle }, 'Agent 预设'),
-      createElement('select', {
-        style: fieldSelectStyle,
+      // A SelectMenu rather than a native <select>: the OS-drawn option list
+      // cannot be positioned by the page and pops up detached from the
+      // control inside this webview.
+      createElement(SelectMenu, {
         value: preset,
         disabled: busy,
-        onChange: (event: ChangeEvent<HTMLSelectElement>) => { setPreset(event.target.value) },
-      },
-        createElement('option', { value: '' }, '跟随默认'),
-        ...presetOptions.map(choice => createElement('option', { key: choice.id, value: choice.id, title: choice.description ?? '' }, choice.label)),
-      ))
+        options: [
+          { id: '', label: '跟随默认' },
+          ...presetOptions.map(choice => ({
+            id: choice.id,
+            label: choice.label,
+            ...(choice.description === undefined ? {} : { title: choice.description }),
+          })),
+        ],
+        onChange: setPreset,
+      }))
   return createElement('div', {
     style: backdropStyle,
     onClick: (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -281,19 +289,12 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
         ? null
         : createElement('div', null,
           createElement('div', { style: fieldLabelStyle }, 'SSH 设备'),
-          createElement('select', {
-            style: fieldSelectStyle,
+          createElement(SelectMenu, {
             value: deviceId,
             disabled: busy,
-            onChange: (event: ChangeEvent<HTMLSelectElement>) => {
-              pickDevice(event.target.value)
-            },
-          },
-            ...devices.map(device => createElement('option', {
-              key: device.id,
-              value: device.id,
-            }, device.name)),
-          )),
+            options: devices.map(device => ({ id: device.id, label: device.name })),
+            onChange: pickDevice,
+          })),
       target !== 'ssh' || devices.length === 0
         ? null
         : createElement('div', null,
