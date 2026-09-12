@@ -191,6 +191,7 @@ async function complete(
   line: string,
   cursor: number,
   cwd: string | undefined,
+  shellCwd: string | undefined,
 ): Promise<DshellCompletion | undefined> {
   const before = line.slice(0, Math.max(0, Math.min(cursor, line.length)))
   const token = lastToken(before)
@@ -199,10 +200,13 @@ async function complete(
   if ('error' in resolved) throw new Error(`会话不可用：${resolved.error.code}`)
   const agent = resolved.agent
   // The shell runs in the session's world, so a bare token completes against
-  // the directory the terminal stands in — which the composer tracks and sends
-  // — and `~` against that world's home: the harness user's on this machine,
-  // the device's remote root for a session bound to one.
-  const base = cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd
+  // the directory the terminal stands in. Where the shell IS outranks every
+  // mirror of it: the bridge reads a local shell's own process cwd, so a `cd`
+  // typed in, fed by the file navigator, or spelled in a way the composer's
+  // line scanner refuses all land here. The composer's tracked value is the
+  // fallback for a session whose shell cannot be read (a device's `ssh`), and
+  // `~` resolves against that world's home either way.
+  const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
   const home = worldHome(routing, sessionId)
   // A lonely `~` names a directory, and nothing is named "~": the answer is the
   // tilde itself, so the composer writes `~/` and the next Tab lists it.
@@ -258,6 +262,11 @@ async function complete(
  * every line the composer routes to it is inspected, and a `cd` is resolved
  * through the same seam the navigator uses — which is also what makes `~` and a
  * device session's paths come out right.
+ *
+ * A `cd` that could not land must not move the composer's mirror: the shell
+ * stays where it was, so answering with the path the user typed would point
+ * every later relative completion at a directory the shell never entered. Only
+ * a directory answers.
  */
 async function resolvePath(
   ctx: Context,
@@ -265,7 +274,7 @@ async function resolvePath(
   sessionId: string,
   path: string,
   cwd: string | undefined,
-): Promise<string> {
+): Promise<string | undefined> {
   const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
   if ('error' in resolved) throw new Error(`会话不可用：${resolved.error.code}`)
   const agent = resolved.agent
@@ -274,6 +283,8 @@ async function resolvePath(
     agent,
     () => ctx.fs.resolve(expandHome(path, worldHome(routing, sessionId)), options),
   )
+  const info = await ctx.agents.withInitiator(agent, () => ctx.fs.stat(target))
+  if (info === undefined || info.type !== 'directory') return undefined
   return String(target.targetKey)
 }
 
@@ -309,6 +320,7 @@ export function createFilesRoute(
         return {
           completion: await complete(
             ctx, routing, input.sessionId, input.line ?? '', input.cursor ?? 0, input.cwd,
+            bridge?.shellCwd(input.sessionId),
           ),
         }
       default:

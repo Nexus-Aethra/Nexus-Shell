@@ -19,7 +19,9 @@
  * (`node:os`, the terminal bridge) into this bundle.
  */
 
-import { createElement, useRef, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react'
+import {
+  createElement, useEffect, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject,
+} from 'react'
 import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: pulls the Conversation SlotMap (`conversation.input.overlay`) and
 // the SessionStandardProps that hand a slot its `useInput`/`inputActions`.
@@ -222,9 +224,14 @@ function row(
   active: boolean,
   theme: ReturnType<typeof useDshellTheme>,
   onPick: () => void,
+  activeRef: RefObject<HTMLDivElement>,
 ): ReactElement {
   return createElement('div', {
     key: item.name,
+    // The highlighted row is the one the list keeps in view (see the effect in
+    // ShellCompletionList): a long directory would otherwise walk the selection
+    // off the bottom edge with no way to see it.
+    ref: active ? activeRef : null,
     'data-dshell-completion-item': item.kind,
     onMouseDown: (event: { preventDefault: () => void }) => { event.preventDefault(); onPick() },
     style: {
@@ -272,6 +279,16 @@ export function ShellCompletionList(
   // clamp is dsh's own (the slash menu uses the same hook).
   const listRef = useRef<HTMLDivElement>(null)
   const maxHeight = useAnchoredMaxHeight(listRef, MAX_LIST_HEIGHT, state)
+  // Keep the highlight visible. The browser never scrolls a row into view by
+  // itself here — the keyboard moved the selection, not the caret — so Tab/arrow
+  // walking past the bottom edge would leave the user selecting something they
+  // cannot see. Same treatment the stock trigger menu gives its own list.
+  const activeRef = useRef<HTMLDivElement>(null)
+  const activeIndex = state?.index ?? -1
+  useEffect(() => {
+    if (activeIndex < 0) return
+    activeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex])
   if (state === null) return null
   const pick = (index: number): void => {
     const next = props.completion.apply(state, index, draft)
@@ -288,6 +305,6 @@ export function ShellCompletionList(
   },
     state.items.length === 0
       ? createElement('div', { style: { padding: '3px 10px', opacity: 0.6 } }, state.note ?? '无匹配')
-      : state.items.map((item, index) => row(item, index === state.index, theme, () => { pick(index) })),
+      : state.items.map((item, index) => row(item, index === state.index, theme, () => { pick(index) }, activeRef)),
   )
 }

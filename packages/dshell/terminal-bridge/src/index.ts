@@ -20,6 +20,7 @@
  */
 
 import { homedir, userInfo, hostname } from 'node:os'
+import { readlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -760,6 +761,35 @@ export class DshellTerminalBridge extends Service {
    */
   private ensureLiveMain(dshSessionId: string): Promise<MainRecord> {
     return this.ensureMainShell(dshSessionId)
+  }
+
+  /**
+   * Where a session's own shell stands, read from the OS.
+   *
+   * The composer's path completion needs the shell's CURRENT directory, and a
+   * shell's directory is process state with no channel back over the PTY: a
+   * `cd` typed into it, or one the file navigator feeds, moves a process and
+   * says nothing to anyone. This is the way to actually ask — the PTY is a
+   * child process of this one, so its cwd is a symlink away.
+   *
+   * Deliberately not spawning: a session without a shell answers undefined
+   * rather than getting one created to answer a question about it. A session
+   * whose plan redirected it elsewhere (a device session's `ssh`) answers
+   * undefined too — that process's cwd is this machine's, not the device's.
+   *
+   * @param dshSessionId - the session whose shell to look at.
+   * @returns the shell's directory, or undefined when there is nothing to read.
+   */
+  shellCwd(dshSessionId: string): string | undefined {
+    const record = this.recordFor(dshSessionId)
+    const session = record?.session
+    if (session === undefined || session.redirected) return undefined
+    try {
+      return readlinkSync(`/proc/${String(session.pid)}/cwd`)
+    } catch {
+      // The shell died between the lookup and the read, or this is not Linux.
+      return undefined
+    }
   }
 
   /** Feed one input chunk to the main PTY (Ctrl+C, `\x03`, cancels the active send). */

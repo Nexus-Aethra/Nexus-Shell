@@ -148,6 +148,15 @@ export interface DshellPtySession extends TerminalBackendSession {
   onExit(listener: (status: TerminalSessionStatus) => void): () => void
   /** Resize the pty (the browser canvas drives this). */
   resize(cols: number, rows: number): void
+  /** Top-level process id; present for every PTY this backend spawns. */
+  readonly pid: number
+  /**
+   * Whether the spawn plan sent this shell somewhere else.
+   *
+   * A device session's terminal is a local `ssh` process, so that process's own
+   * working directory says nothing about the directory the user's shell is in.
+   */
+  readonly redirected: boolean
 }
 
 class RawSendOperation implements TerminalSendOperation {
@@ -250,6 +259,8 @@ const LOCAL_SHELL: PtySpawnPlan = { argv: ['/bin/bash', '--noprofile', '--norc',
 class LocalRawSession implements DshellPtySession {
   motd = ''
   readonly pid: number
+  /** A plan that is not the local default means the shell runs elsewhere. */
+  readonly redirected: boolean
 
   private readonly pty: nodePty.IPty
   private readonly decoder = new StringDecoder('utf8')
@@ -282,6 +293,7 @@ class LocalRawSession implements DshellPtySession {
       env: { ...process.env, TERM: 'xterm-256color', ...plan.env } as Record<string, string>,
     })
     this.pid = this.pty.pid
+    this.redirected = plan !== LOCAL_SHELL
     this.pty.onData((data: string) => { this.onData(data) })
     this.pty.onExit(({ exitCode, signal }) => {
       this.statusValue = { kind: 'exited', exitCode, signal: exitSignalName(signal) }
