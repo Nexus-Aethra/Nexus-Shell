@@ -86,7 +86,6 @@ export interface TransferOutcome {
   readonly source: string
   /** The destination's path, as its own world spells it. */
   readonly destination: string
-  readonly side: TransferSide
   /** Chunked transfers only: how many relayed slices made the file. */
   readonly chunks?: number | undefined
 }
@@ -193,6 +192,54 @@ export class BufferService {
   /** Links one session is an end of. */
   linksFor(sessionId: string): readonly BufferLink[] {
     return this.links.filter(link => link.a === sessionId || link.b === sessionId)
+  }
+
+  /** The grants the caller currently holds: live, referenced, not revoked. */
+  private heldGrants(callerId: string): readonly BufferGrant[] {
+    return this.grants.filter(grant =>
+      grant.to === callerId && grant.revokedAt === undefined && grant.count > 0)
+  }
+
+  /**
+   * Resolve a buffer path — `mappedName/rest` — against the grants the caller
+   * holds. The mapped name selects the grant and area; the rest is the
+   * area-relative path the authorize path already understands. Ambiguity (the
+   * same name mapped on two pipes) is refused rather than guessed.
+   */
+  resolveBufferPath(callerId: string, bufferPath: string): { grantId: string; path: string } {
+    const clean = bufferPath.replace(/^\/+$/u, '').replace(/^\/+/u, '')
+    const first = clean.split('/')[0] ?? ''
+    if (first.length === 0) throw new Error('缓冲路径为空；用 action=ls 查看缓冲区结构')
+    const rest = clean.slice(first.length).replace(/^\/+$/u, '')
+    const matches: { grantId: string }[] = []
+    for (const grant of this.heldGrants(callerId)) {
+      for (const area of grant.areas) {
+        if (area.as !== undefined && area.as === first) matches.push({ grantId: grant.id })
+      }
+    }
+    if (matches.length === 0) {
+      throw new Error(`缓冲区里没有映射「${first}」；用 action=ls 查看当前缓冲区结构`)
+    }
+    if (matches.length > 1) {
+      throw new Error(`「${first}」在多条管道上都有映射；请改用 grant_id 直接指定其一`)
+    }
+    return { grantId: matches[0].grantId, path: rest.length === 0 ? '.' : rest }
+  }
+
+  /** The buffer namespace roots the caller holds: mapped areas, rights, origin. */
+  bufferTree(callerId: string): string {
+    const lines: string[] = []
+    for (const grant of this.heldGrants(callerId)) {
+      for (const area of grant.areas) {
+        if (area.as === undefined) continue
+        const rights = area.rights.includes('write') ? '读写' : '只读'
+        lines.push(`${area.as}/  ← ${this.labelOf(grant.from)} 的 ${area.path}（${rights}，${grant.id}）`)
+      }
+    }
+    if (lines.length === 0) {
+      return '当前缓冲区为空：没有映射目录。委派任务时在 grants 的 areas 里给 path 配一个 as 名字，双方就能用缓冲路径操作它。'
+    }
+    return `缓冲区结构（缓冲路径 → 真实来源）：\n${lines.join('\n')}`
   }
 
   /** Tickets one session is an end of. */
@@ -445,13 +492,65 @@ export class BufferService {
 
   // ----------------------------------------------------------- granted files
 
-  /** Read a file inside a granted area, as the granter. */
-  async readGranted(callerId: string, grantId: string, path: string, signal?: AbortSignal): Promise<string> {
+  /**
+   * Read a file inside a granted area, as the granter. Text only — binary
+   * content has no line semantics, use download for it. `offset` is a 1-based
+   * line number; `limit` caps the returned lines, so a huge file pages.
+   */
+  async readGranted(
+    callerId: string,
+    grantId: string,
+    path: string,
+    options?: { readonly offset?: number | undefined; readonly limit?: number | undefined },
+    signal?: AbortSignal,
+  ): Promise<string> {
     const access = await this.authorize(callerId, grantId, path, 'read', signal)
-    return await this.ctx.agents.withInitiator(
+    const body = await this.ctx.agents.withInitiator(
       access.granter,
       () => this.ctx.fs.readText(access.target, signal),
     )
+    const offset = Math.max(1, options?.offset ?? 1)
+    const limit = options?.limit
+    if (offset === 1 && limit === undefined) return body
+    const lines = body.split('\n')
+    const start = Math.min(offset, Math.max(1, lines.length)) - 1
+    const slice = limit === undefined ? lines.slice(start) : lines.slice(start, start + limit)
+    const head = `共 ${String(lines.length)} 行 · 显示 ${String(start + 1)}-${String(start + slice.length)} 行`
+    return `${head}\n${slice.map((text, index) => `${String(start + index + 1)}| ${text}`).join('\n')}`
+  }
+
+  /**
+   * Replace strings inside a granted file, in the granter's world, in place —
+   * no whole-file round trip through the model. `old_string` must appear at
+   * least once and, without `replaceAll`, exactly once.
+   */
+  async editGranted(
+    callerId: string,
+    grantId: string,
+    path: string,
+    oldString: string,
+    newString: string,
+    replaceAll: boolean,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (oldString.length === 0) throw new Error('old_string 不能为空')
+    const access = await this.authorize(callerId, grantId, path, 'write', signal)
+    const body = await this.ctx.agents.withInitiator(
+      access.granter,
+      () => this.ctx.fs.readText(access.target, signal),
+    )
+    const count = body.split(oldString).length - 1
+    if (count === 0) throw new Error('old_string 在文件中没有出现，编辑拒绝')
+    if (!replaceAll && count > 1) {
+      throw new Error(`old_string 出现了 ${String(count)} 次；补充更多上下文使其唯一，或改用 replace_all`)
+    }
+    const next = replaceAll ? body.split(oldString).join(newString) : body.replace(oldString, newString)
+    const policy = this.ctx.get('sandboxPolicy')?.resolve({ session: access.granter.session })
+    await this.ctx.agents.withInitiator(
+      access.granter,
+      () => this.ctx.fs.writeText(access.target, next, undefined, signal, policy),
+    )
+    return `已编辑 ${path}：替换 ${String(count)} 处（${String(oldString.length)} → ${String(newString.length)} 字符）。`
   }
 
   /** List a directory inside a granted area, as the granter. */
@@ -510,30 +609,72 @@ export class BufferService {
    * @param maxBytes - size ceiling override, clamped by the service.
    * @returns what moved where, in bytes.
    */
-  async transfer(
+  /**
+   * Download: copy one file from a granted area into this session's own world.
+   * `dest` is the full destination file path HERE — the point of a download is
+   * choosing where it lands. Large files relay in chunks automatically.
+   */
+  async download(
     callerId: string,
     grantId: string,
     path: string,
     dest: string | undefined,
-    side: TransferSide,
     maxBytes: number | undefined,
     signal?: AbortSignal,
   ): Promise<TransferOutcome> {
-    const access = await this.authorize(callerId, grantId, path, side === 'from' ? 'read' : 'write', signal)
-    const resolved = await this.ctx.sessionController.resolveAgent(SessionId(callerId))
-    if ('error' in resolved) throw new Error(`本会话不可用：${resolved.error.code}`)
-    const caller = resolved.agent
+    const access = await this.authorize(callerId, grantId, path, 'read', signal)
+    const caller = await this.callerAgent(callerId)
     const callerPath = dest === undefined || dest.trim().length === 0 ? path : dest.trim()
-    // Resolved as the CALLER: the path lands in this session's own world, which
-    // is a device tree over its own route or this machine.
-    const callerTarget = await this.ctx.agents.withInitiator(
+    const destination = await this.ctx.agents.withInitiator(
       caller,
       () => this.ctx.fs.resolve(callerPath, this.resolveOptions(caller, signal)),
     )
-    const source = side === 'from' ? access.target : callerTarget
-    const destination = side === 'to' ? access.target : callerTarget
-    const sourceWorld = side === 'from' ? access.granter : caller
-    const destinationWorld = side === 'to' ? access.granter : caller
+    return await this.moveFile(callerId, access.target, destination, access.granter, caller, maxBytes, signal)
+  }
+
+  /**
+   * Upload: copy one file from this session's world into a granted area.
+   * `src` is the local source file path; `path` names the buffer destination —
+   * the mapped area decides which real directory receives it.
+   */
+  async upload(
+    callerId: string,
+    grantId: string,
+    path: string,
+    src: string,
+    maxBytes: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<TransferOutcome> {
+    const access = await this.authorize(callerId, grantId, path, 'write', signal)
+    const caller = await this.callerAgent(callerId)
+    const source = await this.ctx.agents.withInitiator(
+      caller,
+      () => this.ctx.fs.resolve(src.trim(), this.resolveOptions(caller, signal)),
+    )
+    return await this.moveFile(callerId, source, access.target, caller, access.granter, maxBytes, signal)
+  }
+
+  /** The calling session's live agent, or a refusal. */
+  private async callerAgent(callerId: string): Promise<Agent> {
+    const resolved = await this.ctx.sessionController.resolveAgent(SessionId(callerId))
+    if ('error' in resolved) throw new Error(`本会话不可用：${resolved.error.code}`)
+    return resolved.agent
+  }
+
+  /**
+   * Move one file between two worlds: inline below the stdin ceiling, a
+   * chunked relay above it. The ceiling the caller names applies to the WHOLE
+   * file either way; each mode just has its own defaults and hard cap.
+   */
+  private async moveFile(
+    callerId: string,
+    source: FsTarget,
+    destination: FsTarget,
+    sourceWorld: Agent,
+    destinationWorld: Agent,
+    maxBytes: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<TransferOutcome> {
 
     const info = await this.ctx.agents.withInitiator(sourceWorld, () => this.ctx.fs.stat(source, signal))
     if (info === undefined) throw new Error(`源文件不存在：${source.displayPath}`)
@@ -557,7 +698,7 @@ export class BufferService {
       )
     }
     if (big) {
-      return await this.transferChunked(callerId, side, source, destination, sourceWorld, destinationWorld, info.size, signal)
+      return await this.transferChunked(callerId, source, destination, sourceWorld, destinationWorld, info.size, signal)
     }
 
     const bytes = await this.ctx.agents.withInitiator(
@@ -569,7 +710,6 @@ export class BufferService {
       bytes: bytes.byteLength,
       source: source.displayPath,
       destination: destination.displayPath,
-      side,
     }
   }
 
@@ -587,7 +727,6 @@ export class BufferService {
    */
   private async transferChunked(
     callerId: string,
-    side: TransferSide,
     source: FsTarget,
     destination: FsTarget,
     sourceWorld: Agent,
@@ -688,7 +827,6 @@ export class BufferService {
         bytes: size,
         source: source.displayPath,
         destination: destination.displayPath,
-        side,
         chunks: chunksTotal,
       }
     } catch (error) {
@@ -849,12 +987,21 @@ export class BufferService {
    */
   private newGrant(from: string, to: string, request: GrantRequest): BufferGrant {
     if (request.areas.length === 0) throw new Error('授权至少要包含一个目录')
+    for (const area of request.areas) {
+      if (area.as !== undefined && (area.as.length === 0 || /[\\/\0]/u.test(area.as) || area.as === '.' || area.as === '..')) {
+        throw new Error(`映射名不合法：「${area.as}」——必须是单独一段名称，不能含路径分隔符`)
+      }
+    }
     const grant: BufferGrant = {
       id: newId('grant'),
       from,
       to,
       description: request.description.trim(),
-      areas: request.areas.map(area => ({ path: area.path, rights: [...area.rights] })),
+      areas: request.areas.map(area => ({
+        path: area.path,
+        rights: [...area.rights],
+        ...(area.as === undefined ? {} : { as: area.as }),
+      })),
       count: 1,
       createdAt: Date.now(),
     }

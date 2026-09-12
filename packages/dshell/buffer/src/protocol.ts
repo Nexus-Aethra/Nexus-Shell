@@ -28,14 +28,22 @@ export type BufferTicketState =
 /** States after which a ticket is settled and never changes again. */
 export const SETTLED_STATES: readonly BufferTicketState[] = ['done', 'failed', 'timeout', 'cancelled']
 
-/** One right a grant may confer on an area. */
+/** One directory the grant may confer on an area. */
 export type BufferRight = 'read' | 'write'
 
-/** One directory the grantee may touch, with the rights it holds there. */
+/**
+ * One directory the grant may confer on an area, with the rights it holds there.
+ *
+ * `as` maps the area into the pipe's buffer namespace: the grantee addresses
+ * everything under it by that name (`as/sub/file`) instead of the granter's
+ * real path. One segment, no separators — it is a mount name, not a path.
+ */
 export interface BufferArea {
   /** Absolute path in the GRANTER's namespace, or one relative to its cwd. */
   readonly path: string
   readonly rights: readonly BufferRight[]
+  /** The area's name in the pipe's buffer namespace, when mapped. */
+  readonly as?: string | undefined
 }
 
 /**

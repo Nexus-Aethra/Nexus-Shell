@@ -29,7 +29,8 @@ const ACTION_KINDS: Record<string, GenericCallView['kind']> = {
   grants: 'read',
   read: 'read',
   ls: 'read',
-  transfer: 'move',
+  download: 'move',
+  upload: 'move',
 }
 
 const DESCRIPTION =
@@ -65,14 +66,18 @@ const DESCRIPTION =
  */
 interface GrantParam {
   readonly description: string
-  readonly areas: readonly { readonly path: string; readonly rights: readonly ('read' | 'write')[] }[]
+  readonly areas: readonly { readonly path: string; readonly rights: readonly ('read' | 'write')[]; readonly as?: string }[]
 }
 
 /** Normalize a model-supplied grant into the service's request shape. */
 function toGrantRequest(grants: readonly GrantParam[]): GrantRequest[] {
   return grants.map(grant => ({
     description: grant.description,
-    areas: grant.areas.map(area => ({ path: area.path, rights: [...area.rights] })),
+    areas: grant.areas.map(area => ({
+      path: area.path,
+      rights: [...area.rights],
+      ...(area.as === undefined ? {} : { as: area.as }),
+    })),
   }))
 }
 
@@ -202,7 +207,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       action: {
         type: 'string',
         required: true,
-        enum: ['links', 'delegate', 'tickets', 'claim', 'progress', 'finish', 'fail', 'cancel', 'grants', 'read', 'ls', 'write', 'transfer'],
+        enum: ['links', 'delegate', 'tickets', 'claim', 'progress', 'finish', 'fail', 'cancel', 'grants', 'read', 'ls', 'write', 'edit', 'download', 'upload'],
         description: 'Which buffer operation to perform.',
       },
       to: { type: 'string', description: 'delegate: target session id (the peer of a pipe).' },
@@ -243,12 +248,17 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       text: { type: 'string', description: 'progress: what to report.' },
       result: { type: 'string', description: 'finish: the outcome handed back to the requester.' },
       error: { type: 'string', description: 'fail: why the request could not be completed.' },
-      grant_id: { type: 'string', description: 'read / ls / write / transfer: the grant being exercised.' },
-      path: { type: 'string', description: 'read / ls / write: path relative to the granted area root. In transfer this is the grant-side path, and a directory path is listed by ls.' },
-      content: { type: 'string', description: 'write: the full text to write.' },
-      dest: { type: 'string', description: 'transfer: the path in THIS session\'s own machine; omitted means the same relative path as path.' },
-      side: { type: 'string', enum: ['from', 'to'], description: 'transfer: "from" pulls from the granted area into this session (needs read); "to" pushes this session\'s file into the granted area (needs write). Default "from".' },
-      max_bytes: { type: 'number', description: 'transfer: whole-file size ceiling in bytes. Files up to 32 MiB move inline; larger files transfer automatically in 16 MiB chunks with sha256 verification (default ceiling 1 GiB, hard cap 4 GiB).' },
+      grant_id: { type: 'string', description: 'read / ls / write / edit / download / upload: the grant being exercised. Omit it and give a buffer path instead — the mapped name resolves the grant.' },
+      path: { type: 'string', description: 'Buffer path: mappedName/sub/file (see ls). With grant_id given, it is instead relative to that granted area root. ls with no path lists the buffer roots.' },
+      offset: { type: 'number', description: 'read: 1-based line number to start from, for paging through a big text file.' },
+      limit: { type: 'number', description: 'read: maximum lines to return.' },
+      content: { type: 'string', description: 'write: the full text to write (whole-file replace).' },
+      old_string: { type: 'string', description: 'edit: the exact text to replace; must occur at least once, and exactly once unless replace_all.' },
+      new_string: { type: 'string', description: 'edit: the replacement text (may be empty to delete).' },
+      replace_all: { type: 'boolean', description: 'edit: replace every occurrence of old_string. Default false.' },
+      dest: { type: 'string', description: 'download: the full destination file path in THIS session\'s own world; omitted means the same relative path as path.' },
+      src: { type: 'string', description: 'upload: the source file path in THIS session\'s own world.' },
+      max_bytes: { type: 'number', description: 'download / upload: whole-file size ceiling in bytes. Files up to 32 MiB move inline; larger files transfer automatically in 16 MiB chunks with sha256 verification (default ceiling 1 GiB, hard cap 4 GiB).' },
     },
     output: {
       schema: {
@@ -265,6 +275,18 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
     },
     presentCall: args => present(args as Parameters<typeof present>[0]),
   }))
+}
+
+/** 
+ * Resolve the file actions' target: a buffer path (mappedName/sub/file) picks
+ * its grant by name; an explicit grant_id keeps the area-relative path.
+ */
+function resolveTarget(service: BufferService, viewer: string, args: { grant_id?: string; path?: string }): { grantId: string; path: string } {
+  const grantId = args.grant_id ?? ''
+  const path = args.path ?? ''
+  if (grantId !== '') return { grantId, path: path === '' ? '.' : path }
+  if (path === '' || path === '/') throw new Error('需要 path（缓冲路径）或 grant_id')
+  return service.resolveBufferPath(viewer, path)
 }
 
 /** One dispatched action, returning its model-facing text. */
@@ -285,6 +307,12 @@ async function run(
     error?: string
     grant_id?: string
     path?: string
+    offset?: number
+    limit?: number
+    old_string?: string
+    new_string?: string
+    replace_all?: boolean
+    src?: string
     content?: string
     dest?: string
     side?: string
@@ -365,35 +393,61 @@ async function run(
     case 'grants':
       return renderGrants(service, viewer)
 
+    // File actions address the buffer by mapped name (see ls) or by
+    // grant_id + area-relative path for older grants without a mapping.
+    // Reading and editing happen in the granter's world, zero copy; download
+    // and upload are the explicit cross-world byte moves.
     case 'read': {
-      const grantId = required(args.grant_id, 'grant_id')
-      const path = required(args.path, 'path')
-      const body = await service.readGranted(viewer, grantId, path, signal)
-      return `${path}（授权 ${grantId}）：\n\n${capRead(body)}`
+      const target = resolveTarget(service, viewer, args)
+      const body = await service.readGranted(
+        viewer,
+        target.grantId,
+        target.path,
+        { offset: args.offset, limit: args.limit },
+        signal,
+      )
+      return `${target.path}（授权 ${target.grantId}）：\n\n${capRead(body)}`
+    }
+
+    case 'edit': {
+      const target = resolveTarget(service, viewer, args)
+      if (args.old_string === undefined || args.new_string === undefined) throw new Error('缺少参数 old_string / new_string')
+      const text = await service.editGranted(
+        viewer, target.grantId, target.path,
+        args.old_string, args.new_string, args.replace_all === true, signal,
+      )
+      return `${text}（授权 ${target.grantId}）`
+    }
+
+    case 'download': {
+      const target = resolveTarget(service, viewer, args)
+      const outcome = await service.download(viewer, target.grantId, target.path, args.dest, args.max_bytes, signal)
+      return `已下载：${outcome.source} → ${outcome.destination}，${String(outcome.bytes)} 字节`
+        + (outcome.chunks === undefined ? '' : `（分 ${String(outcome.chunks)} 块中继，sha256 已校验）`) + '。'
+    }
+
+    case 'upload': {
+      const target = resolveTarget(service, viewer, args)
+      if (args.src === undefined || args.src.trim().length === 0) throw new Error('缺少参数 src')
+      const outcome = await service.upload(viewer, target.grantId, target.path, args.src, args.max_bytes, signal)
+      return `已上传：${outcome.source} → ${outcome.destination}，${String(outcome.bytes)} 字节`
+        + (outcome.chunks === undefined ? '' : `（分 ${String(outcome.chunks)} 块中继，sha256 已校验）`) + '。'
     }
 
     case 'ls': {
-      const grantId = required(args.grant_id, 'grant_id')
-      const path = required(args.path, 'path')
-      const listing = await service.listGranted(viewer, grantId, path, signal)
-      return `目录 ${path}：\n${listing}`
+      if ((args.grant_id === undefined || args.grant_id === '') && (args.path === undefined || args.path === '')) {
+        return service.bufferTree(viewer)
+      }
+      const target = resolveTarget(service, viewer, args)
+      const listing = await service.listGranted(viewer, target.grantId, target.path, signal)
+      return `目录 ${target.path}：\n${listing}`
     }
 
     case 'write': {
-      const grantId = required(args.grant_id, 'grant_id')
-      const path = required(args.path, 'path')
+      const target = resolveTarget(service, viewer, args)
       if (args.content === undefined) throw new Error('缺少参数 content')
-      await service.writeGranted(viewer, grantId, path, args.content, signal)
-      return `已写入 ${path}（${String(args.content.length)} 字符）。`
-    }
-
-    case 'transfer': {
-      const grantId = required(args.grant_id, 'grant_id')
-      const path = required(args.path, 'path')
-      const side = args.side === 'to' ? 'to' : 'from'
-      const outcome = await service.transfer(viewer, grantId, path, args.dest, side, args.max_bytes, signal)
-      return `已传输（${side === 'from' ? '拉取' : '推送'}）：`
-        + `${outcome.source} → ${outcome.destination}，${String(outcome.bytes)} 字节。`
+      await service.writeGranted(viewer, target.grantId, target.path, args.content, signal)
+      return `已写入 ${target.path}（${String(args.content.length)} 字符）。`
     }
 
     default:
