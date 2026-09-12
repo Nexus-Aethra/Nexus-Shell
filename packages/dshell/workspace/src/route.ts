@@ -34,6 +34,12 @@ export interface SessionPanelDeps {
    * the memory goes now, while the log goes at the next start.
    */
   readonly release: (sessionId: string) => Promise<void>
+  /**
+   * Cut the session's cross-session state — pipes, unsettled tickets,
+   * grants — in dshell-buffer before its record disappears. Optional: a
+   * composition without dshell-buffer simply has nothing to detach.
+   */
+  readonly detach: ((sessionId: string) => Promise<void>) | undefined
 }
 
 /** JSON response in the shape the sidebar parses. */
@@ -70,6 +76,10 @@ export function createSessionsRoute(deps: SessionPanelDeps): ConnectionFetchRout
         if (deps.running(sessionId)) {
           return { ...await state(), error: '会话正在运行，等它结束后再删除' }
         }
+        // The pipes die with the session in both branches: a live one is
+        // still resolvable until restart, so detaching first also stops it
+        // receiving delegations in its pending-purge window.
+        await deps.detach?.(sessionId)
         if (deps.live(sessionId)) {
           // The log writer is live, so removing the directory now would only
           // have it recreated by the next event. Free what dshell owns, hide

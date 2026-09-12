@@ -19,6 +19,17 @@ import { registerBufferTool } from './tool.js'
 
 export const name = '@deepseek-ai/dsh-dshell-buffer'
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /**
+     * The host pipe service, so the session-deletion path can detach a
+     * session's pipes. A distinct key from the client face's `dshellBuffer`
+     * because this package compiles both halves in one program.
+     */
+    dshellBufferCore: BufferService
+  }
+}
+
 export { DSHELL_BUFFER_PATH } from './protocol.js'
 export type {
   BufferArea,
@@ -44,6 +55,10 @@ const PROMPT_ORDER = 1650
 export function apply(ctx: Context): void {
   ctx.inject(['tools', 'systemPrompt', 'fs', 'sessionController', 'agents'], (bufferCtx) => {
     const service = new BufferService(bufferCtx)
+    // Published for the session-deletion path: deleting a session must also
+    // settle its tickets, revoke its grants and drop its pipes, and the
+    // workspace package owns that path.
+    bufferCtx.provide('dshellBufferCore', service)
 
     bufferCtx.effect(() => {
       service.start()

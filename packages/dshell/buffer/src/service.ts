@@ -245,6 +245,46 @@ export class BufferService {
     await this.save()
   }
 
+  // ------------------------------------------------------------------ detach
+
+  /**
+   * A session is gone: settle every unsettled ticket it participates in,
+   * revoke every grant it holds or issued, and drop its pipes.
+   *
+   * Deleting a session in dshell does not dispose its agent — the delete
+   * route only frees dshell's own memory and schedules the log purge — so
+   * this must be called explicitly by the deletion path;
+   * {@link onAgentDisposed} covers the narrower case of an agent actually
+   * being disposed in this process.
+   */
+  async detachSession(sessionId: string): Promise<void> {
+    if (this.disposed) return
+    const live = this.tickets.filter(ticket =>
+      (ticket.from === sessionId || ticket.to === sessionId)
+      && !SETTLED_STATES.includes(ticket.state))
+    for (const ticket of live) {
+      await this.settle(
+        ticket,
+        ticket.from === sessionId ? 'cancelled' : 'failed',
+        undefined,
+        ticket.from === sessionId
+          ? `发起会话 ${short(sessionId)} 已删除`
+          : `承接会话 ${short(sessionId)} 已删除`,
+      )
+    }
+    let changed = false
+    for (const grant of this.grants) {
+      if ((grant.from === sessionId || grant.to === sessionId) && grant.revokedAt === undefined) {
+        grant.revokedAt = Date.now()
+        grant.count = 0
+        changed = true
+      }
+    }
+    const linksBefore = this.links.length
+    this.links = this.links.filter(link => link.a !== sessionId && link.b !== sessionId)
+    if (changed || this.links.length !== linksBefore) await this.save()
+  }
+
   // -------------------------------------------------------------- delegation
 
   /**
@@ -691,6 +731,13 @@ export class BufferService {
       ticket.to === sessionId && (ticket.state === 'queued' || ticket.state === 'running'))
     for (const ticket of orphaned) {
       await this.settle(ticket, 'failed', undefined, `承接会话 ${short(sessionId)} 已关闭`)
+    }
+    // The requester going away ends its requests too: nothing can be woken
+    // any more, and the worker should not keep spending on a dead ticket.
+    const requested = this.tickets.filter(ticket =>
+      ticket.from === sessionId && (ticket.state === 'queued' || ticket.state === 'running'))
+    for (const ticket of requested) {
+      await this.settle(ticket, 'cancelled', undefined, `发起会话 ${short(sessionId)} 已关闭`)
     }
   }
 

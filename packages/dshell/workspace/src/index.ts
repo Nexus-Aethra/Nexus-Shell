@@ -24,6 +24,9 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 // Type-only: pulls the host connection merge (ctx.connection.fetch).
 import type {} from '@deepseek-ai/dsh-client-connection'
+// Type-only: pulls the `dshellBuffer` service merge the delete branch uses to
+// detach a session's pipes.
+import type {} from '@deepseek-ai/dsh-dshell-buffer'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createSessionsRoute } from './route.js'
 import { dshHome, drainPendingPurges } from './purge.js'
@@ -95,6 +98,11 @@ export function apply(ctx: Context): void {
       // simply has no shell memory to free.
       release: async (sessionId) => {
         panelCtx.get('dshellTerminalBridge')?.releaseSession(sessionId)
+      },
+      // Optional for the same reason: without dshell-buffer the session has
+      // no pipes to detach, and deletion proceeds without them.
+      detach: async (sessionId) => {
+        await panelCtx.get('dshellBufferCore')?.detachSession(sessionId)
       },
     })
     panelCtx.effect(
