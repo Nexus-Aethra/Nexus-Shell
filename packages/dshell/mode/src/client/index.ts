@@ -30,6 +30,7 @@ import { BlockView, type SshSeat } from './block-view.js'
 import type { PipeSeat, PipeTicket } from './status-card.js'
 import { injectSidebarCompactCss } from './sidebar-compact.js'
 import { DshellLeftControls } from './controls.js'
+import { createShellCompletion, ShellCompletionList } from './completion.js'
 import { DshellComposerStats } from './composer-stats.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
@@ -147,6 +148,10 @@ export function apply(ctx: Context): void {
   // tsc program (host SessionStore vs client ISessions); see terminal-bridge.
   const sessions = ctx.get('sessions') as unknown as ISessions
   const pty = ctx.get('dshellPtyStream') as PtyStreamService
+  // Shell-mode completion's shared state: the Tab interceptor in the composer's
+  // left controls writes it, the overlay list reads it, both keep the shell's
+  // directory through it (see completion.ts).
+  const shellCompletion = createShellCompletion()
   const uiConversation = ctx.get('uiConversation') as unknown as {
     imageUrl: (sessionId: SessionId, attachment: Parameters<MessageImageLoader>[0]) => Promise<string>
   }
@@ -305,6 +310,7 @@ export function apply(ctx: Context): void {
         model: sessionId === undefined ? undefined : modelSeat(sessionId),
         sessions,
         pty,
+        completion: shellCompletion,
         setMode: (next: SessionMode) => {
           if (sessionId !== undefined) modeFor(sessionId).set(next)
         },
@@ -368,6 +374,19 @@ export function apply(ctx: Context): void {
       }),
     },
     BlockView,
+  ))
+  // Shell-mode path completion's list. It rides the same floating layer inside
+  // the composer card as dsh's own trigger menu (the one wildcard-free seat for
+  // something that appears above the input line without pushing the layout);
+  // the composer's Tab interceptor writes the state it reads.
+  ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register(
+    {
+      name: 'conversation.input.overlay',
+      id: 'dshell-completion',
+      order: 10,
+      inject: () => ({ completion: shellCompletion }),
+    },
+    ShellCompletionList,
   ))
   // The composer dock's readings — turn/step counts with output speed, token
   // total with cache-hit share — ride `conversation.composer.dock`, the row

@@ -24,6 +24,7 @@
  * already have through `read`.
  */
 
+import { homedir } from 'node:os'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
@@ -33,9 +34,10 @@ import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
-  DSHELL_FILES_PATH, type DshellFileEntry, type DshellFilesListing, type DshellFilesRequest,
-  type DshellFilesResponse,
+  DSHELL_FILES_PATH, type DshellCompletion, type DshellCompletionCandidate, type DshellFileEntry,
+  type DshellFileKind, type DshellFilesListing, type DshellFilesRequest, type DshellFilesResponse,
 } from './protocol.js'
+import type { TransferRoutingSeat } from './transfer.js'
 
 /**
  * Entries one listing returns before it is reported truncated.
@@ -44,6 +46,15 @@ import {
  * request from pushing a whole tree through the browser in a single frame.
  */
 const MAX_ENTRIES = 1000
+
+/**
+ * Candidates one completion answers with.
+ *
+ * A completion menu is read by eye, and past a screenful the useful move is to
+ * keep typing rather than scroll — so the cap is small and the answer says it
+ * was cut.
+ */
+const MAX_COMPLETIONS = 60
 
 /** JSON response in the shape the browser face parses. */
 function respond(body: DshellFilesResponse, status = 200): Response {
@@ -125,6 +136,142 @@ async function cd(
 }
 
 /**
+ * The last token of a shell line, with the span the composer should replace.
+ *
+ * Whitespace splits tokens, except inside single or double quotes; the token is
+ * split again at its last `/` so the basename is the part substituted and
+ * everything before it — a relative prefix, `~/`, an absolute directory — stays
+ * exactly as the user typed it.
+ */
+function lastToken(before: string): { start: number; dirPart: string; prefix: string } | undefined {
+  let quote: '"' | "'" | undefined
+  let tokenStart = 0
+  for (let index = 0; index < before.length; index += 1) {
+    const char = before[index]
+    if (quote === undefined && (char === '"' || char === "'")) { quote = char; continue }
+    if (quote !== undefined && char === quote) { quote = undefined; continue }
+    if (quote === undefined && /\s/u.test(char as string)) tokenStart = index + 1
+  }
+  // An unterminated quote means the token is still being written: keep it whole.
+  const token = before.slice(tokenStart)
+  if (token.length === 0) return undefined
+  // A leading dash is a flag, not a path.
+  if (token.startsWith('-')) return undefined
+  const slash = token.lastIndexOf('/')
+  const dirPart = slash < 0 ? '' : token.slice(0, slash + 1)
+  return { start: tokenStart + dirPart.length, dirPart, prefix: token.slice(slash + 1) }
+}
+
+/** The home of a session's world: a device's remote root, or this machine's. */
+function worldHome(routing: () => TransferRoutingSeat | undefined, sessionId: string): string {
+  return routing()?.targetForSession(sessionId)?.remoteRoot ?? homedir()
+}
+
+/**
+ * Expand a leading `~` against that home. The filesystem seam does not do it —
+ * `resolve('~')` answers `<cwd>/~` — so both the completion and the `cd` mirror
+ * have to, in the session's own world rather than this process's.
+ */
+function expandHome(value: string, home: string): string {
+  if (!value.startsWith('~')) return value
+  return `${home.replace(/\/+$/u, '')}${value.slice(1)}`
+}
+
+/** One line's completion, resolved in the session's own world. */
+async function complete(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  line: string,
+  cursor: number,
+  cwd: string | undefined,
+): Promise<DshellCompletion | undefined> {
+  const before = line.slice(0, Math.max(0, Math.min(cursor, line.length)))
+  const token = lastToken(before)
+  if (token === undefined) return undefined
+  const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
+  if ('error' in resolved) throw new Error(`会话不可用：${resolved.error.code}`)
+  const agent = resolved.agent
+  // The shell runs in the session's world, so a bare token completes against
+  // the directory the terminal stands in — which the composer tracks and sends
+  // — and `~` against that world's home: the harness user's on this machine,
+  // the device's remote root for a session bound to one.
+  const base = cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd
+  const home = worldHome(routing, sessionId)
+  // A lonely `~` names a directory, and nothing is named "~": the answer is the
+  // tilde itself, so the composer writes `~/` and the next Tab lists it.
+  if (token.dirPart === '' && token.prefix === '~') {
+    return {
+      start: token.start,
+      end: before.length,
+      dir: home,
+      candidates: [{ name: '~', kind: 'directory', hint: '目录' }],
+      truncated: false,
+    }
+  }
+  const rawDir = expandHome(token.dirPart, home)
+  const start = rawDir.length === 0 ? base : rawDir
+  if (start === undefined) throw new Error('这个会话没有工作目录，无法补全相对路径')
+  const options = base === undefined ? {} : { cwd: base }
+  const target = await ctx.agents.withInitiator(agent, () => ctx.fs.resolve(start, options))
+  const info = await ctx.agents.withInitiator(agent, () => ctx.fs.stat(target))
+  if (info === undefined) {
+    return { start: token.start, end: before.length, dir: String(target.targetKey), candidates: [], truncated: false, note: '目录不存在' }
+  }
+  if (info.type !== 'directory') {
+    return { start: token.start, end: before.length, dir: String(target.targetKey), candidates: [], truncated: false, note: '不是目录' }
+  }
+  const children = await ctx.agents.withInitiator(agent, () => ctx.fs.listDir(target))
+  const matched = children
+    .filter(child => child.name.startsWith(token.prefix))
+    .sort((left, right) => {
+      if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+      return left.name.localeCompare(right.name)
+    })
+  const candidates: DshellCompletionCandidate[] = matched.slice(0, MAX_COMPLETIONS).map(child => ({
+    name: child.name,
+    kind: (child.type === 'directory' ? 'directory' : child.type === 'file' ? 'file' : 'other') as DshellFileKind,
+    ...child.size === undefined ? {} : { size: child.size },
+    hint: child.type === 'directory' ? '目录' : child.size === undefined ? '' : `${String(child.size)} B`,
+  }))
+  return {
+    start: token.start,
+    end: before.length,
+    dir: String(target.targetKey),
+    candidates,
+    truncated: matched.length > MAX_COMPLETIONS,
+    ...candidates.length === 0 ? { note: '无匹配' } : {},
+  }
+}
+
+/**
+ * Canonicalize one path in the session's world.
+ *
+ * This is how the composer learns what a `cd` did: the shell's own working
+ * directory is process state with no channel back (see the terminal bridge), so
+ * every line the composer routes to it is inspected, and a `cd` is resolved
+ * through the same seam the navigator uses — which is also what makes `~` and a
+ * device session's paths come out right.
+ */
+async function resolvePath(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  path: string,
+  cwd: string | undefined,
+): Promise<string> {
+  const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
+  if ('error' in resolved) throw new Error(`会话不可用：${resolved.error.code}`)
+  const agent = resolved.agent
+  const options = cwd === undefined ? {} : { cwd }
+  const target = await ctx.agents.withInitiator(
+    agent,
+    () => ctx.fs.resolve(expandHome(path, worldHome(routing, sessionId)), options),
+  )
+  return String(target.targetKey)
+}
+
+/**
  * Bind the route to the filesystem seam and, when one is composed, the terminal
  * bridge.
  *
@@ -137,6 +284,7 @@ async function cd(
 export function createFilesRoute(
   ctx: Context,
   terminal: () => DshellTerminalBridge | undefined,
+  routing: () => TransferRoutingSeat | undefined = () => undefined,
 ): ConnectionFetchRoute {
   const handle = async (request: Request): Promise<DshellFilesResponse> => {
     if (request.method === 'GET') return { error: '文件列表只接受 POST' }
@@ -149,6 +297,14 @@ export function createFilesRoute(
         if (bridge === undefined) return { error: '本次组合没有终端桥，无法把终端切换到该目录' }
         return { cdTo: await cd(ctx, bridge, input.sessionId, input.path) }
       }
+      case 'resolve':
+        return { resolved: await resolvePath(ctx, routing, input.sessionId, input.path ?? '.', input.cwd) }
+      case 'complete':
+        return {
+          completion: await complete(
+            ctx, routing, input.sessionId, input.line ?? '', input.cursor ?? 0, input.cwd,
+          ),
+        }
       default:
         return { error: '未知操作' }
     }

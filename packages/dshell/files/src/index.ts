@@ -35,7 +35,10 @@ import { createTransferRoute } from './transfer-route.js'
 export const name = '@deepseek-ai/dsh-dshell-files'
 
 export { DSHELL_FILES_PATH } from './protocol.js'
-export type { DshellFileEntry, DshellFileKind, DshellFilesListing, DshellFilesRequest, DshellFilesResponse } from './protocol.js'
+export type {
+  DshellCompletion, DshellCompletionCandidate, DshellFileEntry, DshellFileKind, DshellFilesListing,
+  DshellFilesRequest, DshellFilesResponse,
+} from './protocol.js'
 export { DSHELL_TRANSFER_PATH } from './transfer-protocol.js'
 export type {
   TransferEntry, TransferJobState, TransferJobView, TransferListing, TransferRequest, TransferResponse,
@@ -54,8 +57,13 @@ export function apply(ctx: Context): void {
     routeCtx.inject(['dshellTerminalBridge'], (terminalCtx) => {
       bridge = terminalCtx.dshellTerminalBridge
     })
+    // The device router is optional and read structurally: the composer's
+    // completion needs it only to resolve `~` against a device session's own
+    // home, and a composition without dshell-ssh simply uses this machine's.
+    const routing = (): TransferRoutingSeat | undefined =>
+      routeCtx.get('dshellSshRouting') as unknown as TransferRoutingSeat | undefined
     routeCtx.effect(
-      () => routeCtx.connection.fetch.register(createFilesRoute(routeCtx, () => bridge)),
+      () => routeCtx.connection.fetch.register(createFilesRoute(routeCtx, () => bridge, routing)),
       'dshell-files: listing route',
     )
 
