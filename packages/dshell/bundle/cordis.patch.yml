@@ -15,20 +15,18 @@
 # not collide with a shipped tooling id.
 
 - insert:
-    # PTY service + bash backend; these ids are distinct from any
-    # shipped web-profile row, so they coexist with the existing tools.
+    # PTY service; this id is distinct from any shipped web-profile row, so it
+    # coexists with the existing tools.
     - id: dshell-terminal
       name: '@deepseek-ai/dsh-terminal'
 
-    - id: dshell-terminal-bash
-      name: '@deepseek-ai/dsh-terminal-bash'
-      # Since the raw-pty canvas (roadmap Phase 5) the main shells no
-      # longer run through this row — it backs the agent's terminal_send
-      # sessions. The tuned settle (~350ms instead of dsh's 3s
-      # inferred_idle) keeps back-to-back agent tool calls from crawling.
-      config:
-        idleSilenceMs: 300
-        handoffGraceMs: 50
+    # NOTE: no terminal-bash row on purpose. dshell's bridge registers its raw
+    # PTY backend under the type `shell` — the name dsh's persistent shell
+    # tools resolve by default (`backendType` defaults to `'shell'`) — so any
+    # composition whose persistent shell group does NOT isolate the terminals
+    # realm resolves the bridge's backend and its bash lands on the agent's
+    # watched terminal. A terminal-bash row here would race the bridge for the
+    # same backend name and fail loud at boot (DUPLICATE_BACKEND).
 
     - id: dshell-tool-terminal
       name: '@deepseek-ai/dsh-tool-terminal'
@@ -114,16 +112,14 @@
   disabled: true
 
 # ── default agent preset ────────────────────────────────────────────────────
-# New sessions follow the dshell preset (installed into the user preset root
-# by scripts/install-into-dsh-profile.sh) unless the user picks another in the
-# new-session dialog. The dshell preset keeps standard's full tool surface and
-# runs every shell command in the agent's own watched terminal: the persistent
-# bash spawns through dshell's `dshell-pty` backend, the bridge claims it as
-# the agent shell, and the status card shows it live. The `standard` preset
-# remains selectable; only the follow-default changes.
-- id: agent-presets
-  config:
-    default: dshell
+# No override and no dshell preset. The stock presets own their shell stacks
+# behind deliberate isolation (tool-bash via the single-provider `ctx.shell`,
+# persistent-bash inside an `isolate: terminals` realm), so no plugin can — or
+# should — rewire them. They already satisfy dshell's one hard requirement on
+# their own: the model's commands run in fresh sandboxed processes and never
+# occupy the user's terminal, while the block view keeps every tool call
+# visible and the stop affordance keeps it controllable. New sessions follow
+# dsh's default (standard); the user picks any of the shipped modes freely.
 
 # ── dev-only hot reload (skip in non-dev sessions) ─────────────────────
 # dsh's web profile mounts @deepseek-ai/dsh-client-hmr as a client

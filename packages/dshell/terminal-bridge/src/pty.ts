@@ -483,9 +483,19 @@ class LocalRawSession implements DshellPtySession {
   }
 }
 
-/** Backend providing raw dshell main-shell sessions under type `dshell-pty`. */
+/**
+ * Backend providing raw dshell main-shell sessions.
+ *
+ * The type is `shell` — the name dsh's persistent shell tools resolve by
+ * default (`backendType` defaults to `'shell'`) — so a composition whose
+ * persistent shell group sits OUTSIDE an `isolate: terminals` realm resolves
+ * this backend, and the bridge's claim hook then owns its spawns as the
+ * agent's watched terminal. Stock presets isolate the realm (their backend is
+ * their own, deliberately invisible to the host), which is respected here
+ * rather than worked around.
+ */
 export class DshellPtyBackend implements TerminalBackend {
-  readonly type = 'dshell-pty'
+  readonly type = 'shell'
 
   private readonly sessions = new Map<TerminalSessionId, LocalRawSession>()
   private disposed = false

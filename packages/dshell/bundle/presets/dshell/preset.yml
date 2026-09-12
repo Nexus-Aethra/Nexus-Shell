@@ -1,3 +1,0 @@
-name: dshell 模式
-description: 终端优先的编码 Agent——全部工具面与 standard 一致，但所有命令持久运行在 AI 自己的终端里（状态卡可实时观看），不再抢占用户的 shell。
-order: 0

@@ -415,7 +415,7 @@ export class DshellTerminalBridge extends Service {
   private async spawnMain(agent: Agent, dshSessionId: string): Promise<MainRecord> {
     const cwd = agent.session?.header?.cwd
     const spawned = await this.ctx.terminals.spawn(agent, {
-      type: 'dshell-pty',
+      type: this.backend.type,
       name: 'main',
       ...(cwd === undefined || cwd === '' ? {} : { cwd }),
     })
@@ -627,7 +627,7 @@ export class DshellTerminalBridge extends Service {
   private async spawnAgent(agent: Agent, dshSessionId: string): Promise<AgentRecord> {
     const cwd = agent.session?.header?.cwd
     const spawned = await this.ctx.terminals.spawn(agent, {
-      type: 'dshell-pty',
+      type: this.backend.type,
       name: 'agent',
       ...(cwd === undefined || cwd === '' ? {} : { cwd }),
     })

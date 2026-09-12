@@ -45,15 +45,14 @@ done
 echo "  + dshell-bundle (as patch layer)"
 ( cd "$HERE/dsh" && $DSH_PKG plugin --profile "$PROFILE" add -w "$HERE/packages/dshell/bundle" )
 
-# The dshell agent preset (standard's tool surface with the persistent bash
-# pointed at dshell's own terminal backend) installs into the harness-home
-# user root, where the agent-presets roster discovers it alongside the
-# shipped presets. Idempotent: an existing copy is refreshed.
+# dshell is not a preset: the terminal unification is a host-side backend
+# takeover (the bridge registers the `shell` PTY type), so no preset is
+# installed. Remove a copy left by an earlier install so the roster does not
+# list a stale fifth mode.
 PRESET_HOME="${DSH_HOME:-$HOME/.dsh}/.agent-presets/dshell"
-mkdir -p "$PRESET_HOME"
-cp "$HERE/packages/dshell/bundle/presets/dshell/preset.yml" \
-   "$HERE/packages/dshell/bundle/presets/dshell/agent.cordis.yml" \
-   "$PRESET_HOME/"
-echo "  + dshell agent preset -> $PRESET_HOME"
+if [ -d "$PRESET_HOME" ]; then
+  rm -rf "$PRESET_HOME"
+  echo "  - stale dshell agent preset removed from $PRESET_HOME"
+fi
 
 echo "Done. Run 'pnpm dsh web --profile $PROFILE' to verify."
