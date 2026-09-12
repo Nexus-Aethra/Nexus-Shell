@@ -1360,3 +1360,35 @@ Acceptance check:
   cookie), and the POST answers 400 for a malformed or `clientId`-less frame
   and 204 for a `clientId` with no live stream.
 - The desktop shell is verified in P2, once a Linux target exists to launch.
+
+## Phase 10.2 — Publishable packages (P1)
+
+Goal: the dshell packages are installable from a registry by the desktop plugin
+window, not only linkable into a dev profile.
+
+Deliverables:
+
+- Manifests rewritten for publication: `private` dropped, `publishConfig.access`
+  public, `files: ["lib"]` (the old list shipped only the two entry bundles and
+  omitted every host module the entry imports), first-party dsh packages as
+  exact-pinned peers with a matching `devDependencies` list, cordis as a peer,
+  dshell edges as `workspace:^`.
+- Root `pnpm.overrides` mapping every first-party name to the local `dsh/`
+  checkout, so development keeps linking while the manifests carry what a
+  consumer resolves.
+- `scripts/local-registry.mjs`: a registry-protocol server over packed
+  tarballs, with upstream passthrough for third-party dependencies.
+
+Acceptance check:
+
+- `pnpm typecheck` and `pnpm build` pass with the rewritten manifests.
+- `pnpm pack` output installs from the local registry into a profile whose core
+  packages are linked to the checkout (`+ @deepseek-ai/dsh-dshell-bundle 0.1.0`,
+  `dsh.profile.bundles` gains the bundle).
+- That profile boots and serves the dshell host routes
+  (`/api/dshell/buffer` 200, `/api/dshell/files` 200, `/api/dshell/stream` 200
+  holding open, `/api/dshell/stream/send` 400 for a body without `clientId`)
+  and a combined client bundle containing the dshell faces.
+- Known limit: the desktop plugin window hardcodes the npmjs registry, so a
+  private registry needs an upstream change to be usable from the app UI.
+

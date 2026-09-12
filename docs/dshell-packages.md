@@ -275,6 +275,80 @@ when it contributes to model-visible state.
   props (`ctx.sessions` for the session id and cwd).
 - Introduced in: Phase 9.9.
 
+## Publishing, and installing from a registry
+
+The desktop shell installs a plugin through its plugin window, which is a plain
+`pnpm add <spec> --save-exact` in the reserved desktop profile followed by one
+check (`apps/desktop/src/project-manager.ts`):
+
+- the spec must be a registry name (or `name@exact-version`) — `file:`, `://`,
+  whitespace and `-`-prefixed specs are rejected, so a packed tarball path can
+  never be staged this way;
+- after install, `node_modules/<name>/package.json` must declare
+  `dsh.bundle.patch`, and that path must exist **inside** the package directory;
+- the package name is then appended to `dsh.profile.bundles`, which is what
+  makes dsh compose its patch rows.
+
+`dsh plugin --profile <p> add <spec>` runs the same pnpm step and the same
+bundle-promotion rule for a non-desktop profile. Both are why
+`dshell-bundle` — the only package declaring `dsh.bundle.patch` — is the install
+root, and why each manifest now carries:
+
+- no `private` field, and `publishConfig.access: public`;
+- `files: ["lib"]` (plus `cordis.patch.yml` for the bundle). The earlier list
+  named only `lib/index.js` and `lib/client.js`, so **every host module the
+  entry imports** — `route.js`, `stream.js`, `pty.js`, … — was missing from the
+  tarball: it installed, then failed at import time;
+- first-party dsh packages as **peerDependencies pinned to the exact
+  `0.1.5-rc.1`** (plus the same list in `devDependencies`, which is what the
+  local build resolves), never as plain dependencies. A plugin must share the
+  host's single instance of a first-party package: a second copy breaks
+  `instanceof` across `FsError`/`TerminalError`, gives a second `Service` base
+  class, and splits the client module table. Exact rather than `^` because a
+  floating prerelease range let pnpm satisfy the peers from the registry
+  (`0.1.5-rc.2`) instead of the checkout, silently mixing two dsh builds in one
+  tree;
+- `@deepseek-ai/cordis` as a peer (`^4.0.2`), matching how dsh publishes its own
+  packages;
+- dshell-to-dshell edges as `workspace:^`, which pnpm rewrites to `^0.1.0` on
+  pack;
+- third-party libraries that are genuinely the plugin's own (`ws`, `node-pty`,
+  `@xterm/xterm`, `@xyflow/react`, `schemastery`) as dependencies.
+
+Development still runs against the local `dsh/` checkout: the root
+`package.json` maps every first-party name to its checkout path under
+`pnpm.overrides`, so `pnpm install` links instead of fetching while the
+manifests themselves carry what a registry consumer resolves. The same shape is
+what the desktop app writes into its own profile (`desktop-packages/*.tgz` +
+matching overrides), which is also why a desktop install cannot end up with two
+copies of a core package.
+
+### Verifying a published artifact
+
+`scripts/local-registry.mjs` serves packed tarballs over the npm registry
+protocol (metadata + tarball endpoints, everything else proxied upstream), and
+the check is: pack, install from that registry into a profile whose core
+packages are linked to the checkout, then boot it.
+
+```bash
+for d in packages/dshell/*/; do (cd "$d" && pnpm pack --pack-destination /tmp/dshell-packs); done
+node scripts/local-registry.mjs --port 4873 --dir /tmp/dshell-packs   # another shell
+pnpm add @deepseek-ai/dsh-dshell-bundle --save-exact \
+  --config.registry=http://127.0.0.1:4873
+```
+
+A pass looks like: the install succeeds, `dsh.profile.bundles` gains
+`@deepseek-ai/dsh-dshell-bundle`, the booted profile answers
+`/api/dshell/buffer`, `/api/dshell/files` and `/api/dshell/stream` (the stream
+one holding the connection open), and the served client bundle
+(`/plugins/??<list>&rev=<rev>`) contains the dshell faces.
+
+The desktop application itself can only talk to `https://registry.npmjs.org/`
+(`DESKTOP_REGISTRY` is a constant in `apps/desktop/src/project-manager.ts`), so
+a private registry is not reachable from its plugin window without an upstream
+change; `dsh plugin` plus `--config.registry` is the equivalent path the recipe
+uses.
+
 ## What is not a dshell package
 
 The following dsh components are reused unchanged. They are listed here

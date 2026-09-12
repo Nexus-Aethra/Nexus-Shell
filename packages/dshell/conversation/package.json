@@ -1,7 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-dshell-conversation",
   "version": "0.1.0",
-  "private": true,
   "description": "dshell Conversation activity marker: registers an always-active `terminal` view target so the conversation stays in active phase and the docked terminal surface renders instead of the centered hero.",
   "type": "module",
   "main": "lib/index.js",
@@ -27,26 +26,28 @@
     "build:client": "tsdown --config-loader tsx"
   },
   "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "lib/types/**/*.d.ts",
-    "lib/**/*.css"
+    "lib"
   ],
-  "dependencies": {
-    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
-    "@deepseek-ai/dsh-api-session-controller": "link:../../../dsh/packages/api/session-controller",
-    "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation",
-    "@deepseek-ai/dsh-client-ui-renderer": "link:../../../dsh/packages/client/ui-renderer"
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.1",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "typescript": "^6.0.3",
-    "tsdown": "^0.22.14"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
   }
 }

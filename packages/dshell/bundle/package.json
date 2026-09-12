@@ -1,7 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-dshell-bundle",
   "version": "0.1.0",
-  "private": true,
   "description": "dshell bundle: composition patch layer that wires dshell-* packages into the dsh web profile.",
   "type": "module",
   "main": "lib/index.js",
@@ -18,40 +17,50 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "files": [
-    "lib/index.js",
-    "lib/types/**/*.d.ts",
-    "cordis.patch.yml"
-  ],
   "scripts": {
     "build": "tsc -p tsconfig.json --emitDeclarationOnly false",
     "build:host": "tsc -p tsconfig.json --emitDeclarationOnly false"
   },
-  "dependencies": {
-    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis",
-    "@deepseek-ai/dsh-client-store": "link:../../../dsh/packages/client/store",
-    "@deepseek-ai/dsh-client-ui-conversation": "link:../../../dsh/packages/client/ui-conversation",
-    "@deepseek-ai/dsh-dshell-commands": "link:../commands",
-    "@deepseek-ai/dsh-dshell-buffer": "link:../buffer",
-    "@deepseek-ai/dsh-dshell-conversation": "link:../conversation",
-    "@deepseek-ai/dsh-dshell-files": "link:../files",
-    "@deepseek-ai/dsh-dshell-mode": "link:../mode",
-    "@deepseek-ai/dsh-dshell-ssh": "link:../ssh",
-    "@deepseek-ai/dsh-dshell-std": "link:../std",
-    "@deepseek-ai/dsh-dshell-terminal-bridge": "link:../terminal-bridge",
-    "@deepseek-ai/dsh-dshell-workspace": "link:../workspace",
-    "@deepseek-ai/dsh-sandbox-local": "link:../../../dsh/packages/sandbox/sandbox-local",
-    "@deepseek-ai/dsh-sandbox-policy": "link:../../../dsh/packages/sandbox/sandbox-policy",
-    "@deepseek-ai/dsh-subprocess-local": "link:../../../dsh/packages/subprocess/subprocess-local",
-    "@deepseek-ai/dsh-terminal": "link:../../../dsh/packages/terminal/terminal",
-    "@deepseek-ai/dsh-terminal-bash": "link:../../../dsh/packages/terminal/terminal-bash",
-    "@deepseek-ai/dsh-tool-terminal": "link:../../../dsh/packages/terminal/tool-terminal"
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
-  "devDependencies": {
-    "typescript": "^6.0.3",
-    "tsdown": "^0.22.14"
+  "dependencies": {
+    "@deepseek-ai/dsh-dshell-buffer": "workspace:^",
+    "@deepseek-ai/dsh-dshell-commands": "workspace:^",
+    "@deepseek-ai/dsh-dshell-conversation": "workspace:^",
+    "@deepseek-ai/dsh-dshell-files": "workspace:^",
+    "@deepseek-ai/dsh-dshell-mode": "workspace:^",
+    "@deepseek-ai/dsh-dshell-ssh": "workspace:^",
+    "@deepseek-ai/dsh-dshell-std": "workspace:^",
+    "@deepseek-ai/dsh-dshell-terminal-bridge": "workspace:^",
+    "@deepseek-ai/dsh-dshell-workspace": "workspace:^"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "link:../../../dsh/vendor/cordis"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-store": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-sandbox-local": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-terminal": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-terminal-bash": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tool-terminal": "0.1.5-rc.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-store": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-sandbox-local": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-terminal": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-terminal-bash": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tool-terminal": "0.1.5-rc.1",
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
   }
 }
