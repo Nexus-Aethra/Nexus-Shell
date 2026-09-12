@@ -88,14 +88,21 @@ when it contributes to model-visible state.
 
 ### `dshell-terminal-bridge`
 
-- Role: host-side bridge between browser ws and `ctx.terminals`. Owns
+- Role: host-side bridge between the browser and `ctx.terminals`. Owns
   one `main` PTY per session (the user's shell) and, spawned lazily,
   one `agent` PTY (the agent's own shell, Phase 9.11), each with its
-  own persisted buffer and block log. Exposes the ws upgrade route at
-  `/dshell/pty`, where a `bind` frame names the stream (`main` or
-  `agent`). Implements the wire protocol in `dshell-design.md` § 5.
-- dsh services depended on: `ctx.webServer` (upgrade route),
-  `ctx.terminals` (PTY lifecycle), `ctx.agents` (resolve agent by
+  own persisted buffer and block log. Serves the frame protocol on two
+  carriers: the ws upgrade route at `/dshell/pty` (where a `bind` frame
+  names the stream, `main` or `agent`) and the `ctx.connection.fetch`
+  routes `/api/dshell/stream` + `/api/dshell/stream/send`, whose GET
+  carries the bind as query parameters. The browser face keeps ws where
+  the page can reach it and falls back to the stream everywhere else —
+  in particular the desktop shell, which composes `connection` but not
+  `webServer`. Implements the wire protocol in `dshell-architecture.md`
+  § 4.
+- dsh services depended on: `ctx.connection` (frame stream + history
+  read, the composition-independent path), `ctx.webServer` (the ws fast
+  path), `ctx.terminals` (PTY lifecycle), `ctx.agents` (resolve agent by
   sessionId), browser-side `dshell-conversation` (channel for byte
   push).
 - Introduced in: Phase 2 (host only); expanded in Phase 3 (browser
@@ -328,8 +335,11 @@ There are no cycles. `dshell-std` has no dependency at all: it is the
   NodeDefinitions (in `dshell-conversation`, host face).
 - `ctx.uiConversation.views` — registers the `terminal` ViewDefinition
   (in `dshell-conversation`, host face).
-- `ctx.webServer` — registers `/dshell/pty` upgrade (in
-  `dshell-terminal-bridge`, host face).
+- `ctx.connection` — registers the frame stream and the history read
+  (in `dshell-terminal-bridge`, host face): `/api/dshell/stream`,
+  `/api/dshell/stream/send`, `/api/dshell/pty`.
+- `ctx.webServer` — registers the `/dshell/pty` ws upgrade (in
+  `dshell-terminal-bridge`, host face; the browser's fast path).
 - `ctx.terminals` — `spawn` / `startSend` / `readOutput` /
   `signal` / `kill` / `list` (in `dshell-terminal-bridge`).
 - `ctx.agents` — `inject` (in `dshell-mode`) and session id lookup

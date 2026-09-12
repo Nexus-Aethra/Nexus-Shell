@@ -94,7 +94,8 @@ form so implementers can match identifiers exactly.
 | `ctx.uiConversation.events` | `dshell-conversation` host | register NodeDefinitions for target `terminal` |
 | `ctx.uiConversation.views` | `dshell-conversation` host | register ViewDefinition for target `terminal` |
 | `ctx.uiSession` | `dshell-mode` browser | patch `inputActions` exposed via `provide()` |
-| `ctx.webServer` | `dshell-terminal-bridge` host | `registerUpgrade('/dshell/pty', ...)` |
+| `ctx.connection` | `dshell-terminal-bridge` host | `connection.fetch.register` for the frame stream (`/api/dshell/stream`, `/api/dshell/stream/send`) and the history read |
+| `ctx.webServer` | `dshell-terminal-bridge` host | `registerUpgrade('/dshell/pty', ...)` — the browser's ws fast path |
 | `ctx.terminals` | `dshell-terminal-bridge` host | spawn/startSend/readOutput/signal/kill/list |
 | `ctx.agents` | `dshell-terminal-bridge` host, `dshell-mode` host | `inject`, agent lookup by sessionId |
 | `ctx.commands` | `dshell-commands` host | register `/clear`, `/new`, `/compact` |
@@ -115,19 +116,27 @@ plural" rule (see [`adding-a-package.md`](../../dsh/docs/cookbook/adding-a-packa
 
 ## 4. Browser↔host wire protocol
 
-`dshell-terminal-bridge` registers one ws upgrade route:
+The frames below are carrier-independent. `dshell-terminal-bridge` serves
+them over two carriers, and the browser face picks one by what the page can
+reach:
 
-```
-GET /dshell/pty  HTTP/1.1
-Upgrade: websocket
-Connection: Upgrade
-Sec-WebSocket-Key: ...
-Sec-WebSocket-Version: 13
-```
+- **ws** (`/dshell/pty`, registered through `ctx.webServer.registerUpgrade`):
+  one socket for the session's life with no per-frame request — the browser's
+  fast path.
+- **stream** (`ctx.connection.fetch` routes): a long-lived
+  `GET /api/dshell/stream?clientId=…&sessionId=…&stream=main|agent` whose body
+  is newline-delimited frames, plus one `POST /api/dshell/stream/send` per
+  client frame carrying the same `clientId`. This is the desktop shell's only
+  option (its page runs on the `dsh-app://` scheme with no listening port), and
+  it exists precisely because `connection` is composed there while `webServer`
+  is not.
 
-The host handler owns the entire post-handshake protocol. Frames are
-JSON UTF-8 text, each exactly one object per frame. Newline is not a
-delimiter.
+Both carriers are authenticated by dsh's own gate — the ws by
+`connection.requestRejection` on the upgrade, the stream by whatever carrier
+serves `/api` (the web server's `/api` prefix, or the desktop pipe).
+
+The frame model is unchanged: JSON UTF-8 text, one object per frame. Newline is
+the stream carrier's delimiter and nothing else's.
 
 ### 4.1 Client → host frames
 

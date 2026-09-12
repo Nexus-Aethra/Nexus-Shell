@@ -26,8 +26,17 @@ import {
   type PtyTextSegment,
   type TimelineEntry,
 } from './timeline.js'
+import {
+  openPtyChannel,
+  resolvedTransport,
+  setTransportPreference,
+  type PtyChannel,
+  type PtyTransport,
+  type WireFrame,
+} from './channel.js'
 
 export type { PtyTextSegment, TimelineEntry } from './timeline.js'
+export type { PtyTransport } from './channel.js'
 
 export const name = '@deepseek-ai/dsh-dshell-terminal-bridge/client'
 
@@ -147,34 +156,6 @@ function dropTimeline(history: SessionHistory, count: number): void {
   }
 }
 
-/** One wire frame from the bridge (`§ 5`). */
-interface WireFrame {
-  kind?: string
-  sessionId?: string
-  chunk?: string
-  time?: number
-  replay?: boolean
-  reason?: string
-  /** `closed`/`error` frames: the connection diagnostic found in the output. */
-  detail?: string
-  message?: string
-  /** `info`/`ready` frames: whether the shell has reached a prompt. */
-  ready?: boolean
-  /** `agent-info` frames: whether the agent shell exists at all. */
-  live?: boolean
-  /** `info` frames: OS identity the dock uses to build bash prompts. */
-  user?: string
-  host?: string
-  home?: string
-  /** `(time, length)` pairs the host kept for the replayed text. */
-  timeline?: [number, number][]
-  /** `blocks` frames: the host's ordered block list, replacing the client's. */
-  blocks?: PtyBlock[]
-  /** `block-text` frames: a delta appended to one open block. */
-  seq?: number
-  text?: string
-}
-
 /** Debounce before a changed timeline is written back to localStorage. */
 const TIMELINE_SAVE_DELAY_MS = 500
 
@@ -240,9 +221,9 @@ export class PtyStreamService extends Service {
     text: string
   }[]>()
   private readonly chunkListeners = new Set<(sessionId: string, chunk: PtyChunk) => void>()
-  private socket: WebSocket | undefined
-  /** The session the current socket was opened (or is connecting) for. */
-  private socketSession: string | undefined
+  private channel: PtyChannel | undefined
+  /** The session the current channel was opened (or is connecting) for. */
+  private channelSession: string | undefined
   private desiredId: string | undefined
   private boundId: string | undefined
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
@@ -261,8 +242,8 @@ export class PtyStreamService extends Service {
   /** Per-session text of the agent shell, capped like the main history. */
   private readonly agentChunks = new Map<string, PtyChunk[]>()
   private readonly agentBytes = new Map<string, number>()
-  private agentSocket: WebSocket | undefined
-  private agentSocketSession: string | undefined
+  private agentChannel: PtyChannel | undefined
+  private agentChannelSession: string | undefined
   /** The panel's requested width, replayed when the socket (re)opens. */
   private agentCols: number | undefined
   /** A reopen was asked for before the socket finished opening. */
@@ -345,22 +326,55 @@ export class PtyStreamService extends Service {
   bind(dshSessionId: string | undefined): void {
     this.desiredId = dshSessionId
     if (dshSessionId === undefined) {
-      this.closeSocket()
+      this.closeChannel()
       return
     }
-    // Idempotent while the socket for this session is still connecting or
+    // Idempotent while the channel for this session is still connecting or
     // open: sessions.list churns several times around a session switch and
-    // a redundant open would leave two live sockets feeding one history.
-    const socket = this.socket
-    if (socket !== undefined && this.socketSession === dshSessionId
-      && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return
-    this.openSocket(dshSessionId)
+    // a redundant open would leave two live carriers feeding one history.
+    const channel = this.channel
+    if (channel !== undefined && this.channelSession === dshSessionId
+      && channel.status !== 'closed') return
+    this.openChannel(dshSessionId)
+  }
+
+  /** The carrier the live main connection is using, if there is one. */
+  carrier(): 'ws' | 'stream' | undefined {
+    return this.channel?.transport
+  }
+
+  /**
+   * Choose the carrier and re-open both streams on it.
+   *
+   * `auto` is the default and asks the page what it can reach; the explicit
+   * values exist so the stream path can be exercised from a browser (where ws
+   * would otherwise always win) and so a shell whose stream path misbehaves has
+   * a way back without a code change.
+   * @param preference - the carrier to use from now on.
+   */
+  useTransport(preference: PtyTransport): void {
+    setTransportPreference(preference)
+    const main = this.desiredId
+    if (main !== undefined) {
+      this.closeChannel()
+      this.openChannel(main)
+    }
+    const agent = this.agent.getSnapshot().sessionId
+    if (agent !== undefined) {
+      this.closeAgentChannel()
+      this.openAgentChannel(agent)
+    }
+  }
+
+  /** The carrier this page will use for the next connection. */
+  transportInUse(): 'ws' | 'stream' {
+    return resolvedTransport()
   }
 
   /** Forward one input chunk to the bound main PTY. */
   send(text: string): void {
-    if (this.boundId === undefined || this.socket?.readyState !== WebSocket.OPEN) return
-    this.socket.send(JSON.stringify({ kind: 'input', sessionId: this.boundId, text }))
+    if (this.boundId === undefined || this.channel?.status !== 'open') return
+    this.channel.send({ kind: 'input', sessionId: this.boundId, text })
   }
 
   /**
@@ -379,8 +393,8 @@ export class PtyStreamService extends Service {
   /** Send the remembered grid, if the bound socket can carry it. */
   private flushSize(): void {
     if (this.boundId === undefined || this.desiredSize === undefined) return
-    if (this.socket?.readyState !== WebSocket.OPEN) return
-    this.socket.send(JSON.stringify({ kind: 'resize', sessionId: this.boundId, ...this.desiredSize }))
+    if (this.channel?.status !== 'open') return
+    this.channel.send({ kind: 'resize', sessionId: this.boundId, ...this.desiredSize })
   }
 
   /**
@@ -422,16 +436,16 @@ export class PtyStreamService extends Service {
    * replace it; a dead socket means the wire itself is gone, so it is reopened.
    */
   private performReconnect(id: string): void {
-    const socket = this.socket
-    if (socket !== undefined && this.socketSession === id) {
-      if (socket.readyState === WebSocket.CONNECTING) return
-      if (socket.readyState === WebSocket.OPEN && this.boundId === id) {
+    const channel = this.channel
+    if (channel !== undefined && this.channelSession === id) {
+      if (channel.status === 'connecting') return
+      if (channel.status === 'open' && this.boundId === id) {
         this.patch({ status: 'connecting', since: Date.now() })
-        socket.send(JSON.stringify({ kind: 'reconnect', sessionId: id }))
+        channel.send({ kind: 'reconnect', sessionId: id })
         return
       }
     }
-    this.openSocket(id)
+    this.openChannel(id)
   }
 
   /**
@@ -464,8 +478,8 @@ export class PtyStreamService extends Service {
 
   /** Deliver a foreground signal to the bound main PTY. */
   sendSignal(signal: 'SIGINT' | 'SIGTERM' | 'SIGTSTP'): void {
-    if (this.boundId === undefined || this.socket?.readyState !== WebSocket.OPEN) return
-    this.socket.send(JSON.stringify({ kind: 'signal', sessionId: this.boundId, signal }))
+    if (this.boundId === undefined || this.channel?.status !== 'open') return
+    this.channel.send({ kind: 'signal', sessionId: this.boundId, signal })
   }
 
   /**
@@ -477,13 +491,13 @@ export class PtyStreamService extends Service {
    */
   watchAgent(dshSessionId: string | undefined): void {
     if (dshSessionId === undefined) {
-      this.closeAgentSocket()
+      this.closeAgentChannel()
       return
     }
-    const socket = this.agentSocket
-    if (socket !== undefined && this.agentSocketSession === dshSessionId
-      && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return
-    this.openAgentSocket(dshSessionId)
+    const channel = this.agentChannel
+    if (channel !== undefined && this.agentChannelSession === dshSessionId
+      && channel.status !== 'closed') return
+    this.openAgentChannel(dshSessionId)
   }
 
   /** The agent shell's text for one session (oldest first, capped). */
@@ -506,9 +520,9 @@ export class PtyStreamService extends Service {
     const id = this.agent.getSnapshot().sessionId
     if (id === undefined) return
     this.watchAgent(id)
-    const socket = this.agentSocket
-    if (socket === undefined) return
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ kind: 'agent-open', sessionId: id }))
+    const channel = this.agentChannel
+    if (channel === undefined) return
+    if (channel.status === 'open') channel.send({ kind: 'agent-open', sessionId: id })
     else this.agentSpawnRequested = true
   }
 
@@ -521,21 +535,21 @@ export class PtyStreamService extends Service {
   resizeAgent(cols: number): void {
     if (cols <= 0) return
     this.agentCols = Math.floor(cols)
-    const socket = this.agentSocket
-    if (socket?.readyState !== WebSocket.OPEN) return
-    socket.send(JSON.stringify({ kind: 'resize', cols: this.agentCols }))
+    const channel = this.agentChannel
+    if (channel?.status !== 'open') return
+    channel.send({ kind: 'resize', cols: this.agentCols })
   }
 
-  /** Close the panel's socket; the main stream is untouched. */
-  private closeAgentSocket(): void {
-    this.agentSocket?.close()
-    this.agentSocket = undefined
-    this.agentSocketSession = undefined
+  /** Close the panel's channel; the main stream is untouched. */
+  private closeAgentChannel(): void {
+    this.agentChannel?.dispose()
+    this.agentChannel = undefined
+    this.agentChannelSession = undefined
     this.agentSpawnRequested = false
   }
 
-  private openAgentSocket(dshSessionId: string): void {
-    this.closeAgentSocket()
+  private openAgentChannel(dshSessionId: string): void {
+    this.closeAgentChannel()
     const previous = this.agent.getSnapshot()
     const sameSession = previous.sessionId === dshSessionId
     this.agent.set({
@@ -549,88 +563,90 @@ export class PtyStreamService extends Service {
       detail: undefined,
       version: previous.version,
     })
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(`${protocol}//${location.host}/dshell/pty`)
-    this.agentSocket = socket
-    this.agentSocketSession = dshSessionId
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ kind: 'bind', sessionId: dshSessionId, stream: 'agent' }))
-      this.patchAgent({ status: 'open' })
-      if (this.agentCols !== undefined) socket.send(JSON.stringify({ kind: 'resize', cols: this.agentCols }))
-      if (this.agentSpawnRequested) {
-        this.agentSpawnRequested = false
-        socket.send(JSON.stringify({ kind: 'agent-open', sessionId: dshSessionId }))
-      }
-    }
-    socket.onmessage = (event) => {
-      if (this.agentSocket !== socket) return
-      let frame: WireFrame
-      try {
-        frame = JSON.parse(String(event.data)) as WireFrame
-      } catch {
-        return
-      }
-      this.ingestAgentFrame(dshSessionId, frame)
-    }
-    socket.onclose = () => {
-      if (this.agentSocket !== socket) return
-      this.agentSocket = undefined
-      this.agentSocketSession = undefined
-      const reason = this.agent.getSnapshot().reason ?? '与服务端的连接已断开'
-      this.patchAgent({ status: 'closed', reason })
-    }
-    socket.onerror = () => {
-      if (this.agentSocket !== socket) return
-      this.patchAgent({ status: 'error' })
-    }
+    let channel: PtyChannel
+    channel = openPtyChannel({
+      sessionId: dshSessionId,
+      stream: 'agent',
+      handlers: {
+        onOpen: () => {
+          // The stream carrier already bound this panel through its GET; the
+          // frame is what the ws carrier needs, and the host treats it as a
+          // no-op on the other path.
+          channel.send({ kind: 'bind', sessionId: dshSessionId, stream: 'agent' })
+          this.patchAgent({ status: 'open' })
+          if (this.agentCols !== undefined) channel.send({ kind: 'resize', cols: this.agentCols })
+          if (this.agentSpawnRequested) {
+            this.agentSpawnRequested = false
+            channel.send({ kind: 'agent-open', sessionId: dshSessionId })
+          }
+        },
+        onFrame: (frame) => {
+          if (this.agentChannel !== channel) return
+          this.ingestAgentFrame(dshSessionId, frame)
+        },
+        onClose: () => {
+          if (this.agentChannel !== channel) return
+          this.agentChannel = undefined
+          this.agentChannelSession = undefined
+          const reason = this.agent.getSnapshot().reason ?? '与服务端的连接已断开'
+          this.patchAgent({ status: 'closed', reason })
+        },
+        onError: () => {
+          if (this.agentChannel !== channel) return
+          this.patchAgent({ status: 'error' })
+        },
+      },
+    })
+    this.agentChannel = channel
+    this.agentChannelSession = dshSessionId
   }
 
   /** Fold one agent-stream frame into the panel's state and text. */
   private ingestAgentFrame(dshSessionId: string, frame: WireFrame): void {
     if (frame.kind === 'output' && typeof frame.chunk === 'string') {
-      const chunk: PtyChunk = { text: frame.chunk, time: frame.time ?? Date.now(), replay: frame.replay === true }
-      if (chunk.replay) {
-        this.agentChunks.set(dshSessionId, [chunk])
-        this.agentBytes.set(dshSessionId, chunk.text.length)
-      } else {
-        const chunks = [...(this.agentChunks.get(dshSessionId) ?? []), chunk]
-        let bytes = (this.agentBytes.get(dshSessionId) ?? 0) + chunk.text.length
-        while (bytes > HISTORY_MAX_BYTES || chunks.length > HISTORY_MAX_FRAMES) {
-          const dropped = chunks[0]
-          if (dropped === undefined || chunks.length === 1) break
-          chunks.shift()
-          bytes -= dropped.text.length
-        }
-        this.agentChunks.set(dshSessionId, chunks)
-        this.agentBytes.set(dshSessionId, bytes)
+    const chunk: PtyChunk = { text: frame.chunk, time: frame.time ?? Date.now(), replay: frame.replay === true }
+    if (chunk.replay) {
+      this.agentChunks.set(dshSessionId, [chunk])
+      this.agentBytes.set(dshSessionId, chunk.text.length)
+    } else {
+      const chunks = [...(this.agentChunks.get(dshSessionId) ?? []), chunk]
+      let bytes = (this.agentBytes.get(dshSessionId) ?? 0) + chunk.text.length
+      while (bytes > HISTORY_MAX_BYTES || chunks.length > HISTORY_MAX_FRAMES) {
+        const dropped = chunks[0]
+        if (dropped === undefined || chunks.length === 1) break
+        chunks.shift()
+        bytes -= dropped.text.length
       }
-      this.patchAgent({ status: 'open', live: true, version: this.agent.getSnapshot().version + 1 })
-      return
+      this.agentChunks.set(dshSessionId, chunks)
+      this.agentBytes.set(dshSessionId, bytes)
+    }
+    this.patchAgent({ status: 'open', live: true, version: this.agent.getSnapshot().version + 1 })
+    return
     }
     if (frame.kind === 'agent-info') {
-      this.patchAgent({
-        live: frame.live === true,
-        ready: frame.ready === true,
-        reason: typeof frame.reason === 'string' ? frame.reason : undefined,
-        detail: typeof frame.detail === 'string' ? frame.detail : undefined,
-        version: this.agent.getSnapshot().version + 1,
-      })
-      return
+    this.patchAgent({
+      live: frame.live === true,
+      ready: frame.ready === true,
+      reason: typeof frame.reason === 'string' ? frame.reason : undefined,
+      detail: typeof frame.detail === 'string' ? frame.detail : undefined,
+      version: this.agent.getSnapshot().version + 1,
+    })
+    return
     }
     if (frame.kind === 'ready') {
-      this.patchAgent({ ready: frame.ready !== false })
-      return
+    this.patchAgent({ ready: frame.ready !== false })
+    return
     }
     if (frame.kind === 'closed') {
-      this.patchAgent({
-        status: 'closed',
-        live: false,
-        ready: frame.ready === true,
-        reason: typeof frame.reason === 'string' ? frame.reason : undefined,
-        detail: typeof frame.detail === 'string' ? frame.detail : undefined,
-        version: this.agent.getSnapshot().version + 1,
-      })
-      return
+    this.patchAgent({
+      status: 'closed',
+      live: false,
+      ready: frame.ready === true,
+      reason: typeof frame.reason === 'string' ? frame.reason : undefined,
+      detail: typeof frame.detail === 'string' ? frame.detail : undefined,
+      version: this.agent.getSnapshot().version + 1,
+    })
+    return
     }
     if (frame.kind === 'error') {
       this.patchAgent({
@@ -645,8 +661,8 @@ export class PtyStreamService extends Service {
     this.agent.set({ ...this.agent.getSnapshot(), ...patch })
   }
 
-  private openSocket(dshSessionId: string): void {
-    this.closeSocket()
+  private openChannel(dshSessionId: string): void {
+    this.closeChannel()
     if (this.state.getSnapshot().sessionId !== dshSessionId) {
       // A different session starts from a clean slate: the retry budget, the
       // failure report and the readiness all belong to the session that earned
@@ -667,122 +683,128 @@ export class PtyStreamService extends Service {
     } else {
       this.patch({ sessionId: dshSessionId, status: 'connecting', since: Date.now() })
     }
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(`${protocol}//${location.host}/dshell/pty`)
-    this.socket = socket
-    this.socketSession = dshSessionId
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ kind: 'bind', sessionId: dshSessionId }))
+    let channel: PtyChannel
+    channel = openPtyChannel({
+      sessionId: dshSessionId,
+      stream: 'main',
+      handlers: {
+        onOpen: () => {
+          // The stream carrier already bound this connection through its GET;
+          // the frame is what the ws carrier needs, and the host treats it as
+          // a no-op on the other path.
+          channel.send({ kind: 'bind', sessionId: dshSessionId })
+          this.boundId = dshSessionId
+          this.patch({ status: 'connecting' })
+          // Replay the grid this session's view already asked for: a request
+          // made while the carrier was still connecting was remembered, not
+          // lost, and the shell about to be spawned must start at it.
+          this.flushSize()
+        },
+        onFrame: (frame) => {
+          // A superseded channel (handover already moved on) must never feed
+          // history: its carrier may still deliver while it winds down.
+          if (this.channel !== channel) return
+          this.ingestMainFrame(dshSessionId, frame)
+        },
+        onClose: () => {
+          // Only the current channel owns teardown and reconnection; a
+          // superseded carrier's close (handover or deliberate disconnect)
+          // must not clear live state or schedule a reconnect.
+          if (this.channel !== channel) return
+          this.channel = undefined
+          this.channelSession = undefined
+          this.boundId = undefined
+          if (this.desiredId === undefined) return
+          const reason = this.state.getSnapshot().reason ?? '与服务端的连接已断开'
+          this.patch({ status: 'closed', reason })
+          this.scheduleRetry()
+        },
+        onError: () => {
+          if (this.channel !== channel) return
+          this.patch({ status: 'error' })
+        },
+      },
+    })
+    this.channel = channel
+    this.channelSession = dshSessionId
+  }
+
+  /** Fold one main-stream frame into the session's state and history. */
+  private ingestMainFrame(dshSessionId: string, frame: WireFrame): void {
+    if (frame.kind === 'output' && typeof frame.chunk === 'string') {
       this.boundId = dshSessionId
-      this.patch({ status: 'connecting' })
-      // Replay the grid this session's view already asked for: a request made
-      // while the socket was still connecting was remembered, not lost, and
-      // the shell about to be spawned must start at it.
-      this.flushSize()
+      if (frame.replay !== true) this.resetRetry()
+      this.patch({ status: 'open' })
+      this.ingest(dshSessionId, {
+        text: frame.chunk,
+        time: frame.time ?? Date.now(),
+        replay: frame.replay === true,
+        ...(Array.isArray(frame.timeline)
+          ? { timeline: frame.timeline.map(pair => ({ t: pair[0], n: pair[1] })) }
+          : {}),
+      })
+      if (frame.replay !== true) console.debug('[dshell-pty]', frame.chunk)
+      return
     }
-    socket.onmessage = (event) => {
-      // A superseded socket (handover already moved on) must never feed
-      // history: the server may still deliver to it while its close
-      // handshake finishes.
-      if (this.socket !== socket) return
-      let frame: WireFrame
-      try {
-        frame = JSON.parse(String(event.data)) as WireFrame
-      } catch {
-        return
+    if (frame.kind === 'blocks' && Array.isArray(frame.blocks)) {
+      const sessionId = this.boundId
+      if (sessionId !== undefined) {
+        this.blockLists.set(sessionId, frame.blocks.map(block => ({ ...block })))
+        this.patch({ version: this.state.getSnapshot().version + 1 })
       }
-      if (frame.kind === 'output' && typeof frame.chunk === 'string') {
-        this.boundId = dshSessionId
-        if (frame.replay !== true) this.resetRetry()
-        this.patch({ status: 'open' })
-        this.ingest(dshSessionId, {
-          text: frame.chunk,
-          time: frame.time ?? Date.now(),
-          replay: frame.replay === true,
-          ...(Array.isArray(frame.timeline)
-            ? { timeline: frame.timeline.map(pair => ({ t: pair[0], n: pair[1] })) }
-            : {}),
-        })
-        if (frame.replay !== true) console.debug('[dshell-pty]', frame.chunk)
-        return
-      }
-      if (frame.kind === 'blocks' && Array.isArray(frame.blocks)) {
-        const sessionId = this.boundId
-        if (sessionId !== undefined) {
-          this.blockLists.set(sessionId, frame.blocks.map(block => ({ ...block })))
-          this.patch({ version: this.state.getSnapshot().version + 1 })
-        }
-        return
-      }
-      if (frame.kind === 'block-text' && typeof frame.seq === 'number' && typeof frame.text === 'string') {
-        const sessionId = this.boundId
-        const list = sessionId === undefined ? undefined : this.blockLists.get(sessionId)
-        const block = list?.find(candidate => candidate.seq === frame.seq)
-        if (block !== undefined) {
-          block.text += frame.text
-          this.patch({ version: this.state.getSnapshot().version + 1 })
-        }
-        return
-      }
-      if (frame.kind === 'info') {
-        this.host.set({
-          user: typeof frame.user === 'string' ? frame.user : '',
-          host: typeof frame.host === 'string' ? frame.host : '',
-          home: typeof frame.home === 'string' ? frame.home : '',
-        })
-        if (typeof frame.ready === 'boolean') this.patch({ ready: frame.ready })
-        return
-      }
-      if (frame.kind === 'ready') {
-        // The shell reached its prompt. Until this arrives the view shows a
-        // connecting state rather than an empty terminal.
-        this.patch({ ready: frame.ready !== false })
-        return
-      }
-      if (frame.kind === 'closed') {
-        // Kept, not just logged: this is what the end-of-terminal marker says,
-        // and what tells "the link dropped" apart from "it never came up".
-        this.patch({
-          status: 'closed',
-          reason: typeof frame.reason === 'string' ? frame.reason : undefined,
-          detail: typeof frame.detail === 'string' ? frame.detail : undefined,
-          ...typeof frame.ready === 'boolean' ? { ready: frame.ready } : {},
-        })
-        this.scheduleRetry()
-        return
-      }
-      if (frame.kind === 'error') {
-        this.patch({
-          status: 'error',
-          reason: typeof frame.message === 'string' ? frame.message : undefined,
-          detail: undefined,
-        })
-        this.scheduleRetry()
-      }
+      return
     }
-    socket.onclose = () => {
-      // Only the current socket owns teardown and reconnection; a
-      // superseded socket's close (handover or deliberate disconnect)
-      // must not clear live state or schedule a reconnect.
-      if (this.socket !== socket) return
-      this.socket = undefined
-      this.socketSession = undefined
-      this.boundId = undefined
-      if (this.desiredId === undefined) return
-      const reason = this.state.getSnapshot().reason ?? '与服务端的连接已断开'
-      this.patch({ status: 'closed', reason })
+    if (frame.kind === 'block-text' && typeof frame.seq === 'number' && typeof frame.text === 'string') {
+      const sessionId = this.boundId
+      const list = sessionId === undefined ? undefined : this.blockLists.get(sessionId)
+      const block = list?.find(candidate => candidate.seq === frame.seq)
+      if (block !== undefined) {
+        block.text += frame.text
+        this.patch({ version: this.state.getSnapshot().version + 1 })
+      }
+      return
+    }
+    if (frame.kind === 'info') {
+      this.host.set({
+        user: typeof frame.user === 'string' ? frame.user : '',
+        host: typeof frame.host === 'string' ? frame.host : '',
+        home: typeof frame.home === 'string' ? frame.home : '',
+      })
+      if (typeof frame.ready === 'boolean') this.patch({ ready: frame.ready })
+      return
+    }
+    if (frame.kind === 'ready') {
+      // The shell reached its prompt. Until this arrives the view shows a
+      // connecting state rather than an empty terminal.
+      this.patch({ ready: frame.ready !== false })
+      return
+    }
+    if (frame.kind === 'closed') {
+      // Kept, not just logged: this is what the end-of-terminal marker says,
+      // and what tells "the link dropped" apart from "it never came up".
+      this.patch({
+        status: 'closed',
+        reason: typeof frame.reason === 'string' ? frame.reason : undefined,
+        detail: typeof frame.detail === 'string' ? frame.detail : undefined,
+        ...typeof frame.ready === 'boolean' ? { ready: frame.ready } : {},
+      })
       this.scheduleRetry()
+      return
     }
-    socket.onerror = () => {
-      if (this.socket !== socket) return
-      this.patch({ status: 'error' })
+    if (frame.kind === 'error') {
+      this.patch({
+        status: 'error',
+        reason: typeof frame.message === 'string' ? frame.message : undefined,
+        detail: undefined,
+      })
+      this.scheduleRetry()
     }
   }
 
-  private closeSocket(): void {
-    this.socket?.close()
-    this.socket = undefined
-    this.socketSession = undefined
+  private closeChannel(): void {
+    this.channel?.dispose()
+    this.channel = undefined
+    this.channelSession = undefined
     this.boundId = undefined
     if (this.reconnectTimer !== undefined) {
       clearTimeout(this.reconnectTimer)
@@ -877,6 +899,12 @@ export interface DshellPtyDebug {
   signal(signal: 'SIGINT' | 'SIGTERM' | 'SIGTSTP'): void
   /** Retry the connection now, exactly like the view's button. */
   reconnect(): void
+  /** The carrier the live main connection is using, if there is one. */
+  carrier(): 'ws' | 'stream' | undefined
+  /** The carrier the next connection would use on this page. */
+  transport(): 'ws' | 'stream'
+  /** Switch carriers now (`auto` returns to capability detection). */
+  useTransport(preference: PtyTransport): void
   text(): string
 }
 
@@ -921,6 +949,9 @@ export function apply(ctx: Context): void {
     send: (text) => { stream.send(text) },
     signal: (signal) => { stream.sendSignal(signal) },
     reconnect: () => { stream.reconnect() },
+    carrier: () => stream.carrier(),
+    transport: () => stream.transportInUse(),
+    useTransport: (preference) => { stream.useTransport(preference) },
     text(): string {
     const sessionId = stream.state.getSnapshot().sessionId
     return sessionId === undefined ? '' : stream.read(sessionId)

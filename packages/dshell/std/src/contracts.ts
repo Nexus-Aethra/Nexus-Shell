@@ -669,3 +669,26 @@ export interface DshellPtyResponse {
   readonly error?: string | undefined
 }
 
+// ─── terminal-bridge — the frame stream over the shared API channel ───
+
+/**
+ * Downstream half of the frame stream: a long-lived GET whose response body is
+ * newline-delimited JSON, one bridge frame per line.
+ *
+ * The wire itself is unchanged — these are the very frames the ws upgrade
+ * carries — but a Response body is reachable from any composition the
+ * `connection` service is in, while `registerUpgrade` needs `webServer`, which
+ * the desktop shell deliberately does not compose. Identity is explicit because
+ * an HTTP stream has no socket to key on: both halves carry the client's own
+ * `clientId`, and the GET carries the bind (`sessionId` + `stream`) that a ws
+ * would have sent as a frame.
+ */
+export const DSHELL_STREAM_PATH = '/api/dshell/stream'
+
+/**
+ * Upstream half: one POST per control frame (`input`, `resize`, `signal`,
+ * `agent-open`, `reconnect`), identified by the same `clientId` the GET opened
+ * with. Answers with no body; the stream is the only place results appear.
+ */
+export const DSHELL_STREAM_SEND_PATH = '/api/dshell/stream/send'
+

@@ -1324,3 +1324,39 @@ Acceptance check:
 - `pnpm run doc-sync` generates catalog entries without warnings.
 - A clean dsh install with only `@deepseek-ai/dsh-shell-suite` added
   loads dshell with no manual config.
+
+## Phase 10.1 — Desktop transport (P0)
+
+Goal: the terminal survives a composition without `webServer`, so the page can
+run inside the desktop shell.
+
+Deliverables:
+
+- `dshell-terminal-bridge` host: the frame protocol served on
+  `ctx.connection.fetch` routes — `GET /api/dshell/stream` (long-lived
+  newline-delimited body) and `POST /api/dshell/stream/send` (one client frame
+  per request, correlated by the client's own `clientId`) — registered in a
+  `ctx.inject(['connection'])` scope rather than inside the `webServer` scope.
+  The `/dshell/pty` upgrade stays for the browser.
+- The subscriber is a carrier, not a socket: one interface (`open` / `send` /
+  `close`) implemented by a ws wrapper and by a Response-body writer, so
+  spawning, buffering, block order and reconnect logic are untouched.
+- Browser face: a channel abstraction over the two carriers, chosen by what the
+  page can reach (ws only from an http(s) page), with
+  `localStorage['dshell.transport']` and `__DSHELL_PTY__.useTransport()` as the
+  override that makes the stream path testable from a browser.
+- Wire contracts for the two paths live in `@deepseek-ai/dsh-dshell-std`.
+
+Acceptance check:
+
+- Browser: `__DSHELL_PTY__.carrier()` reports `ws` by default; a command runs
+  and its output returns.
+- `useTransport('stream')` rebinds both the main and agent streams to the
+  stream carrier with the identical replay, `status: open`, `ready: true` and
+  no retry; `echo …` returns over it; `openAgent()` spawns the agent shell on
+  the agent stream; `reconnect()` answers with a fresh snapshot. Switching back
+  to `auto` returns to ws with no retry.
+- Route-level: the GET streams NDJSON behind dsh's own auth gate (401 without a
+  cookie), and the POST answers 400 for a malformed or `clientId`-less frame
+  and 204 for a `clientId` with no live stream.
+- The desktop shell is verified in P2, once a Linux target exists to launch.

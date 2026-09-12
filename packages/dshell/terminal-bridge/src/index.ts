@@ -38,6 +38,8 @@ import { PtyBuffer } from './buffer.js'
 import { CommandHistory, commandHistoryPath, MAX_COMMAND_HISTORY } from './history.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
+import { createStreamRoutes } from './stream.js'
+import { FetchSubscriber, WsSubscriber, type PtySubscriber } from './subscriber.js'
 import {
   createSplitter, sanitizeTerminalText, sliceWindow, splitOutput, stripAnsi, trackInput,
   type CommandSplitterState, type TerminalCommandRecord,
@@ -215,6 +217,25 @@ interface AgentRecord extends ShellRecord {
   disposeTimer?: NodeJS.Timeout
 }
 
+/**
+ * One decoded control frame from a client — the ws path and the fetch-stream
+ * path run the same shape through the same handler.
+ *
+ * Every field is optional and re-checked with `typeof` where it is used: the
+ * ws frame is whatever JSON arrived on the socket, and the stream frame is
+ * whatever JSON arrived in a POST body, so this is a convenience view of
+ * untrusted input, not a guarantee about it.
+ */
+interface ClientFrame {
+  kind?: string
+  stream?: string
+  sessionId?: string
+  text?: string
+  signal?: string
+  cols?: number
+  rows?: number
+}
+
 export class DshellTerminalBridge extends Service {
   static inject = ['terminals', 'agents'] as const
 
@@ -232,8 +253,8 @@ export class DshellTerminalBridge extends Service {
    * the view renders at its own.
    */
   private readonly pendingSizes = new Map<string, { cols: number; rows: number }>()
-  private readonly clients = new Map<string, Set<WebSocket>>()
-  private readonly boundSession = new Map<WebSocket, string>()
+  private readonly clients = new Map<string, Set<PtySubscriber>>()
+  private readonly boundSession = new Map<PtySubscriber, string>()
   /** The agent-owned shells, keyed by the same Agent as their main shell. */
   private readonly agents = new Map<Agent, AgentRecord>()
   private readonly pendingAgents = new Map<Agent, Promise<AgentRecord>>()
@@ -244,9 +265,17 @@ export class DshellTerminalBridge extends Service {
    * read-only, has no input or signal frames, and a view that never opens the
    * panel costs the host nothing.
    */
-  private readonly agentClients = new Map<string, Set<WebSocket>>()
-  /** Sessions the sockets on {@link agentClients} are bound to. */
-  private readonly agentBound = new Map<WebSocket, string>()
+  private readonly agentClients = new Map<string, Set<PtySubscriber>>()
+  /** Sessions the subscribers on {@link agentClients} are bound to. */
+  private readonly agentBound = new Map<PtySubscriber, string>()
+  /**
+   * Frame-stream subscribers by the client id their two halves share.
+   *
+   * The ws path needs no such index — the socket IS the identity — but a
+   * stream's upstream POSTs are separate requests, so the id its GET opened
+   * with is the only way back to its subscriber.
+   */
+  private readonly streams = new Map<string, FetchSubscriber>()
   /**
    * Columns the panel last asked for, applied when the agent shell spawns.
    *
@@ -332,9 +361,12 @@ export class DshellTerminalBridge extends Service {
         this.markDead(record, 'session closed')
         const set = this.clients.get(sessionId)
         if (set !== undefined) {
-          for (const client of set) {
-            this.boundSession.delete(client)
-            if (client.readyState === WebSocket.OPEN) client.close(1000, 'session closed')
+          // Through dropSubscriber, not just the set: a stream subscriber is
+          // also indexed by its client id, and leaving that entry behind would
+          // keep a closed body reachable from a later POST.
+          for (const client of [...set]) {
+            client.close(1000, 'session closed')
+            this.dropSubscriber(client)
           }
           this.clients.delete(sessionId)
         }
@@ -346,11 +378,28 @@ export class DshellTerminalBridge extends Service {
       if (agentRecord !== undefined) this.markAgentDead(agentRecord, 'session closed')
       const watching = this.agentClients.get(sessionId)
       if (watching !== undefined) {
-        for (const client of watching) {
-          this.agentBound.delete(client)
-          if (client.readyState === WebSocket.OPEN) client.close(1000, 'session closed')
+        for (const client of [...watching]) {
+          client.close(1000, 'session closed')
+          this.dropSubscriber(client)
         }
         this.agentClients.delete(sessionId)
+      }
+    })
+    // The frame stream and the history read sit on the shared API channel, so
+    // they exist wherever `connection` does. That is deliberate: the desktop
+    // shell composes `connection` without `webServer`, so an upgrade route
+    // cannot serve it, while a Response body can.
+    ctx.inject(['connection'], (connectionCtx) => {
+      // The composer's up-arrow history — the read side of the same subject.
+      connectionCtx.effect(
+        () => connectionCtx.connection.fetch.register(createPtyRoute(this)),
+        'dshell-bridge: history route',
+      )
+      for (const route of createStreamRoutes(this)) {
+        connectionCtx.effect(
+          () => connectionCtx.connection.fetch.register(route),
+          `dshell-bridge: ${route.path}`,
+        )
       }
     })
     ctx.inject(['webServer', 'connection'], (webCtx) => {
@@ -367,11 +416,6 @@ export class DshellTerminalBridge extends Service {
         },
       }
       webCtx.effect(() => webCtx.webServer.registerUpgrade(route), 'dshell-bridge: /dshell/pty')
-      // The read side of the same subject: the composer's up-arrow history.
-      webCtx.effect(
-        () => webCtx.connection.fetch.register(createPtyRoute(this)),
-        'dshell-bridge: history route',
-      )
     })
   }
 
@@ -1092,96 +1136,155 @@ export class DshellTerminalBridge extends Service {
     }
     this.mains.clear()
     this.agents.clear()
+    for (const client of this.streams.values()) client.close(1000, 'bridge disposed')
+    this.streams.clear()
     this.clients.clear()
     this.boundSession.clear()
     this.agentClients.clear()
     this.agentBound.clear()
   }
 
-  private attachClient(client: WebSocket): void {
-    client.on('message', (data: unknown) => {
-      let frame: {
-        kind?: string
-        stream?: string
-        sessionId?: string
-        text?: string
-        signal?: string
-        cols?: number
-        rows?: number
-      }
+  /**
+   * Bind one fetch stream to one session — the GET's own bind.
+   *
+   * The stream replaces any subscriber this client id already had: a client
+   * that reconnects opens a new GET before its old body is known to be gone,
+   * and keeping both would push every frame twice into whichever one is still
+   * being read.
+   * @param clientId - the id both halves of this client's stream carry.
+   * @param dshSessionId - the session whose frames it wants.
+   * @param stream - the user's main shell, or the agent panel's.
+   * @param controller - the response body the frames are written to.
+   */
+  attachStream(
+    clientId: string,
+    dshSessionId: string,
+    stream: 'main' | 'agent',
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): void {
+    if (this.streams.has(clientId)) this.detachStream(clientId)
+    const client = new FetchSubscriber(clientId, controller)
+    this.streams.set(clientId, client)
+    if (stream === 'agent') this.bindAgent(client, dshSessionId)
+    else this.bindClient(client, dshSessionId)
+  }
+
+  /**
+   * Hand one control frame from a stream client's POST to the same code the ws
+   * path runs.
+   *
+   * `bind` is a no-op here: the GET that created this subscriber already
+   * carried the session and stream, and running the ws bind again would push a
+   * second snapshot to a client that just got one.
+   * @param clientId - the stream client the frame claims to be.
+   * @param frame - the decoded control frame.
+   */
+  handleStreamFrame(clientId: string, frame: unknown): void {
+    const client = this.streams.get(clientId)
+    if (client === undefined) return
+    if (typeof frame !== 'object' || frame === null) return
+    const fields = frame as ClientFrame
+    if (fields.kind === 'bind') return
+    this.handleClientFrame(client, fields)
+  }
+
+  /** The stream is gone (consumer cancelled, or the HTTP client disconnected). */
+  detachStream(clientId: string): void {
+    const client = this.streams.get(clientId)
+    if (client === undefined) return
+    this.streams.delete(clientId)
+    this.dropSubscriber(client)
+  }
+
+  private attachClient(socket: WebSocket): void {
+    const client = new WsSubscriber(socket)
+    socket.on('message', (data: unknown) => {
+      let frame: ClientFrame
       try {
-        frame = JSON.parse(String(data)) as typeof frame
+        frame = JSON.parse(String(data)) as ClientFrame
       } catch {
         return
       }
-      if (frame.kind === 'bind' && typeof frame.sessionId === 'string') {
-        // The task card's panel opens a socket of its own for the agent's
-        // shell; the main stream and the agent stream never share one.
-        if (frame.stream === 'agent') this.bindAgent(client, frame.sessionId)
-        else this.bindClient(client, frame.sessionId)
-        return
-      }
-      const agentSession = this.agentBound.get(client)
-      if (agentSession !== undefined) {
-        if (frame.kind === 'agent-open') this.openAgentFor(client, agentSession)
-        else if (frame.kind === 'resize' && typeof frame.cols === 'number') this.resizeAgent(agentSession, frame.cols)
-        return
-      }
-      const bound = this.boundSession.get(client)
-      // Handled before the bound check on purpose: the view sends its grid the
-      // moment its seat is laid out, which can be before this client finished
-      // binding (and before the shell it names was spawned).
-      if (frame.kind === 'resize' && typeof frame.cols === 'number' && typeof frame.rows === 'number') {
-        const session = bound ?? frame.sessionId
-        if (session === undefined) return
-        if (bound !== undefined && frame.sessionId !== undefined && frame.sessionId !== bound) return
-        const cols = Math.max(1, Math.floor(frame.cols))
-        const rows = Math.max(1, Math.floor(frame.rows))
-        this.pendingSizes.set(session, { cols, rows })
-        const resizeAgent = this.ctx.get('agents')?.get(session as SessionId)
-        const resizeRecord = resizeAgent === undefined ? undefined : this.mains.get(resizeAgent)
-        resizeRecord?.session.resize(cols, rows)
-        return
-      }
-      // A retry, from the client's automatic loop or its button. Handled
-      // before the bound check because the client may be the one that knows
-      // the shell is gone (its own socket survived the PTY's death).
-      if (frame.kind === 'reconnect') {
-        const session = bound ?? frame.sessionId
-        if (session === undefined) return
-        if (bound !== undefined && frame.sessionId !== undefined && frame.sessionId !== bound) return
-        this.reconnectClient(client, session)
-        return
-      }
-      if (bound === undefined || (frame.sessionId !== undefined && frame.sessionId !== bound)) return
-      if (frame.kind === 'input' && typeof frame.text === 'string') {
-        this.feed(bound, frame.text)
-        return
-      }
-      if (frame.kind === 'signal' && typeof frame.signal === 'string') {
-        if (frame.signal === 'SIGINT' || frame.signal === 'SIGTERM' || frame.signal === 'SIGTSTP') {
-          void this.signal(bound, frame.signal).catch((error: unknown) => {
-            console.warn('dshell-bridge: signal failed:', error)
-          })
-        }
-        return
-      }
+      this.handleClientFrame(client, frame)
     })
-    client.on('close', () => {
-      const agentSession = this.agentBound.get(client)
-      if (agentSession !== undefined) {
-        this.agentBound.delete(client)
-        const watching = this.agentClients.get(agentSession)
-        watching?.delete(client)
-        if (watching !== undefined && watching.size === 0) this.agentClients.delete(agentSession)
+    socket.on('close', () => { this.dropSubscriber(client) })
+  }
+
+  /** Route one decoded control frame from one subscriber. */
+  private handleClientFrame(client: PtySubscriber, frame: ClientFrame): void {
+    if (frame.kind === 'bind' && typeof frame.sessionId === 'string') {
+      // The task card's panel opens a stream of its own for the agent's
+      // shell; the main stream and the agent stream never share one.
+      if (frame.stream === 'agent') this.bindAgent(client, frame.sessionId)
+      else this.bindClient(client, frame.sessionId)
+      return
+    }
+    const agentSession = this.agentBound.get(client)
+    if (agentSession !== undefined) {
+      if (frame.kind === 'agent-open') this.openAgentFor(client, agentSession)
+      else if (frame.kind === 'resize' && typeof frame.cols === 'number') this.resizeAgent(agentSession, frame.cols)
+      return
+    }
+    const bound = this.boundSession.get(client)
+    // Handled before the bound check on purpose: the view sends its grid the
+    // moment its seat is laid out, which can be before this client finished
+    // binding (and before the shell it names was spawned).
+    if (frame.kind === 'resize' && typeof frame.cols === 'number' && typeof frame.rows === 'number') {
+      const session = bound ?? frame.sessionId
+      if (session === undefined) return
+      if (bound !== undefined && frame.sessionId !== undefined && frame.sessionId !== bound) return
+      const cols = Math.max(1, Math.floor(frame.cols))
+      const rows = Math.max(1, Math.floor(frame.rows))
+      this.pendingSizes.set(session, { cols, rows })
+      const resizeAgent = this.ctx.get('agents')?.get(session as SessionId)
+      const resizeRecord = resizeAgent === undefined ? undefined : this.mains.get(resizeAgent)
+      resizeRecord?.session.resize(cols, rows)
+      return
+    }
+    // A retry, from the client's automatic loop or its button. Handled
+    // before the bound check because the client may be the one that knows
+    // the shell is gone (its own carrier survived the PTY's death).
+    if (frame.kind === 'reconnect') {
+      const session = bound ?? frame.sessionId
+      if (session === undefined) return
+      if (bound !== undefined && frame.sessionId !== undefined && frame.sessionId !== bound) return
+      this.reconnectClient(client, session)
+      return
+    }
+    if (bound === undefined || (frame.sessionId !== undefined && frame.sessionId !== bound)) return
+    if (frame.kind === 'input' && typeof frame.text === 'string') {
+      this.feed(bound, frame.text)
+      return
+    }
+    if (frame.kind === 'signal' && typeof frame.signal === 'string') {
+      if (frame.signal === 'SIGINT' || frame.signal === 'SIGTERM' || frame.signal === 'SIGTSTP') {
+        void this.signal(bound, frame.signal).catch((error: unknown) => {
+          console.warn('dshell-bridge: signal failed:', error)
+        })
       }
-      const bound = this.boundSession.get(client)
-      this.boundSession.delete(client)
-      if (bound === undefined) return
+      return
+    }
+  }
+
+  /** Forget one subscriber: it left every session it was watching. */
+  private dropSubscriber(client: PtySubscriber): void {
+    const agentSession = this.agentBound.get(client)
+    if (agentSession !== undefined) {
+      this.agentBound.delete(client)
+      const watching = this.agentClients.get(agentSession)
+      watching?.delete(client)
+      if (watching !== undefined && watching.size === 0) this.agentClients.delete(agentSession)
+    }
+    const bound = this.boundSession.get(client)
+    this.boundSession.delete(client)
+    if (bound !== undefined) {
       const set = this.clients.get(bound)
       set?.delete(client)
       if (set !== undefined && set.size === 0) this.clients.delete(bound)
-    })
+    }
+    // A stream subscriber is also indexed by its client id; leaving that entry
+    // behind would let a later POST resolve to a carrier nobody reads.
+    if (client instanceof FetchSubscriber) this.streams.delete(client.clientId)
   }
 
   /**
@@ -1192,7 +1295,7 @@ export class DshellTerminalBridge extends Service {
    * reason to start a second shell. `agent-open` is the frame that asks for
    * one.
    */
-  private bindAgent(client: WebSocket, dshSessionId: string): void {
+  private bindAgent(client: PtySubscriber, dshSessionId: string): void {
     let set = this.agentClients.get(dshSessionId)
     if (set === undefined) {
       set = new Set()
@@ -1204,7 +1307,7 @@ export class DshellTerminalBridge extends Service {
   }
 
   /** Spawn the agent's shell on the panel's request, then report it. */
-  private openAgentFor(client: WebSocket, dshSessionId: string): void {
+  private openAgentFor(client: PtySubscriber, dshSessionId: string): void {
     void this.ensureAgentShell(dshSessionId).then(() => {
       this.pushAgentSnapshot(client, dshSessionId)
     }, (error: unknown) => {
@@ -1234,7 +1337,7 @@ export class DshellTerminalBridge extends Service {
   }
 
   /** Hand one panel client the agent shell's existence, state and scrollback. */
-  private pushAgentSnapshot(client: WebSocket, dshSessionId: string): void {
+  private pushAgentSnapshot(client: PtySubscriber, dshSessionId: string): void {
     const record = this.agentRecordFor(dshSessionId)
     this.sendFrame(client, {
       kind: 'agent-info',
@@ -1254,7 +1357,7 @@ export class DshellTerminalBridge extends Service {
     }
   }
 
-  private bindClient(client: WebSocket, dshSessionId: string): void {
+  private bindClient(client: PtySubscriber, dshSessionId: string): void {
     // Stash the dead reason BEFORE ensureMainShell swaps in a replacement,
     // so the close frame can be forwarded to a freshly reconnected client.
     const agent = this.ctx.get('agents')?.get(dshSessionId as SessionId)
@@ -1273,7 +1376,7 @@ export class DshellTerminalBridge extends Service {
    * what happened and the client decides whether to try again.
    */
   private attachToSession(
-    client: WebSocket,
+    client: PtySubscriber,
     dshSessionId: string,
     priorDead?: { reason: string; detail?: string | undefined; ready: boolean },
   ): void {
@@ -1303,7 +1406,7 @@ export class DshellTerminalBridge extends Service {
    * persisted log, so the replay carries the history the client already had,
    * with the new shell's prompt appended after it.
    */
-  private reconnectClient(client: WebSocket, dshSessionId: string): void {
+  private reconnectClient(client: PtySubscriber, dshSessionId: string): void {
     void this.ensureMainShell(dshSessionId).then((record) => {
       this.adopt(client, dshSessionId)
       this.pushSnapshot(client, record)
@@ -1313,7 +1416,11 @@ export class DshellTerminalBridge extends Service {
   }
 
   /** Register one client as a subscriber of one session. */
-  private adopt(client: WebSocket, dshSessionId: string): void {
+  private adopt(client: PtySubscriber, dshSessionId: string): void {
+    // A carrier that died while the shell was spawning must not be adopted:
+    // the snapshot below would be written to nobody, and the entry would keep
+    // the id in `clients` until some later frame admitted it was gone.
+    if (!client.open) return
     let set = this.clients.get(dshSessionId)
     if (set === undefined) {
       set = new Set()
@@ -1324,7 +1431,7 @@ export class DshellTerminalBridge extends Service {
   }
 
   /** Hand one client the session's identity, scrollback and block order. */
-  private pushSnapshot(client: WebSocket, record: MainRecord): void {
+  private pushSnapshot(client: PtySubscriber, record: MainRecord): void {
     // `ready` rides the info frame so a client that binds (or re-binds) after
     // the fact still knows whether this shell ever reached a prompt.
     this.sendFrame(client, {
@@ -1345,15 +1452,10 @@ export class DshellTerminalBridge extends Service {
     this.sendFrame(client, { kind: 'blocks', blocks: record.blocks.snapshot() })
   }
 
-  /** Send a single frame to one ws client; tolerates a closing socket. */
-  private sendFrame(client: WebSocket, payload: Record<string, unknown>): void {
-    if (client.readyState !== WebSocket.OPEN) return
-    try {
-      client.send(JSON.stringify(payload))
-    } catch {
-      // The client closed mid-write; the close handler will drop the
-      // boundSession entry, nothing else to do here.
-    }
+  /** Send a single frame to one subscriber; tolerates a closing carrier. */
+  private sendFrame(client: PtySubscriber, payload: Record<string, unknown>): void {
+    if (!client.open) return
+    client.send(JSON.stringify(payload))
   }
 
   private broadcast(dshSessionId: string, frame: Record<string, unknown>): void {
@@ -1361,7 +1463,7 @@ export class DshellTerminalBridge extends Service {
     if (set === undefined) return
     const data = JSON.stringify(frame)
     for (const client of set) {
-      if (client.readyState === WebSocket.OPEN) client.send(data)
+      if (client.open) client.send(data)
     }
   }
 
@@ -1371,7 +1473,7 @@ export class DshellTerminalBridge extends Service {
     if (set === undefined) return
     const data = JSON.stringify({ stream: 'agent', ...frame })
     for (const client of set) {
-      if (client.readyState === WebSocket.OPEN) client.send(data)
+      if (client.open) client.send(data)
     }
   }
 }
