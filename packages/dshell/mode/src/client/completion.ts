@@ -219,17 +219,16 @@ export function createShellCompletion(): ShellCompletion {
         return typeof command === 'string' && command.trim().length > 0 ? [command] : []
       })
       if (entries.length === 0) return null
-      // The route answers oldest first (the order they ran in); history reads
-      // the other way, and a query only re-orders — it never hides what the
-      // session actually ran.
-      const newestFirst = entries.slice().reverse()
+      // Chronological, like a terminal: the newest command is the BOTTOM row
+      // and up-arrow walks upward into the past. The route already answers in
+      // that order, so a query only filters — it never reorders, or "the bottom
+      // is the most recent" would stop being true the moment something is
+      // typed.
       const query = draft.trim().length === 0 ? '' : draft
-      const ranked = newestFirst
-        .map((command, rank) => ({ command, rank, shared: commonPrefix(command, query) }))
-        .filter(entry => query === '' || entry.shared > 0)
-        .sort((left, right) => right.shared - left.shared || left.rank - right.rank)
-        .slice(0, MAX_HISTORY_ITEMS)
-      if (ranked.length === 0) return null
+      const matched = query === '' ? entries : entries.filter(command => commonPrefix(command, query) > 0)
+      if (matched.length === 0) return null
+      // A long session keeps its recent past, not its first commands.
+      const items = matched.slice(-MAX_HISTORY_ITEMS)
       return {
         sessionId,
         source: 'history',
@@ -237,8 +236,9 @@ export function createShellCompletion(): ShellCompletion {
         start: 0,
         end: draft.length,
         dir: '',
-        items: ranked.map(entry => ({ name: entry.command, kind: 'command' as const })),
-        index: 0,
+        items: items.map(command => ({ name: command, kind: 'command' as const })),
+        // The bottom row is the newest, which is where the gesture starts.
+        index: items.length - 1,
         note: undefined,
         draft,
       }

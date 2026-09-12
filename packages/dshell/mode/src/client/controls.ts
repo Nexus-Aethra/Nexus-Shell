@@ -246,12 +246,11 @@ export function DshellLeftControls(props: {
       // would send.
       const cycling = open !== null && open.items.length > 0
       if (cycling && (key === 'Tab' || key === 'ArrowDown' || key === 'ArrowUp')) {
-        const older = key === 'ArrowUp' || (key === 'Tab' && event.shiftKey)
-        // Up means older, down means newer. History is stored newest-first, so
-        // "older" is the forward direction there — the same word as in a
-        // directory listing, the opposite array direction.
-        const forward = open.source === 'history' ? older : !older
-        const index = (open.index + (forward ? 1 : -1) + open.items.length) % open.items.length
+        // Up is the previous (older) row in every source: history lists its
+        // newest command at the bottom, so its array order already reads that
+        // way, and a directory listing is a plain ring.
+        const back = key === 'ArrowUp' || (key === 'Tab' && event.shiftKey)
+        const index = (open.index + (back ? -1 : 1) + open.items.length) % open.items.length
         const next = completion.apply(open, index, draftRef.current)
         if (next !== undefined) {
           writeDraft(next.text)
@@ -279,16 +278,15 @@ export function DshellLeftControls(props: {
         return true
       }
       // Up without a list to walk is the shell's own gesture: the history list,
-      // with the draft as its query (entries sharing a longer prefix with it
-      // rank first, so a half-typed line pulls its own past spellings to the
-      // top). An empty card counts as nothing to walk. The newest match goes
-      // into the line as the list opens, keeping the highlight and the draft in
-      // step — the same rule the cycling branch enforces on every move.
+      // oldest row at the top and the newest at the BOTTOM, so up starts on
+      // that bottom row and keeps walking upward into the past. `draft` is the
+      // query: only entries sharing a prefix with it are listed, in the same
+      // chronological order, so the bottom row is still the most recent match.
       if (key === 'ArrowUp' && !cycling) {
         const draftNow = draftRef.current
         void completion.requestHistory(sessionId, draftNow).then((state) => {
           if (state === null) { completion.store.set(null); return }
-          const next = completion.apply(state, 0, draftNow)
+          const next = completion.apply(state, state.index, draftNow)
           if (next === undefined) { completion.store.set(state); return }
           writeDraft(next.text)
           completion.store.set(next.state)
