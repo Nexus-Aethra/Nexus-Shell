@@ -60,15 +60,18 @@ export function renderRequestNotice(
     lines.push('', '说明：', ticket.detail.trim())
   }
   if (grants.length > 0) {
-    lines.push('', '为完成它，对方把下面的目录映射进了你们的缓冲区——用 dshell_buffer 以缓冲路径直接操作（先 action=ls 看结构）：')
+    lines.push('', '为完成它，对方把下面的位置映射进了你们的缓冲区——这就是你访问它们的方式（先 action="ls" 看结构）：')
     for (const grant of grants) {
       for (const area of grant.areas) {
-        const name = area.as === undefined ? `（未映射，需用 grant ${grant.id} + 相对路径）` : `/${area.as}/`
-        lines.push(`- ${name} ← ${area.path}（${rightsLabel(area.rights)}）`)
+        if (area.as !== undefined) lines.push(`- /${area.as} ← ${area.path}（${rightsLabel(area.rights)}）`)
       }
       if (grant.description.trim().length > 0) lines.push(`  用途说明：${grant.description.trim()}`)
     }
-    lines.push('缓冲区根为 /，映射目录挂在其下（如 /名字/子/文件）：用 ls / read / edit / download / upload 以缓冲路径操作这些位置；越界会被拒绝。')
+    lines.push(
+      '缓冲路径以 / 为根，形如 /名字/子/文件；用 ls / read / edit / download / upload 操作它。',
+      '注意方向：动手的是持有授权的一方——要取走文件用 download（配上 dest，文件会复制到你自己的世界）；'
+      + '要改动对方的文件用 edit；把你自己世界的文件送过去用 upload（需要对方给了写权限）。',
+    )
   }
   lines.push(
     '',

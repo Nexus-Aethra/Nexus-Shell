@@ -156,10 +156,14 @@ when it contributes to model-visible state.
 - Role: the cross-session pipe. Two-faced Cordis package:
   - **Host face** owns links (created only by the user, never by an
     agent), deferred requests with a claim/progress/finish/fail
-    lifecycle, scoped revocable folder grants, and the watchdog that
+    lifecycle, scoped revocable grants, and the watchdog that
     settles anything nobody settled. It contributes one model-facing
     tool, `dshell_buffer`, as the single door to all of it, plus one
-    system-prompt section stating the protocol.
+    system-prompt section stating the protocol. Every granted area is
+    named at creation (`as`, or the path's last segment, suffixed to
+    stay unique on the grantee's side) and that name is the whole
+    contract between the two sessions: the buffer namespace is rooted at
+    `/`, one namespace per session, and grant ids never leave the host.
   - **Browser face** provides the pipe panel in the frame-wide
     `shell.overlay` seat and the `dshellBuffer` service the sidebar
     header button toggles.

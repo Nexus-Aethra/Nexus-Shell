@@ -32,17 +32,23 @@ export const SETTLED_STATES: readonly BufferTicketState[] = ['done', 'failed', '
 export type BufferRight = 'read' | 'write'
 
 /**
- * One directory the grant may confer on an area, with the rights it holds there.
+ * One directory (or file) the grant confers on an area, with the rights it
+ * holds there.
  *
- * `as` maps the area into the pipe's buffer namespace: the grantee addresses
- * everything under it by that name (`as/sub/file`) instead of the granter's
- * real path. One segment, no separators — it is a mount name, not a path.
+ * `as` is the area's name in the grantee's buffer namespace: the grantee
+ * addresses everything under it as `/name/sub/file` instead of by the
+ * granter's real path. One segment, no separators — it is a mount name, not a
+ * path. The service ASSIGNS it at creation (the caller's `as`, else the path's
+ * last segment, suffixed to stay unique among the names that session already
+ * holds), and it is the only handle the two sessions exchange. It is optional
+ * in the type alone: state written before names existed has none until the
+ * service names it at load.
  */
 export interface BufferArea {
   /** Absolute path in the GRANTER's namespace, or one relative to its cwd. */
   readonly path: string
   readonly rights: readonly BufferRight[]
-  /** The area's name in the pipe's buffer namespace, when mapped. */
+  /** The area's name in the grantee's buffer namespace. */
   readonly as?: string | undefined
 }
 

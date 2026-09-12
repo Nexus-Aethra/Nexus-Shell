@@ -106,11 +106,31 @@ export interface DelegateInput {
   readonly linkId?: string | undefined
   readonly subject: string
   readonly detail?: string | undefined
-  /** Grants to create and hold for this ticket. */
+  /**
+   * Areas to open to the target. An area already covered by a live grant of
+   * this same pair is REUSED (its reference count rises) instead of being
+   * granted twice, so repeating a delegation needs no id to point at.
+   */
   readonly grants?: readonly GrantRequest[] | undefined
-  /** Existing grant ids to hold open and reference. */
-  readonly grantIds?: readonly string[] | undefined
   readonly deadlineMs?: number | undefined
+}
+
+/** The mapping name an area takes when the caller names none: its own basename. */
+function derivedMappingName(rawPath: string): string {
+  const trimmed = rawPath.replace(/\/+$/u, '')
+  const base = trimmed.slice(trimmed.lastIndexOf('/') + 1)
+  const cleaned = base.replace(/[\\/\0]/gu, '').replace(/^\.+$/u, '')
+  return cleaned.length > 0 ? cleaned : 'mapped'
+}
+
+/** Whether a name is a single path segment, which is all a mapping name may be. */
+function validMappingName(name: string): boolean {
+  return name.length > 0 && !/[\\/\0]/u.test(name) && name !== '.' && name !== '..'
+}
+
+/** Whether two rights lists mean the same thing. */
+function sameRights(a: readonly BufferRight[], b: readonly BufferRight[]): boolean {
+  return a.length === b.length && a.every(right => b.includes(right))
 }
 
 /** The outcome of an admitted delegation. */
@@ -153,6 +173,10 @@ export class BufferService {
     this.links = [...document.links]
     this.tickets = [...document.tickets]
     this.grants = [...document.grants]
+    // Before anyone can address a path: name every live area that predates the
+    // mapping (see migrateMappings). Persisted right away, so the migration is
+    // a one-time step rather than a per-boot rewrite.
+    if (this.migrateMappings()) void this.save()
     // Structural, optional: a composition without dshell-ssh has no device to
     // probe, and this package must not depend on that bundle.
     const routing = this.ctx.get('dshellSshRouting') as unknown as DeviceRoutingSeat | undefined
@@ -223,7 +247,7 @@ export class BufferService {
       throw new Error(`缓冲区里没有映射「${first}」；用 action=ls 查看当前缓冲区结构`)
     }
     if (matches.length > 1) {
-      throw new Error(`「${first}」在多条管道上都有映射；请改用 grant_id 直接指定其一`)
+      throw new Error(`「${first}」这个映射名在本会话的缓冲区里出现了多次；请让用户整理对应管道的授权`)
     }
     return { grantId: matches[0].grantId, path: rest.length === 0 ? '.' : rest }
   }
@@ -235,13 +259,14 @@ export class BufferService {
       for (const area of grant.areas) {
         if (area.as === undefined) continue
         const rights = area.rights.includes('write') ? '读写' : '只读'
-        lines.push(`/${area.as}/  ← ${this.labelOf(grant.from)} 的 ${area.path}（${rights}，${grant.id}）`)
+        lines.push(`/${area.as}  ← ${this.labelOf(grant.from)} 的 ${area.path}（${rights}）`)
       }
     }
     if (lines.length === 0) {
-      return '当前缓冲区为空：根 `/` 下没有映射目录。委派任务时在 grants 的 areas 里给 path 配一个 as 名字，双方就能用缓冲路径操作它。'
+      return '当前缓冲区为空：根 `/` 下还没有映射。委派任务时在 grants 的 areas 里给出目录或文件，对方就能按映射路径取用它们。'
     }
     return `缓冲区结构（缓冲路径 → 真实来源；根为 \`/\`）：\n${lines.join('\n')}`
+      + '\n映射的是文件就直接用 /名字；映射的是目录，它的内容在 /名字/… 下面；用 ls 逐个确认。'
   }
 
   /** Tickets one session is an end of. */
@@ -377,21 +402,30 @@ export class BufferService {
     if (!feasible.ok) throw new Error(feasible.reason)
 
     const deadlineMs = clampDeadline(input.deadlineMs)
-    const created: BufferGrant[] = []
+    // Grants: an area this pair already covers is REUSED rather than granted
+    // twice — that is what the buffer path is for, and it is why no id ever
+    // needs to travel: repeating a delegation re-holds the same authorization.
+    const taken = this.mappingNamesFor(targetId)
+    const held: BufferGrant[] = []
+    const reused = new Set<string>()
     for (const request of input.grants ?? []) {
-      created.push(this.newGrant(callerId, targetId, request))
-    }
-    const referenced: BufferGrant[] = []
-    for (const grantId of input.grantIds ?? []) {
-      const grant = this.requireGrant(grantId)
-      if (grant.revokedAt !== undefined) throw new Error(`授权已回收：${grantId}`)
-      if (grant.from !== callerId || grant.to !== targetId) {
-        throw new Error(`授权 ${grantId} 不是本会话发给该会话的`)
+      const fresh: BufferArea[] = []
+      for (const area of request.areas) {
+        const existing = this.reusableGrant(callerId, targetId, area)
+        if (existing !== undefined) {
+          if (!reused.has(existing.id)) {
+            existing.count += 1
+            reused.add(existing.id)
+          }
+          if (!held.includes(existing)) held.push(existing)
+          continue
+        }
+        fresh.push(area)
       }
-      grant.count += 1
-      referenced.push(grant)
+      if (fresh.length > 0) {
+        held.push(this.newGrant(callerId, targetId, { description: request.description, areas: fresh }, taken))
+      }
     }
-    const held = [...created, ...referenced]
     const ticket: BufferTicket = {
       id: newId('ticket'),
       linkId: link.id,
@@ -534,7 +568,7 @@ export class BufferService {
     newString: string,
     replaceAll: boolean,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<{ replacements: number; fromLength: number; toLength: number }> {
     if (oldString.length === 0) throw new Error('old_string 不能为空')
     const access = await this.authorize(callerId, grantId, path, 'write', signal)
     const body = await this.ctx.agents.withInitiator(
@@ -552,7 +586,7 @@ export class BufferService {
       access.granter,
       () => this.ctx.fs.writeText(access.target, next, undefined, signal, policy),
     )
-    return `已编辑 ${path}：替换 ${String(count)} 处（${String(oldString.length)} → ${String(newString.length)} 字符）。`
+    return { replacements: count, fromLength: oldString.length, toLength: newString.length }
   }
 
   /** List a directory inside a granted area, as the granter. */
@@ -566,7 +600,7 @@ export class BufferService {
     )
     if (info !== undefined && info.type !== 'directory') {
       const name = access.target.displayPath.split('/').pop() ?? access.target.displayPath
-      return `- ${name}（${info.size === undefined ? '未知大小' : String(info.size) + ' 字节'}）——这个授权本身是一个文件：用 read 的 path="." 读取，或 download 的 path="." 拉取。`
+      return `- ${name}（${info.size === undefined ? '未知大小' : String(info.size) + ' 字节'}）——这个映射本身就是一个文件：用 read 读取它，或用 download 把它取到你的世界。`
     }
     const entries = await this.ctx.agents.withInitiator(
       access.granter,
@@ -1008,9 +1042,9 @@ export class BufferService {
     signal?: AbortSignal,
   ): Promise<{ granter: Agent; target: FsTarget; area: BufferArea }> {
     const grant = this.requireGrant(grantId)
-    if (grant.revokedAt !== undefined) throw new Error(`授权已回收：${grantId}`)
-    if (grant.to !== callerId) throw new Error(`授权 ${grantId} 不是发给本会话的`)
-    if (grant.count <= 0) throw new Error(`授权 ${grantId} 已无未结算任务，已回收`)
+    if (grant.revokedAt !== undefined) throw new Error('这条缓冲路径已失效：对应的授权已回收')
+    if (grant.to !== callerId) throw new Error('这条缓冲路径不属于本会话')
+    if (grant.count <= 0) throw new Error('这条缓冲路径已失效：授权随任务结算回收了')
     return await this.authorizeInGrant(grant, path, right, signal)
   }
 
@@ -1026,7 +1060,7 @@ export class BufferService {
     signal?: AbortSignal,
   ): Promise<{ granter: Agent; target: FsTarget; area: BufferArea }> {
     const areas = grant.areas.filter(area => area.rights.includes(right))
-    if (areas.length === 0) throw new Error(`授权 ${grant.id} 不含「${right}」权限`)
+    if (areas.length === 0) throw new Error(`这条缓冲路径不含「${right}」权限`)
     const resolved = await this.ctx.sessionController.resolveAgent(SessionId(grant.from))
     if ('error' in resolved) throw new Error(`授权方会话不可用：${resolved.error.code}`)
     const granter = resolved.agent
@@ -1053,38 +1087,107 @@ export class BufferService {
         rejections.push(`${area.path}：${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    throw new Error(`不在授权范围内（${path}）：${rejections.join('；')}`)
+    throw new Error(`这个位置不在受权的范围内（区域内路径 ${path}）：${rejections.join('；')}`)
   }
 
   // --------------------------------------------------------------- internals
 
   /**
    * Create a grant for one delegation, born with one reference (the ticket it
-   * is issued for). A grant outlives the ticket only when a later delegation
-   * references it by id, which increments the same counter.
+   * is issued for).
+   *
+   * Every area gets a mapping name here, and only here: the caller's `as` when
+   * it named one, the path's own last segment otherwise, suffixed to stay
+   * unique among the names the GRANTEE already holds. The name is what the two
+   * sessions exchange — an authorization's id stays inside this service.
    */
-  private newGrant(from: string, to: string, request: GrantRequest): BufferGrant {
-    if (request.areas.length === 0) throw new Error('授权至少要包含一个目录')
-    for (const area of request.areas) {
-      if (area.as !== undefined && (area.as.length === 0 || /[\\/\0]/u.test(area.as) || area.as === '.' || area.as === '..')) {
-        throw new Error(`映射名不合法：「${area.as}」——必须是单独一段名称，不能含路径分隔符`)
-      }
-    }
+  private newGrant(from: string, to: string, request: GrantRequest, taken: Set<string>): BufferGrant {
+    if (request.areas.length === 0) throw new Error('授权至少要包含一个目录或文件')
+    const areas = request.areas.map(area => {
+      const preferred = area.as !== undefined && validMappingName(area.as)
+        ? area.as
+        : derivedMappingName(area.path)
+      const name = this.uniqueMappingName(preferred, taken)
+      taken.add(name)
+      return { path: area.path, rights: [...area.rights], as: name }
+    })
     const grant: BufferGrant = {
       id: newId('grant'),
       from,
       to,
       description: request.description.trim(),
-      areas: request.areas.map(area => ({
-        path: area.path,
-        rights: [...area.rights],
-        ...(area.as === undefined ? {} : { as: area.as }),
-      })),
+      areas,
       count: 1,
       createdAt: Date.now(),
     }
     this.grants.push(grant)
     return grant
+  }
+
+  /**
+   * Every mapping name live on one grantee's side, from every live grant.
+   *
+   * The names share one namespace per GRANTEE, not per pipe: addressing a
+   * buffer path searches every grant the session holds, so a name may appear
+   * only once across all of them.
+   */
+  private mappingNamesFor(grantee: string): Set<string> {
+    const taken = new Set<string>()
+    for (const grant of this.grants) {
+      if (grant.revokedAt !== undefined || grant.to !== grantee) continue
+      for (const area of grant.areas) if (area.as !== undefined) taken.add(area.as)
+    }
+    return taken
+  }
+
+  /** One free name on the grantee's side; `-2`, `-3` … on collision. */
+  private uniqueMappingName(preferred: string, taken: Set<string>): string {
+    if (!taken.has(preferred)) return preferred
+    for (let index = 2; ; index += 1) {
+      const candidate = `${preferred}-${String(index)}`
+      if (!taken.has(candidate)) return candidate
+    }
+  }
+
+  /** A live grant of this exact pair whose area already covers this path and rights. */
+  private reusableGrant(from: string, to: string, area: BufferArea): BufferGrant | undefined {
+    return this.grants.find(grant => grant.revokedAt === undefined
+      && grant.from === from && grant.to === to
+      && grant.areas.some(candidate => candidate.path === area.path && sameRights(candidate.rights, area.rights)))
+  }
+
+  /**
+   * Give every live area a mapping name, once, at load.
+   *
+   * State written before the delegation schema offered `as` holds live grants
+   * whose areas have no name, and an unnamed area is invisible to every
+   * buffer path. Naming them here is the migration; it happens before any
+   * request can see the state, so no live authorization is ever unreachable.
+   */
+  private migrateMappings(): boolean {
+    const sets = new Map<string, Set<string>>()
+    const takenFor = (grantee: string): Set<string> => {
+      const cached = sets.get(grantee)
+      if (cached !== undefined) return cached
+      const set = this.mappingNamesFor(grantee)
+      sets.set(grantee, set)
+      return set
+    }
+    let changed = false
+    for (let index = 0; index < this.grants.length; index += 1) {
+      const grant = this.grants[index] as BufferGrant
+      if (grant.revokedAt !== undefined || grant.areas.every(area => area.as !== undefined)) continue
+      const taken = takenFor(grant.to)
+      const areas = grant.areas.map(area => {
+        if (area.as !== undefined) return area
+        const name = this.uniqueMappingName(derivedMappingName(area.path), taken)
+        taken.add(name)
+        changed = true
+        return { path: area.path, rights: [...area.rights], as: name }
+      })
+      this.grants[index] = { ...grant, areas }
+    }
+    return changed
   }
 
   /** Settle a ticket, release its grants and wake the requester exactly once. */
@@ -1198,7 +1301,7 @@ export class BufferService {
 
   private requireGrant(grantId: string): BufferGrant {
     const grant = this.grants.find(candidate => candidate.id === grantId)
-    if (grant === undefined) throw new Error(`没有这个授权：${grantId}`)
+    if (grant === undefined) throw new Error('这条缓冲路径已失效：对应的授权不存在')
     return grant
   }
 

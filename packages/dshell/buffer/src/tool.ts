@@ -38,16 +38,20 @@ const DESCRIPTION =
   + 'and to work on requests other sessions handed to you. Actions:\n'
   + '- links: the pipes this session is an end of (how you learn the peer session ids and link ids).\n'
   + '- delegate: send a request to the session on the other end of a pipe. Supply to or link_id, a '
-  + 'subject, optional detail, an optional deadline_ms, and optionally grants — directories this '
-  + 'session is opening to the other side, each with read and/or write rights. Returns at once with a '
-  + 'ticket id; the answer arrives later as a new message, so end your turn or keep working on '
-  + 'something else instead of waiting.\n'
+  + 'subject, optional detail, an optional deadline_ms, and optionally grants — files or directories '
+  + 'of THIS session\'s world you open to the other side, each with read and/or write rights. Every '
+  + 'granted area gets a NAME, which is the buffer path the other side uses to reach it (give one '
+  + 'with `as`; omitted, the path\'s last segment is used, and a name already taken on that side gets '
+  + 'a numeric suffix — the result below reports the effective names). Re-granting an area this pair '
+  + 'already covers just re-holds the same authorization. Returns at once with a ticket id; the answer '
+  + 'arrives later as a new message, so end your turn or keep working on something else instead of '
+  + 'waiting.\n'
   + '- tickets: the requests sent to you (direction "in") or by you (direction "out").\n'
   + '- claim / progress / finish / fail: the worker side of a ticket. A ticket you received must end '
   + 'in finish (with a result) or fail (with a reason); nothing may be left unresolved.\n'
   + '- cancel: withdraw an outstanding ticket from either end.\n'
-  + '- grants: grants other sessions handed to you, with their provenance, description and remaining '
-  + 'reference count, and grants you issued, so you can see what is still open.\n'
+  + '- grants: the mapped paths other sessions opened to you (with rights and the real location behind '
+  + 'each), and the ones you opened to them, with their remaining reference counts.\n'
   + '- ls: with no path, list the buffer roots this session holds (path "/" or none) — each mapped area as /name/ with '
   + 'its rights and origin. With a buffer path, list that directory.\n'
   + '- read: one text file from the buffer, addressed by buffer path (/mappedName/sub/file). offset '
@@ -60,10 +64,16 @@ const DESCRIPTION =
   + 'file to dest in this session\'s own world; upload pushes this session\'s src file into the buffer '
   + 'at path. Binary-safe, capped by max_bytes; files up to 32 MiB move inline, anything larger is '
   + 'relayed in 16 MiB chunks with sha256 verification (up to 4 GiB).\n'
-  + 'Buffer paths are rooted at /: a grant with as name "study" is addressed as /study/sub/file, and '
-  + 'action=ls with no path (or path "/") lists the mapped roots. Each pipe has its own namespace — '
-  + 'this is the only addressing the file actions need. A grant stays alive only while a ticket references '
-  + 'it: settle the ticket and its mapped paths end with it.'
+  + 'Buffer paths are rooted at /: an area named "study" mapped from a DIRECTORY is addressed as '
+  + '/study/sub/file, while an area mapped from a FILE is addressed by the mapping path itself (/name) — '
+  + 'action=ls '
+  + 'with no path (or path "/") lists this session\'s mapped roots. That path IS the whole contract '
+  + 'between the two sessions — never refer to anything by an internal id. The namespace is per SESSION: '
+  + 'the areas of every live grant this session holds merge under one root, so names are unique on that '
+  + 'side. DIRECTIONS: whoever HOLDS a grant is the one who acts inside the other side\'s world — so to '
+  + 'hand a file over, grant read and tell the other side to download it into its own world; to receive '
+  + 'one, the other side must grant write and you upload your file in. A grant stays alive only while a '
+  + 'ticket references it: settle the ticket and its mapped paths end with it.'
 
 /**
  * One delegation's inline grant, as the model writes it.
@@ -143,13 +153,13 @@ function renderGrants(service: BufferService, viewer: string): string {
     lines.push('- （无）')
   } else {
     for (const grant of received) {
-      lines.push(`- ${grant.id} · 授予方 ${service.label(grant.from)} · 剩余引用 ${String(grant.count)}`)
+      lines.push(`- 来自 ${service.label(grant.from)}（剩余引用 ${String(grant.count)}）`)
       if (grant.description.trim().length > 0) lines.push(`  用途：${grant.description.trim()}`)
       for (const area of grant.areas) {
-        lines.push(`  区域：${area.as === undefined ? area.path : `/${area.as}/ ← ${area.path}`}（${rightsLabel(area.rights)}）`)
+        lines.push(`  ${area.as === undefined ? area.path : `/${area.as}/ ← ${area.path}`}（${rightsLabel(area.rights)}）`)
       }
     }
-    lines.push('', '映射了 as 名字的区域用 ls / read / edit / download / upload 以缓冲路径访问（根为 /，如 /名字/子/文件）；未映射的区域用 grant_id 加相对路径访问。')
+    lines.push('', '用 ls / read / edit / download / upload 以缓冲路径访问（根为 /，如 /名字/子/文件）；下载会复制到你自己的世界，上传会把你的文件写进对方的映射。')
   }
   lines.push('', '本会话发出的访问权：')
   if (issued.length === 0) {
@@ -157,9 +167,9 @@ function renderGrants(service: BufferService, viewer: string): string {
   } else {
     for (const grant of issued) {
       const state = grant.revokedAt === undefined ? `剩余引用 ${String(grant.count)}` : '已回收'
-      lines.push(`- ${grant.id} · 给 ${service.label(grant.to)} · ${state}`)
+      lines.push(`- 给 ${service.label(grant.to)} · ${state}`)
       for (const area of grant.areas) {
-        lines.push(`  区域：${area.as === undefined ? area.path : `/${area.as}/ ← ${area.path}`}（${rightsLabel(area.rights)}）`)
+        lines.push(`  ${area.as === undefined ? area.path : `/${area.as}/ ← ${area.path}`}（${rightsLabel(area.rights)}）`)
       }
     }
   }
@@ -180,11 +190,15 @@ function renderDelegated(
       : '对方当时正忙，请求已排进它的队列。',
   ]
   if (grants.length > 0) {
-    lines.push('', '同时开出了这些访问权（任务结算时自动回收）：')
+    lines.push('', '对方可以通过这些缓冲路径访问你开出的位置（任务结算时自动回收）：')
     for (const grant of grants) {
-      lines.push(`- ${grant.id} · 给 ${service.label(grant.to)}`)
-      for (const area of grant.areas) lines.push(`  ${area.path}（${rightsLabel(area.rights)}）`)
+      for (const area of grant.areas) {
+        const name = area.as === undefined ? area.path : `/${area.as}`
+        lines.push(`- ${name} ← ${area.path}（${rightsLabel(area.rights)}）`)
+      }
     }
+    lines.push('映射的是文件就直接用 /名字；映射的是目录，它的内容在 /名字/… 下面。')
+    lines.push('对方如果只读，让它用 download 把文件取到它自己的世界（你开出的授权是它在你的世界里动手的凭据）。')
   }
   lines.push(
     '',
@@ -201,9 +215,9 @@ function capRead(text: string): string {
 }
 
 /** Pending-call card for one action. */
-function present(args: { action?: string; to?: string; ticket_id?: string; grant_id?: string; path?: string; subject?: string }): GenericCallView {
+function present(args: { action?: string; to?: string; ticket_id?: string; path?: string; subject?: string }): GenericCallView {
   const kind = args.action === undefined ? undefined : ACTION_KINDS[args.action]
-  const target = args.to ?? args.ticket_id ?? args.grant_id ?? args.path
+  const target = args.to ?? args.ticket_id ?? args.path
   const title = args.action === 'delegate' && args.subject !== undefined
     ? `管道委派：${args.subject}`
     : `管道 ${args.action ?? '操作'}`
@@ -242,16 +256,12 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
                 properties: {
                   path: { type: 'string', required: true, description: 'A real directory or file in THIS session\'s world to map into the buffer.' },
                   rights: { type: 'array', required: true, items: { type: 'string', enum: ['read', 'write'] } },
+                  as: { type: 'string', description: 'The name this area takes in the buffer (a single path segment). Omitted, the path\'s last segment is used; a name already taken on the other side is suffixed, and the result reports the effective name.' },
                 },
               },
             },
           },
         },
-      },
-      grant_ids: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'delegate: existing grant ids to hold open for this ticket instead of creating new ones.',
       },
       deadline_ms: { type: 'number', description: 'delegate: how long the target has before the watchdog settles the ticket as timeout. Default 10 minutes.' },
       ticket_id: { type: 'string', description: 'The ticket a lifecycle action applies to.' },
@@ -259,7 +269,6 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
       text: { type: 'string', description: 'progress: what to report.' },
       result: { type: 'string', description: 'finish: the outcome handed back to the requester.' },
       error: { type: 'string', description: 'fail: why the request could not be completed.' },
-      grant_id: { type: 'string', description: 'Legacy fallback for grants created before mappings existed. Prefer the buffer path (/mappedName/sub/file) — it resolves the grant for you.' },
       path: { type: 'string', description: 'Buffer path rooted at /: /mappedName/sub/file — the name the delegating side declared with as. ls with no path (or "/") lists every mapped root.' },
       offset: { type: 'number', description: 'read: 1-based line number to start from, for paging through a big text file.' },
       limit: { type: 'number', description: 'read: maximum lines to return.' },
@@ -289,13 +298,17 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
 
 /** 
  * Resolve the file actions' target: a buffer path (/mappedName/sub/file) picks
- * its grant by name; an explicit grant_id keeps the area-relative path.
+ * A buffer path is the ONLY addressing: its first segment names the mapping, and
+ * the rest is the path inside that mapped area.
  */
-function resolveTarget(service: BufferService, viewer: string, args: { grant_id?: string; path?: string }): { grantId: string; path: string } {
-  const grantId = args.grant_id ?? ''
-  const path = args.path ?? ''
-  if (grantId !== '') return { grantId, path: path === '' ? '.' : path }
-  if (path === '' || path === '/') throw new Error('需要 path（缓冲路径）或 grant_id')
+/** The buffer path a call used, echoed back in its output. */
+function resolveLabel(args: { path?: string }): string {
+  return (args.path ?? '').trim()
+}
+
+function resolveTarget(service: BufferService, viewer: string, args: { path?: string }): { grantId: string; path: string } {
+  const path = (args.path ?? '').trim()
+  if (path === '' || path === '/') throw new Error('需要缓冲路径，例如 /名字/子/文件；用 action=ls 查看结构')
   return service.resolveBufferPath(viewer, path)
 }
 
@@ -308,14 +321,12 @@ async function run(
     subject?: string
     detail?: string
     grants?: readonly GrantParam[]
-    grant_ids?: readonly string[]
     deadline_ms?: number
     ticket_id?: string
     direction?: string
     text?: string
     result?: string
     error?: string
-    grant_id?: string
     path?: string
     offset?: number
     limit?: number
@@ -343,7 +354,6 @@ async function run(
         subject: required(args.subject, 'subject'),
         ...args.detail === undefined ? {} : { detail: args.detail },
         ...args.grants === undefined ? {} : { grants: toGrantRequest(args.grants) },
-        ...args.grant_ids === undefined ? {} : { grantIds: args.grant_ids },
         ...args.deadline_ms === undefined ? {} : { deadlineMs: args.deadline_ms },
       }
       const outcome = await service.delegate(viewer, input)
@@ -404,7 +414,7 @@ async function run(
       return renderGrants(service, viewer)
 
     // File actions address the buffer by mapped name (see ls) or by
-    // grant_id + area-relative path for older grants without a mapping.
+    // Buffer paths only: the first segment resolves the mapping for us.
     // Reading and editing happen in the granter's world, zero copy; download
     // and upload are the explicit cross-world byte moves.
     case 'read': {
@@ -416,17 +426,18 @@ async function run(
         { offset: args.offset, limit: args.limit },
         signal,
       )
-      return `${target.path}（授权 ${target.grantId}）：\n\n${capRead(body)}`
+      return `${resolveLabel(args)}：\n\n${capRead(body)}`
     }
 
     case 'edit': {
       const target = resolveTarget(service, viewer, args)
       if (args.old_string === undefined || args.new_string === undefined) throw new Error('缺少参数 old_string / new_string')
-      const text = await service.editGranted(
+      const edited = await service.editGranted(
         viewer, target.grantId, target.path,
         args.old_string, args.new_string, args.replace_all === true, signal,
       )
-      return `${text}（授权 ${target.grantId}）`
+      return `已编辑 ${resolveLabel(args)}：替换 ${String(edited.replacements)} 处`
+        + `（${String(edited.fromLength)} → ${String(edited.toLength)} 字符）。`
     }
 
     case 'download': {
@@ -446,12 +457,12 @@ async function run(
 
     case 'ls': {
       const rawPath = (args.path ?? '').trim()
-      if ((args.grant_id === undefined || args.grant_id === '') && (rawPath === '' || /^\/+$/u.test(rawPath))) {
+      if (rawPath === '' || /^\/+$/u.test(rawPath)) {
         return service.bufferTree(viewer)
       }
       const target = resolveTarget(service, viewer, args)
       const listing = await service.listGranted(viewer, target.grantId, target.path, signal)
-      return `目录 /${target.path === '.' ? '' : target.path.replace(/^\/+/u, '')}：\n${listing}`
+      return `缓冲路径 ${resolveLabel(args)}：\n${listing}`
     }
 
     default:
