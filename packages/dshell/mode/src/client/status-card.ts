@@ -40,6 +40,40 @@ const STATUS_GLYPH: Record<TodoItem['status'], string> = {
   pending: '○',
 }
 
+/** One background job, as the session store's `jobsBySession` mirror carries it. */
+interface JobView {
+  readonly id: string
+  readonly kind: string
+  readonly label: string
+  readonly status: 'running' | 'stopping' | 'completed' | 'killed' | 'failed'
+  readonly detail?: string | undefined
+  readonly startedAt: number
+  readonly finishedAt?: number | undefined
+}
+
+const JOB_STATUS_LABEL: Record<JobView['status'], string> = {
+  running: '运行中',
+  stopping: '停止中',
+  completed: '已完成',
+  killed: '已终止',
+  failed: '失败',
+}
+
+function jobLive(job: JobView): boolean {
+  return job.status === 'running' || job.status === 'stopping'
+}
+
+/** Elapsed time in at most two units; the same shape dsh's own widget shows. */
+function jobDuration(job: JobView, now: number): string {
+  const total = Math.max(0, Math.floor(((job.finishedAt ?? now) - job.startedAt) / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor(total / 60) % 60
+  const seconds = total % 60
+  return hours > 0 ? `${String(hours)} 时 ${String(minutes)} 分`
+    : minutes > 0 ? `${String(minutes)} 分 ${String(seconds)} 秒`
+      : `${String(seconds)} 秒`
+}
+
 /**
  * The cross-session pipe, as `dshell-buffer` publishes it.
  *
@@ -305,6 +339,9 @@ export function StatusCard(props: {
   )
   const [openCard, setOpenCard] = useState(false)
   const [openRow, setOpenRow] = useState<string | undefined>(undefined)
+  // The clock behind live job durations: it runs only while the jobs row is
+  // expanded and something is still running, so an idle session costs nothing.
+  const [now, setNow] = useState(() => Date.now())
 
   // Every hook runs before the card can return nothing: the card is absent on
   // most renders and present while work is in flight, and a hook that appears
@@ -358,6 +395,27 @@ export function StatusCard(props: {
     : (list.subagentsByParent?.[sessionId as SessionId]?.entries ?? []).filter(entry => entry.kind === 'child')
   const runningChildren = children.filter(entry => entry.activity === 'running').length
 
+  // This session's background jobs, from the same store mirror dsh's header
+  // widget reads. Live jobs first in start order, then settled newest-first —
+  // the ordering a reader would ask for.
+  const jobs = sessionId !== undefined
+    ? ((list as { jobsBySession?: Partial<Record<SessionId, readonly JobView[]>> }).jobsBySession?.[sessionId as SessionId] ?? [])
+    : []
+  const liveJobs = jobs.filter(jobLive)
+  const sortedJobs = [...jobs].sort((left, right) => {
+    const liveLeft = jobLive(left)
+    if (liveLeft !== jobLive(right)) return liveLeft ? -1 : 1
+    if (liveLeft) return left.startedAt - right.startedAt
+    return ((right.finishedAt ?? right.startedAt) - (left.finishedAt ?? left.startedAt))
+      || left.startedAt - right.startedAt
+  })
+  useEffect(() => {
+    if (openRow !== 'jobs' || liveJobs.length === 0) return
+    setNow(Date.now())
+    const timer = setInterval(() => { setNow(Date.now()) }, 1000)
+    return () => { clearInterval(timer) }
+  }, [openRow, liveJobs.length])
+
   const done = todos.filter(item => item.status === 'completed').length
   const activeTodo = todos.find(item => item.status === 'in_progress')
   const pendingTodo = todos.find(item => item.status === 'pending')
@@ -386,12 +444,14 @@ export function StatusCard(props: {
           : owed.length > 0 ? `⇄ ${String(owed.length)} 个管道任务待处理`
             : live ? '▚ AI 终端运行中'
               : runningChildren > 0 ? `⎇ ${String(runningChildren)} 个智能体运行中`
-                : pendingTodo !== undefined ? `○ ${pendingTodo.content}`
-                  : dead ? 'AI 终端已结束'
-                    : linkBroken ? '终端连接中断'
-                      : idleHeadline()
+                : liveJobs.length > 0 ? `⟳ ${String(liveJobs.length)} 个后台任务运行中`
+                  : pendingTodo !== undefined ? `○ ${pendingTodo.content}`
+                    : dead ? 'AI 终端已结束'
+                      : linkBroken ? '终端连接中断'
+                        : idleHeadline()
   const idle = !running && activeTodo === undefined && !live && runningChildren === 0
     && pendingTodo === undefined && !dead && !linkBroken && waiting.length === 0 && owed.length === 0
+    && liveJobs.length === 0
 
   const rows: StatusRow[] = []
   if (todos.length > 0) {
@@ -462,6 +522,36 @@ export function StatusCard(props: {
             }, entry.label ?? String(entry.id)),
           )),
         ),
+    })
+  }
+  if (jobs.length > 0) {
+    rows.push({
+      id: 'jobs', glyph: '⟳', label: '后台任务', active: liveJobs.length > 0,
+      value: liveJobs.length > 0 ? `${String(liveJobs.length)} 个运行中` : `${String(jobs.length)} 个`,
+      detail: createElement('div', { style: { display: 'grid', gap: '2px' } },
+        ...sortedJobs.map(job => {
+          const live = jobLive(job)
+          return createElement('div', {
+            key: job.id,
+            style: { display: 'grid', gridTemplateColumns: '10px 1fr auto', gap: '6px', alignItems: 'baseline' },
+          },
+            createElement('span', {
+              style: { color: live ? theme.accent : job.status === 'failed' ? '#f87171' : theme.borderStrong },
+            }, '●'),
+            createElement('span', {
+              title: job.label,
+              style: {
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                color: live ? theme.text : theme.muted, fontSize: 11.5, lineHeight: '17px',
+              },
+            }, `${job.kind} · ${job.label}`),
+            createElement('span', {
+              title: job.detail ?? JOB_STATUS_LABEL[job.status],
+              style: { color: theme.muted, fontSize: 11, whiteSpace: 'nowrap' },
+            }, `${job.detail ?? JOB_STATUS_LABEL[job.status]} · ${jobDuration(job, now)}`),
+          )
+        }),
+      ),
     })
   }
   // The pipe rows. A breakpoint is the wait for an answer (the agent ended its

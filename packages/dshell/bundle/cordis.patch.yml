@@ -111,6 +111,16 @@
 - id: ui-chat
   disabled: true
 
+# ── background jobs header widget ──────────────────────────────────────
+# The stock session-header jobs dropdown renders the same jobsBySession
+# mirror the status card reads. The card now carries the jobs as its
+# 后台任务 row (live count in the headline, per-job detail expanded), so
+# a second control for the same data in the header goes. Disabling the
+# row removes only the header widget — the data lives in the session
+# store either way.
+- id: ui-jobs
+  disabled: true
+
 # ── default agent preset ────────────────────────────────────────────────────
 # No override and no dshell preset. The stock presets own their shell stacks
 # behind deliberate isolation (tool-bash via the single-provider `ctx.shell`,
