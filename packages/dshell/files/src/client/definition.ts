@@ -19,7 +19,7 @@ import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from './locales.js'
 
 /** This implementation's identity in the tab system, and the key its body registers under. */
-export const DSHELL_FILES_ID = '@deepseek-ai/dsh-dshell-files'
+export const DSHELL_FILES_ID = '@nexus-aethra/dshell-files'
 
 /** The tab kind this package takes over. */
 export const FILES_KIND = 'files'

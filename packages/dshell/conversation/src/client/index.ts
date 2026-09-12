@@ -30,7 +30,7 @@ import type {
   ConversationViewDefinition,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 
-export const name = '@deepseek-ai/dsh-dshell-conversation/client'
+export const name = '@nexus-aethra/dshell-conversation/client'
 
 export const inject = ['uiConversation', 'sessions', 'slots'] as const
 

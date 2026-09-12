@@ -19,7 +19,7 @@ import {
   type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { SshSnapshot } from '@deepseek-ai/dsh-dshell-ssh/client'
+import type { SshSnapshot } from '@nexus-aethra/dshell-ssh/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'

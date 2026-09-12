@@ -98,7 +98,7 @@ never accidentally pushed.
                 pnpm run build:lib
                 pnpm run build:web
 2. Nexus-Shell/ pnpm install
-                pnpm --filter "@deepseek-ai/dsh-dshell-*" run build
+                pnpm --filter "@nexus-aethra/dshell-*" run build
 3. (one-time)   ./scripts/install-into-dsh-profile.sh
 4. (one-time)   ./scripts/bootstrap-profile-client.sh
 5. (each session) cd dsh && pnpm dsh web
@@ -171,7 +171,7 @@ hard load failure outside the dsh dev workflow.
 
 ## Common pitfalls
 
-- **`Cannot find package '@deepseek-ai/dsh-dshell-...' imported from /home/wpp/.dsh/profiles/web/`** — the dshell packages have
+- **`Cannot find package '@nexus-aethra/dshell-...' imported from /home/wpp/.dsh/profiles/web/`** — the dshell packages have
   not been installed into the profile. Run
   `./scripts/install-into-dsh-profile.sh`.
 - **`Cannot find module '...lib/index.js'`** — the dshell package was
@@ -196,7 +196,7 @@ hard load failure outside the dsh dev workflow.
   for many packages at once** — one bundle in the combo failed to
   execute. For dshell bundles the usual cause is raw ESM output; see
   the closure-contract section above. Rebuild with
-  `pnpm --filter "@deepseek-ai/dsh-dshell-*" run build:client`, then
+  `pnpm --filter "@nexus-aethra/dshell-*" run build:client`, then
   reinstall and restart.
 - **`exports is not defined`** — the tsdown preset's
   `banner`/`footer`/`intro` were hoisted out of `outputOptions`. Only
@@ -248,8 +248,8 @@ independent workspace. Two provisioning steps close the gap:
 Browser-side acceptance after both steps: the page renders the full
 dsh UI with no `Failed to load plugins` banner, and the boot payload
 (`window.__DSH_BOOT__.entries`) advertises all client entries including
-the three dshell bundles (`dsh-dshell-conversation`,
-`dsh-dshell-terminal-bridge`, `dsh-dshell-mode`). Verified in-browser
+the three dshell bundles (`dshell-conversation`,
+`dshell-terminal-bridge`, `dshell-mode`). Verified in-browser
 on 2026-09-09.
 
 ## Where to go next

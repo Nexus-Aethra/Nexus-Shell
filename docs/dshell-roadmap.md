@@ -1345,7 +1345,7 @@ Deliverables:
   page can reach (ws only from an http(s) page), with
   `localStorage['dshell.transport']` and `__DSHELL_PTY__.useTransport()` as the
   override that makes the stream path testable from a browser.
-- Wire contracts for the two paths live in `@deepseek-ai/dsh-dshell-std`.
+- Wire contracts for the two paths live in `@nexus-aethra/dshell-std`.
 
 Acceptance check:
 
@@ -1383,7 +1383,7 @@ Acceptance check:
 
 - `pnpm typecheck` and `pnpm build` pass with the rewritten manifests.
 - `pnpm pack` output installs from the local registry into a profile whose core
-  packages are linked to the checkout (`+ @deepseek-ai/dsh-dshell-bundle 0.1.0`,
+  packages are linked to the checkout (`+ @nexus-aethra/dshell-bundle 0.1.0`,
   `dsh.profile.bundles` gains the bundle).
 - That profile boots and serves the dshell host routes
   (`/api/dshell/buffer` 200, `/api/dshell/files` 200, `/api/dshell/stream` 200

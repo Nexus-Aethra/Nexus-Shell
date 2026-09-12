@@ -31,7 +31,7 @@ import { installShellRouting, SSH_ROUTING_SERVICE, SshRouter } from './router.js
 import { installSpawnRouting } from './spawn-routing.js'
 import { SSH_SETTINGS_NAMESPACE, SshSettingsSchema } from './ssh-settings.js'
 
-export const name = '@deepseek-ai/dsh-dshell-ssh'
+export const name = '@nexus-aethra/dshell-ssh'
 
 export { DSHELL_SSH_PATH, type DeviceView, type SshResponse } from './protocol.js'
 export { harnessHome, mountBase, sshDeviceRoot } from './paths.js'

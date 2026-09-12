@@ -26,13 +26,13 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-client-connection'
 // Type-only: pulls the `dshellBuffer` service merge the delete branch uses to
 // detach a session's pipes.
-import type {} from '@deepseek-ai/dsh-dshell-buffer'
+import type {} from '@nexus-aethra/dshell-buffer'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createSessionsRoute } from './route.js'
 import { dshHome, drainPendingPurges } from './purge.js'
 import { SessionTagStore } from './tags.js'
 
-export const name = '@deepseek-ai/dsh-dshell-workspace'
+export const name = '@nexus-aethra/dshell-workspace'
 
 /** `workspaceRegistry` stand-in: every lookup misses, every mutation rejects. */
 class DshellWorkspaceRegistry extends Service {

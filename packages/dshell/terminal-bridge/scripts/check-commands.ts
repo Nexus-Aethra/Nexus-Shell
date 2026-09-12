@@ -1,7 +1,7 @@
 /**
  * Pure-function checks for the command splitter.
  *
- * Run: `pnpm --filter @deepseek-ai/dsh-dshell-terminal-bridge exec tsx scripts/check-commands.ts`
+ * Run: `pnpm --filter @nexus-aethra/dshell-terminal-bridge exec tsx scripts/check-commands.ts`
  * (or from the repo root: `pnpm tsx packages/dshell/terminal-bridge/scripts/check-commands.ts`).
  *
  * The splitter is the only piece of the context-management cursor that can be

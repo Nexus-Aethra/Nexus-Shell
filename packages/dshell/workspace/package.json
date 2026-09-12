@@ -1,7 +1,13 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-workspace",
+  "name": "@nexus-aethra/dshell-workspace",
   "version": "0.1.0",
   "description": "dshell workspace removal (design 4.7): same-key stub providers for workspaceRegistry / workspaces / uiWorkspace so the stock web-app workspace rows can be disabled, plus a flat session list for the sidebar.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "directory": "packages/dshell/workspace"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -32,9 +38,9 @@
     "access": "public"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-dshell-buffer": "workspace:^",
-    "@deepseek-ai/dsh-dshell-ssh": "workspace:^",
-    "@deepseek-ai/dsh-dshell-std": "workspace:^"
+    "@nexus-aethra/dshell-buffer": "workspace:^",
+    "@nexus-aethra/dshell-ssh": "workspace:^",
+    "@nexus-aethra/dshell-std": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

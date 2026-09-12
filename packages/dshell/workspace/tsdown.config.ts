@@ -2,4 +2,4 @@
 // as the other dshell client faces (see tsdown.dshell.preset.ts).
 import { dshellClientBundle } from '../../../tsdown.dshell.preset.ts'
 
-export default dshellClientBundle('@deepseek-ai/dsh-dshell-workspace')
+export default dshellClientBundle('@nexus-aethra/dshell-workspace')

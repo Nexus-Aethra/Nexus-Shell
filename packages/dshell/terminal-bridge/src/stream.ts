@@ -19,7 +19,7 @@
  */
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
-import { DSHELL_STREAM_PATH, DSHELL_STREAM_SEND_PATH } from '@deepseek-ai/dsh-dshell-std'
+import { DSHELL_STREAM_PATH, DSHELL_STREAM_SEND_PATH } from '@nexus-aethra/dshell-std'
 import type { DshellTerminalBridge } from './index.js'
 
 /** Frames one POST body may carry; a control frame is a handful of bytes. */

@@ -43,7 +43,7 @@ import { DshellTransferBody } from './transfer-body.js'
 import { createTransferFace } from './transfer-face.js'
 import { DshellTransferTitle } from './transfer-title.js'
 
-export const name = '@deepseek-ai/dsh-dshell-files/client'
+export const name = '@nexus-aethra/dshell-files/client'
 
 /** Required browser services: the tab registry, the keyed seat, and copy. */
 export const inject = ['slots', 'locale', 'sidebarRightTabs'] as const

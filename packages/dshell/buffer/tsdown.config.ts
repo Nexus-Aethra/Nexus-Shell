@@ -5,4 +5,4 @@
 // module dsh serves, and the closure loader's require would fail on it.
 import { dshellClientBundle } from '../../../tsdown.dshell.preset.ts'
 
-export default dshellClientBundle('@deepseek-ai/dsh-dshell-buffer', 'lib/client/index.js', ['@xyflow/react'])
+export default dshellClientBundle('@nexus-aethra/dshell-buffer', 'lib/client/index.js', ['@xyflow/react'])

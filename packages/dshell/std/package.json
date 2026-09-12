@@ -1,7 +1,13 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-std",
+  "name": "@nexus-aethra/dshell-std",
   "version": "0.1.0",
   "description": "dshell standard layer: the wire contracts every plugin shares (paths + shapes), with no dependency on dsh and no feature code \u2014 the single place a dsh interface change is absorbed.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "directory": "packages/dshell/std"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

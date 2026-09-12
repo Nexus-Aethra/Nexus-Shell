@@ -15,7 +15,7 @@ when it contributes to model-visible state.
 
 - Host-side packages: `@deepseek-ai/dsh-*` names follow the dsh
   convention. The dshell packages live in the `dshell` group and use
-  `@deepseek-ai/dsh-dshell-*` to match the existing `@deepseek-ai/dsh-*`
+  `@nexus-aethra/dshell-*` to match the existing `@deepseek-ai/dsh-*`
   pattern.
 
   Pragmatic note: until a dsh contribution slot is open, the dshell
@@ -323,6 +323,23 @@ what the desktop app writes into its own profile (`desktop-packages/*.tgz` +
 matching overrides), which is also why a desktop install cannot end up with two
 copies of a core package.
 
+### The publishing environment (this deployment)
+
+- The npm CLI here defaults to the **npmmirror** registry: `~/.bashrc` exports
+  `npm_config_registry="https://registry.npmmirror.com/"`. That mirror is
+  read-only, so every publish must pass `--registry=https://registry.npmjs.org/`
+  explicitly (installs may keep using the mirror). Symptom of forgetting: `npm
+  whoami` answers "need auth", because the npmjs-scoped token is not sent there.
+- The account is `nexus-aethra` and its 2FA is `auth-and-writes`, so a publish
+  needs either a one-time code (`--otp=`) or a granular access token with
+  "Bypass 2FA" enabled.
+- The packages publish under that account's own org scope
+  (`@nexus-aethra/dshell-*`). `@deepseek-ai/…` is dsh's own npm org and is not
+  publishable by an outside account.
+- Publish order is dependency order — `dshell-std` first, `dshell-bundle` last —
+  because each package's `workspace:^` edges become `^0.1.0` ranges that must
+  already resolve.
+
 ### Verifying a published artifact
 
 `scripts/local-registry.mjs` serves packed tarballs over the npm registry
@@ -333,12 +350,12 @@ packages are linked to the checkout, then boot it.
 ```bash
 for d in packages/dshell/*/; do (cd "$d" && pnpm pack --pack-destination /tmp/dshell-packs); done
 node scripts/local-registry.mjs --port 4873 --dir /tmp/dshell-packs   # another shell
-pnpm add @deepseek-ai/dsh-dshell-bundle --save-exact \
+pnpm add @nexus-aethra/dshell-bundle --save-exact \
   --config.registry=http://127.0.0.1:4873
 ```
 
 A pass looks like: the install succeeds, `dsh.profile.bundles` gains
-`@deepseek-ai/dsh-dshell-bundle`, the booted profile answers
+`@nexus-aethra/dshell-bundle`, the booted profile answers
 `/api/dshell/buffer`, `/api/dshell/files` and `/api/dshell/stream` (the stream
 one holding the connection open), and the served client bundle
 (`/plugins/??<list>&rev=<rev>`) contains the dshell faces.

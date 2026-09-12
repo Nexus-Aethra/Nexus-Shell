@@ -18,7 +18,7 @@ import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from './locales.js'
 
 /** This implementation's identity in the tab system, and the key its body registers under. */
-export const DSHELL_TRANSFER_ID = '@deepseek-ai/dsh-dshell-files/transfer'
+export const DSHELL_TRANSFER_ID = '@nexus-aethra/dshell-files/transfer'
 
 /**
  * The tab kind the navigator's header button opens, and the one

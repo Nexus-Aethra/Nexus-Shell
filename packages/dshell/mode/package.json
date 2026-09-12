@@ -1,7 +1,13 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-mode",
+  "name": "@nexus-aethra/dshell-mode",
   "version": "0.1.0",
   "description": "dshell mode toggle: per-session shell/agent mode state, composer Enter dispatch, /agent and /shell prefix parsing, and agent-mode terminal-context injection.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "directory": "packages/dshell/mode"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -32,8 +38,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-dshell-std": "workspace:^",
-    "@deepseek-ai/dsh-dshell-terminal-bridge": "workspace:^",
+    "@nexus-aethra/dshell-std": "workspace:^",
+    "@nexus-aethra/dshell-terminal-bridge": "workspace:^",
     "@deepseek-ai/schemastery": "^3.18.2",
     "@xterm/xterm": "6.0.0"
   },

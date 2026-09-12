@@ -15,7 +15,7 @@
  */
 
 import { createElement, useEffect, useState, type CSSProperties, type ReactElement } from 'react'
-import type { PtyStreamState } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import type { PtyStreamState } from '@nexus-aethra/dshell-terminal-bridge/client'
 import { useDshellTheme, type Theme } from './theme.js'
 
 /** Error red, matching the sidebar's notice colour. */

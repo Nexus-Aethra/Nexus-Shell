@@ -17,5 +17,5 @@
 // Moved to the shared standard layer: these are wire contracts, not this
 // package's, and both halves of every plugin read the same declaration there.
 // Re-exported so existing importers keep one import site per package.
-export { DSHELL_FILES_PATH } from '@deepseek-ai/dsh-dshell-std'
-export type { DshellFileKind, DshellFileEntry, DshellFilesListing, DshellFilesRequest, DshellCompletionCandidate, DshellCompletion, DshellFilesResponse } from '@deepseek-ai/dsh-dshell-std'
+export { DSHELL_FILES_PATH } from '@nexus-aethra/dshell-std'
+export type { DshellFileKind, DshellFileEntry, DshellFilesListing, DshellFilesRequest, DshellCompletionCandidate, DshellCompletion, DshellFilesResponse } from '@nexus-aethra/dshell-std'

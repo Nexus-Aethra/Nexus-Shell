@@ -38,7 +38,7 @@ import {
 export type { PtyTextSegment, TimelineEntry } from './timeline.js'
 export type { PtyTransport } from './channel.js'
 
-export const name = '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+export const name = '@nexus-aethra/dshell-terminal-bridge/client'
 
 export const inject = ['sessions'] as const
 

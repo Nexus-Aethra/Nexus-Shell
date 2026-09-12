@@ -1,7 +1,13 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-ssh",
+  "name": "@nexus-aethra/dshell-ssh",
   "version": "0.1.0",
   "description": "dshell SSH devices: a durable device/key registry, per-session device binding, and remote execution for a bound session's command tools.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "directory": "packages/dshell/ssh"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -36,7 +42,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-dshell-std": "workspace:^",
+    "@nexus-aethra/dshell-std": "workspace:^",
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "peerDependencies": {

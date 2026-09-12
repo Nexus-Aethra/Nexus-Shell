@@ -23,9 +23,9 @@ import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
-import type { DshellTerminalBridge, TerminalCommandRecord } from '@deepseek-ai/dsh-dshell-terminal-bridge'
+import type { DshellTerminalBridge, TerminalCommandRecord } from '@nexus-aethra/dshell-terminal-bridge'
 
-export const name = '@deepseek-ai/dsh-dshell-commands'
+export const name = '@nexus-aethra/dshell-commands'
 
 export const inject = ['commands', 'tools', 'dshellTerminalBridge'] as const
 

@@ -1,7 +1,13 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-bundle",
+  "name": "@nexus-aethra/dshell-bundle",
   "version": "0.1.0",
   "description": "dshell bundle: composition patch layer that wires dshell-* packages into the dsh web profile.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "directory": "packages/dshell/bundle"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -29,15 +35,15 @@
     "access": "public"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-dshell-buffer": "workspace:^",
-    "@deepseek-ai/dsh-dshell-commands": "workspace:^",
-    "@deepseek-ai/dsh-dshell-conversation": "workspace:^",
-    "@deepseek-ai/dsh-dshell-files": "workspace:^",
-    "@deepseek-ai/dsh-dshell-mode": "workspace:^",
-    "@deepseek-ai/dsh-dshell-ssh": "workspace:^",
-    "@deepseek-ai/dsh-dshell-std": "workspace:^",
-    "@deepseek-ai/dsh-dshell-terminal-bridge": "workspace:^",
-    "@deepseek-ai/dsh-dshell-workspace": "workspace:^"
+    "@nexus-aethra/dshell-buffer": "workspace:^",
+    "@nexus-aethra/dshell-commands": "workspace:^",
+    "@nexus-aethra/dshell-conversation": "workspace:^",
+    "@nexus-aethra/dshell-files": "workspace:^",
+    "@nexus-aethra/dshell-mode": "workspace:^",
+    "@nexus-aethra/dshell-ssh": "workspace:^",
+    "@nexus-aethra/dshell-std": "workspace:^",
+    "@nexus-aethra/dshell-terminal-bridge": "workspace:^",
+    "@nexus-aethra/dshell-workspace": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

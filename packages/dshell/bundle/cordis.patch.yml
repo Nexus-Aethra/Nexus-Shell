@@ -33,42 +33,42 @@
 
     # Browser half of the `terminal` Conversation target.
     - id: dshell-conversation
-      name: '@deepseek-ai/dsh-dshell-conversation'
+      name: '@nexus-aethra/dshell-conversation'
 
     # Browser↔host PTY wire bridge.
     - id: dshell-terminal-bridge
-      name: '@deepseek-ai/dsh-dshell-terminal-bridge'
+      name: '@nexus-aethra/dshell-terminal-bridge'
 
     # Composer mode toggle and prefix handling.
     - id: dshell-mode
-      name: '@deepseek-ai/dsh-dshell-mode'
+      name: '@nexus-aethra/dshell-mode'
 
     # /clear, /new, /compact, plus dshell_get_main_terminal model tool.
     - id: dshell-commands
-      name: '@deepseek-ai/dsh-dshell-commands'
+      name: '@nexus-aethra/dshell-commands'
 
     # Workspace removal (design 4.7): stub providers for the disabled
     # stock rows below, plus the flat session list for the sidebar.
     - id: dshell-workspace
-      name: '@deepseek-ai/dsh-dshell-workspace'
+      name: '@nexus-aethra/dshell-workspace'
 
     # SSH devices: durable device/key registry, per-session assignment, and
     # routing of a bound session's shell commands to that device.
     - id: dshell-ssh
-      name: '@deepseek-ai/dsh-dshell-ssh'
+      name: '@nexus-aethra/dshell-ssh'
 
     # Cross-session pipe: user-established links between sessions, deferred
     # requests one agent hands to another, scoped revocable folder grants, and
     # the watchdog that guarantees the requester is always woken.
     - id: dshell-buffer
-      name: '@deepseek-ai/dsh-dshell-buffer'
+      name: '@nexus-aethra/dshell-buffer'
 
     # Right-sidebar file navigator: takes over the `files` tab kind (dsh's
     # registry keeps one builtin and one extension per kind, and the extension
     # is the one in force) so the pane can walk — `..`, clickable crumbs,
     # back/forward — through the session's own execution world.
     - id: dshell-files
-      name: '@deepseek-ai/dsh-dshell-files'
+      name: '@nexus-aethra/dshell-files'
 
 # ── workspace removal (design 4.7) ────────────────────────────────────
 # dshell has no use for dsh's directory-workspace grouping: a terminal's

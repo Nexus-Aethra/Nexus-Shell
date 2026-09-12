@@ -25,7 +25,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { SPAN_FONT } from './block-terminal.js'
 import { createAgentTerminal, AGENT_PANEL_HEIGHT, type AgentTerminalView } from './agent-terminal.js'
-import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { Theme } from './theme.js'
 
 /** One item of the session's task list, as the `todo/write` event carries it. */

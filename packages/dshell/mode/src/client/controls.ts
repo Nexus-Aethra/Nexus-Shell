@@ -8,7 +8,7 @@ import {
   type ReactElement,
 } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShellCompletion } from './completion.js'
 import { useDshellTheme } from './theme.js'

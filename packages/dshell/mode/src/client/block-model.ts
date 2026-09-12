@@ -15,7 +15,7 @@
 
 import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import { sanitizeRowText } from './session-rows.js'
-import type { PtyBlock } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import type { PtyBlock } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { TurnBlock } from './blocks.js'
 import type { TodoItem } from './status-card.js'
 

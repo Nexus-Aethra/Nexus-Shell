@@ -33,12 +33,12 @@ import type {} from '@deepseek-ai/dsh-agent'
 // Type-only: pulls the settings service merge (optional `ctx.settings`).
 import type {} from '@deepseek-ai/dsh-settings'
 // Type-only: pulls the bridge service merge (ctx.dshellTerminalBridge).
-import type {} from '@deepseek-ai/dsh-dshell-terminal-bridge'
-import type { TerminalDelta } from '@deepseek-ai/dsh-dshell-terminal-bridge'
+import type {} from '@nexus-aethra/dshell-terminal-bridge'
+import type { TerminalDelta } from '@nexus-aethra/dshell-terminal-bridge'
 import { DSHELL_SETTINGS_NAMESPACE } from './theme-settings.js'
 import { DshellSettingsSchema } from './theme-settings-schema.js'
 
-export const name = '@deepseek-ai/dsh-dshell-mode/host'
+export const name = '@nexus-aethra/dshell-mode/host'
 
 /** Required service: the bridge owns the main-shell buffers we read. */
 export const inject = ['dshellTerminalBridge'] as const

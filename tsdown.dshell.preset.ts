@@ -69,7 +69,7 @@ export function dshellClientBundle(
     // standard layer is contracts and seam helpers: tiny, stateless, and safe
     // to inline into every face, so it is always inlined rather than listed
     // per package.
-    noExternal: ['@deepseek-ai/dsh-dshell-std', ...inline],
+    noExternal: ['@nexus-aethra/dshell-std', ...inline],
     // Inlined libraries reference Node's `process.env.NODE_ENV` for their
     // dev/prod switches; the closure bundle runs in a browser with no
     // `process`, so the reference is baked to production at build time.

@@ -28,7 +28,7 @@ import { homedir } from 'node:os'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
-import type { DshellTerminalBridge } from '@deepseek-ai/dsh-dshell-terminal-bridge'
+import type { DshellTerminalBridge } from '@nexus-aethra/dshell-terminal-bridge'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 // Type-only: pulls the session-controller service merge (`ctx.sessionController`).
 import type {} from '@deepseek-ai/dsh-api-session-controller'

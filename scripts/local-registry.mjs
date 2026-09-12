@@ -22,7 +22,7 @@
  *
  * Then, in another shell:
  *   pnpm pack --pack-destination /tmp/dshell-packs   (per package)
- *   pnpm add @deepseek-ai/dsh-dshell-bundle \
+ *   pnpm add @nexus-aethra/dshell-bundle \
  *     --config.registry=http://127.0.0.1:4873 --save-exact
  *
  * Only the metadata and tarball endpoints pnpm's installer actually calls are

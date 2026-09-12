@@ -44,14 +44,14 @@ import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: pulls the `dshellBuffer` service merge the pipe entry toggles.
-import type {} from '@deepseek-ai/dsh-dshell-buffer/client'
-import type { SshSnapshot } from '@deepseek-ai/dsh-dshell-ssh/client'
+import type {} from '@nexus-aethra/dshell-buffer/client'
+import type { SshSnapshot } from '@nexus-aethra/dshell-ssh/client'
 import { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'
 import { activeRows, directoryName, presetChoices, type PresetChoice, type SessionRow } from './rows.js'
 import { FlatSessionList, type DeviceSeat, type FlatSessionListProps } from './session-list.js'
 
-export const name = '@deepseek-ai/dsh-dshell-workspace/client'
+export const name = '@nexus-aethra/dshell-workspace/client'
 
 export const inject = ['slots', 'sessions', 'remote', 'remote.agentPresets'] as const
 

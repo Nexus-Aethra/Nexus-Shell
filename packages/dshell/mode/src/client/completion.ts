@@ -22,7 +22,7 @@
 import { createElement, useEffect, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from 'react'
 import {
   DSHELL_FILES_PATH, DSHELL_PTY_PATH, type DshellCompletionCandidate, type DshellFileKind,
-} from '@deepseek-ai/dsh-dshell-std'
+} from '@nexus-aethra/dshell-std'
 import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: pulls the Conversation SlotMap (`conversation.input.overlay`) and
 // the SessionStandardProps that hand a slot its `useInput`/`inputActions`.

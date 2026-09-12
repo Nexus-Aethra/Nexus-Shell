@@ -14,7 +14,7 @@
  */
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
-import { DSHELL_PTY_PATH, type DshellPtyCommand, type DshellPtyRequest, type DshellPtyResponse } from '@deepseek-ai/dsh-dshell-std'
+import { DSHELL_PTY_PATH, type DshellPtyCommand, type DshellPtyRequest, type DshellPtyResponse } from '@nexus-aethra/dshell-std'
 import type { DshellTerminalBridge } from './index.js'
 
 // The wire contract lives in the shared standard layer and is re-exported here,

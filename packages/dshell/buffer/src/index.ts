@@ -17,7 +17,7 @@ import { createBufferRoute } from './route.js'
 import { BufferService } from './service.js'
 import { registerBufferTool } from './tool.js'
 
-export const name = '@deepseek-ai/dsh-dshell-buffer'
+export const name = '@nexus-aethra/dshell-buffer'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

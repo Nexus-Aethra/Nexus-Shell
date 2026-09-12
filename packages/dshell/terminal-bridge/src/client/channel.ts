@@ -17,7 +17,7 @@
  * only way to fall back to ws in a shell where the stream path misbehaves.
  */
 
-import { DSHELL_STREAM_PATH, DSHELL_STREAM_SEND_PATH } from '@deepseek-ai/dsh-dshell-std'
+import { DSHELL_STREAM_PATH, DSHELL_STREAM_SEND_PATH } from '@nexus-aethra/dshell-std'
 import type { PtyBlock } from './index.js'
 
 /** One wire frame from the bridge (the § 5 protocol). */

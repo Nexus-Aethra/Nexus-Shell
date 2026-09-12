@@ -27,12 +27,12 @@ import type {} from '@deepseek-ai/dsh-fs'
 // Type-only: pulls the shell service merge (ctx.shell), the byte-write seam.
 import type {} from '@deepseek-ai/dsh-shell'
 // Type-only: pulls the terminal bridge's service merge (ctx.dshellTerminalBridge).
-import type { DshellTerminalBridge } from '@deepseek-ai/dsh-dshell-terminal-bridge'
+import type { DshellTerminalBridge } from '@nexus-aethra/dshell-terminal-bridge'
 import { createFilesRoute } from './route.js'
 import { TransferEngine, type TransferRoutingSeat } from './transfer.js'
 import { createTransferRoute } from './transfer-route.js'
 
-export const name = '@deepseek-ai/dsh-dshell-files'
+export const name = '@nexus-aethra/dshell-files'
 
 export { DSHELL_FILES_PATH } from './protocol.js'
 export type {

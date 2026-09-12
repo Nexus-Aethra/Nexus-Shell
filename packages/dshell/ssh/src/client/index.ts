@@ -15,7 +15,7 @@ import { SSH_SETTINGS_NAMESPACE } from '../protocol.js'
 import { DshellSshCard } from './card.js'
 import { SshClientService } from './service.js'
 
-export const name = '@deepseek-ai/dsh-dshell-ssh/client'
+export const name = '@nexus-aethra/dshell-ssh/client'
 
 export const inject = ['slots'] as const
 

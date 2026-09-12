@@ -53,7 +53,7 @@ and the [`dsh-tsdown preset`](../../dsh/packages/client/tsdown.client.ts):
 
 ```jsonc
 {
-  "name": "@deepseek-ai/dsh-dshell-<role>",
+  "name": "@nexus-aethra/dshell-<role>",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -76,10 +76,10 @@ and the [`dsh-tsdown preset`](../../dsh/packages/client/tsdown.client.ts):
 }
 ```
 
-`tsdown.config.ts` uses `clientBundle('@deepseek-ai/dsh-dshell-<role>', ['lib/types/index.js'])`
+`tsdown.config.ts` uses `clientBundle('@nexus-aethra/dshell-<role>', ['lib/types/index.js'])`
 so the same preset emits both the Node lib half and the browser client
 bundle. CSS Modules and global CSS use the same virtual-id pipeline as
-dsh (`@deepseek-ai/dsh-dshell-<role>.module.css` → hashed class map,
+dsh (`@nexus-aethra/dshell-<role>.module.css` → hashed class map,
 injected style tag).
 
 ## 3. Cordis surface used and contributed
@@ -353,7 +353,7 @@ Every user-visible string is locale-owned. dshell registers a single
 locale namespace per dsh convention:
 
 ```
-'@deepseek-ai/dsh-dshell/locale/<package-name>'
+'@nexus-aethra/dshell/locale/<package-name>'
 ```
 
 Three namespaces for now:

@@ -1,7 +1,13 @@
 {
-  "name": "@deepseek-ai/dsh-dshell-commands",
+  "name": "@nexus-aethra/dshell-commands",
   "version": "0.1.0",
   "description": "dshell commands and tools: /clear, /new, /compact on ctx.commands, plus the model-facing dshell_get_main_terminal tool that returns the bridge's main PTY id.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "directory": "packages/dshell/commands"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -22,7 +28,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-dshell-terminal-bridge": "workspace:^"
+    "@nexus-aethra/dshell-terminal-bridge": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

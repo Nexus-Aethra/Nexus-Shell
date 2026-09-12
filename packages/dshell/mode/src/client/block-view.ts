@@ -21,7 +21,7 @@ import type {
   SessionEventLikeEntry,
   SessionEventSource,
 } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { clearStream, createFold, foldEvent, noteLiveChunk, type BlockFold } from './blocks.js'

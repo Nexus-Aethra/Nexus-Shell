@@ -15,5 +15,5 @@
 // Moved to the shared standard layer: these are wire contracts, not this
 // package's, and both halves of every plugin read the same declaration there.
 // Re-exported so existing importers keep one import site per package.
-export { DSHELL_BUFFER_PATH, BUFFER_PLUGIN, SETTLED_STATES } from '@deepseek-ai/dsh-dshell-std'
-export type { BufferTicketState, BufferRight, BufferArea, BufferLink, BufferReport, BufferTicket, BufferGrant, BufferTransfer, BufferState, BufferUserEntry, BufferListing, BufferRequest, BufferResponse } from '@deepseek-ai/dsh-dshell-std'
+export { DSHELL_BUFFER_PATH, BUFFER_PLUGIN, SETTLED_STATES } from '@nexus-aethra/dshell-std'
+export type { BufferTicketState, BufferRight, BufferArea, BufferLink, BufferReport, BufferTicket, BufferGrant, BufferTransfer, BufferState, BufferUserEntry, BufferListing, BufferRequest, BufferResponse } from '@nexus-aethra/dshell-std'

@@ -68,7 +68,7 @@ importers:
 
   packages/dshell/buffer:
     dependencies:
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
       '@xyflow/react':
@@ -132,31 +132,31 @@ importers:
 
   packages/dshell/bundle:
     dependencies:
-      '@deepseek-ai/dsh-dshell-buffer':
+      '@nexus-aethra/dshell-buffer':
         specifier: workspace:^
         version: link:../buffer
-      '@deepseek-ai/dsh-dshell-commands':
+      '@nexus-aethra/dshell-commands':
         specifier: workspace:^
         version: link:../commands
-      '@deepseek-ai/dsh-dshell-conversation':
+      '@nexus-aethra/dshell-conversation':
         specifier: workspace:^
         version: link:../conversation
-      '@deepseek-ai/dsh-dshell-files':
+      '@nexus-aethra/dshell-files':
         specifier: workspace:^
         version: link:../files
-      '@deepseek-ai/dsh-dshell-mode':
+      '@nexus-aethra/dshell-mode':
         specifier: workspace:^
         version: link:../mode
-      '@deepseek-ai/dsh-dshell-ssh':
+      '@nexus-aethra/dshell-ssh':
         specifier: workspace:^
         version: link:../ssh
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
-      '@deepseek-ai/dsh-dshell-terminal-bridge':
+      '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
-      '@deepseek-ai/dsh-dshell-workspace':
+      '@nexus-aethra/dshell-workspace':
         specifier: workspace:^
         version: link:../workspace
     devDependencies:
@@ -196,7 +196,7 @@ importers:
 
   packages/dshell/commands:
     dependencies:
-      '@deepseek-ai/dsh-dshell-terminal-bridge':
+      '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
     devDependencies:
@@ -260,10 +260,10 @@ importers:
 
   packages/dshell/files:
     dependencies:
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
-      '@deepseek-ai/dsh-dshell-terminal-bridge':
+      '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
     devDependencies:
@@ -333,10 +333,10 @@ importers:
 
   packages/dshell/mode:
     dependencies:
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
-      '@deepseek-ai/dsh-dshell-terminal-bridge':
+      '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
       '@deepseek-ai/schemastery':
@@ -424,7 +424,7 @@ importers:
 
   packages/dshell/ssh:
     dependencies:
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
       '@deepseek-ai/schemastery':
@@ -503,7 +503,7 @@ importers:
 
   packages/dshell/terminal-bridge:
     dependencies:
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
       node-pty:
@@ -561,13 +561,13 @@ importers:
 
   packages/dshell/workspace:
     dependencies:
-      '@deepseek-ai/dsh-dshell-buffer':
+      '@nexus-aethra/dshell-buffer':
         specifier: workspace:^
         version: link:../buffer
-      '@deepseek-ai/dsh-dshell-ssh':
+      '@nexus-aethra/dshell-ssh':
         specifier: workspace:^
         version: link:../ssh
-      '@deepseek-ai/dsh-dshell-std':
+      '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
     devDependencies:

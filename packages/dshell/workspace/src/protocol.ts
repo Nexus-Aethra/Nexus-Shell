@@ -20,5 +20,5 @@
 // Moved to the shared standard layer: these are wire contracts, not this
 // package's, and both halves of every plugin read the same declaration there.
 // Re-exported so existing importers keep one import site per package.
-export { DSHELL_SESSIONS_PATH } from '@deepseek-ai/dsh-dshell-std'
-export type { SessionRequest, SessionResponse } from '@deepseek-ai/dsh-dshell-std'
+export { DSHELL_SESSIONS_PATH } from '@nexus-aethra/dshell-std'
+export type { SessionRequest, SessionResponse } from '@nexus-aethra/dshell-std'

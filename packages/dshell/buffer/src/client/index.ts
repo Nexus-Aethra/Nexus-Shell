@@ -18,7 +18,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import { PipePanel } from './panel.js'
 import { BufferClientService, type SessionSeat } from './service.js'
 
-export const name = '@deepseek-ai/dsh-dshell-buffer/client'
+export const name = '@nexus-aethra/dshell-buffer/client'
 
 export const inject = ['slots'] as const
 

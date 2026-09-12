@@ -105,7 +105,7 @@ export interface TerminalHistory {
   readonly commands: readonly TerminalCommandRecord[]
 }
 
-export const name = '@deepseek-ai/dsh-dshell-terminal-bridge'
+export const name = '@nexus-aethra/dshell-terminal-bridge'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

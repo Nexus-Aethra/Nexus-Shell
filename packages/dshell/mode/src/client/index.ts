@@ -21,7 +21,7 @@ import type {
   CommandClaim,
   InputTriggerSource,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
-import type { PtyStreamService } from '@deepseek-ai/dsh-dshell-terminal-bridge/client'
+import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -39,7 +39,7 @@ import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
 /** The pipe's state before (or without) a buffer service to read it from. */
 const EMPTY_PIPE_STATE = { links: [], tickets: [] } as const
 
-export const name = '@deepseek-ai/dsh-dshell-mode/client'
+export const name = '@nexus-aethra/dshell-mode/client'
 
 export const inject = ['slots', 'sessions', 'dshellPtyStream', 'modelDirectories', 'uiConversation', 'settingsScope'] as const
 
