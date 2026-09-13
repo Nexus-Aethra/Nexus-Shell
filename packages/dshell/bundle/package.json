@@ -42,6 +42,7 @@
     "@nexus-aethra/dshell-mode": "workspace:^",
     "@nexus-aethra/dshell-ssh": "workspace:^",
     "@nexus-aethra/dshell-std": "workspace:^",
+    "@nexus-aethra/dshell-storage": "workspace:^",
     "@nexus-aethra/dshell-terminal-bridge": "workspace:^",
     "@nexus-aethra/dshell-workspace": "workspace:^"
   },

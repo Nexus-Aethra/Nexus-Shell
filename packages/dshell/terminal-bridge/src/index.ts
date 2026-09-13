@@ -35,6 +35,8 @@ import type { WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
+import { closeHistoryStore } from '@nexus-aethra/dshell-storage'
+import { HISTORY_STORE_FILENAME } from '@nexus-aethra/dshell-std'
 import { CommandHistory, commandHistoryPath, MAX_COMMAND_HISTORY } from './history.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
@@ -497,7 +499,7 @@ export class DshellTerminalBridge extends Service {
     // The shell's history outlives the shell: a restart respawns bash, and
     // without this the up-arrow list would start empty while the view replays a
     // scrollback full of commands.
-    const history = new CommandHistory(commandHistoryPath(logPath))
+    const history = new CommandHistory(dshSessionId, commandHistoryPath(logPath))
     await history.load()
     if (blocks.snapshot().length === 0 && buffer.text().length > 0) {
       // First run after this log was introduced (or after a clear): the
@@ -1136,6 +1138,10 @@ export class DshellTerminalBridge extends Service {
     }
     this.mains.clear()
     this.agents.clear()
+    // One shared database per log directory: closed once, after the last session
+    // that could write to it. Closing per record would pull the handle out from
+    // under the sessions still alive.
+    closeHistoryStore(join(ptyLogDir(), HISTORY_STORE_FILENAME))
     for (const client of this.streams.values()) client.close(1000, 'bridge disposed')
     this.streams.clear()
     this.clients.clear()

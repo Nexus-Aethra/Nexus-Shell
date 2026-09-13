@@ -22,6 +22,7 @@ DSH_PKG="${DSH_CMD:-pnpm dsh}"
 # reconcile pass promotes it into dsh.profile.bundles.
 PLUGINS=(
   std
+  storage
   conversation
   terminal-bridge
   mode

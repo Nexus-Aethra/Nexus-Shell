@@ -4,37 +4,47 @@
  * The bridge's in-memory records are per boot: a restart respawns the shell and
  * the composer's up-arrow list would start empty even though the terminal view
  * replays its own scrollback from disk. This is that missing half — the command
- * lines, their exit status and their time, beside the PTY log the same session
- * already writes.
+ * lines, their exit status and their time.
  *
- * Only the command is kept, never its output: the output belongs to the PTY and
- * block logs, which exist for reading back; this file exists so the shell's own
- * history gesture survives a restart. Writes are debounced and best-effort, the
- * way the block log next door does it, because losing a line of history must
- * never cost the session anything.
+ * The durable form is `history-store.ts`: one SQLite database for the whole
+ * harness home, keyed by session. This class is the facade the bridge drives —
+ * a bounded in-memory window for the keystroke path (unchanged from the JSON
+ * days, so the up-arrow gesture costs no query) over a store that keeps every
+ * command and can answer prefix matches.
+ *
+ * A store that cannot be opened degrades instead of failing: the class falls
+ * back to the legacy per-session `.history.json` beside the PTY log, which is
+ * also where an upgrading installation's history is read from exactly once.
+ * History is a convenience; losing it must never cost the session anything.
  */
 
+import { rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { openHistoryStore } from '@nexus-aethra/dshell-storage'
+import { HISTORY_STORE_FILENAME, type HistoryRecord, type HistoryStore } from '@nexus-aethra/dshell-std'
 
 /** Completed commands retained per session; the live array's cap too. */
 export const MAX_COMMAND_HISTORY = 200
 
-/** How long writes coalesce before touching the disk. */
+/** How long writes coalesce before touching the disk (legacy JSON path only). */
 const SAVE_DELAY_MS = 400
 
-/** One recorded command, as it is stored. */
-export interface PersistedCommand {
-  /** Monotonic within the shell generation that produced it. */
-  readonly seq: number
-  readonly command: string
-  readonly exitCode: number | null
-  /** Epoch ms the command finished. */
-  readonly at: number
-}
+/** One recorded command — the std storage contract's shape, under its old name. */
+export type PersistedCommand = HistoryRecord
 
 /** Where one session's history lives: beside its PTY log. */
 export function commandHistoryPath(logPath: string): string {
   return `${logPath}.history.json`
+}
+
+/**
+ * Where the durable store lives: one database per log directory, shared by every
+ * session under it. Sitting beside the logs (rather than per session) is what
+ * makes cross-session queries possible later without a second path convention.
+ */
+export function historyStorePath(logPath: string): string {
+  return join(dirname(logPath), HISTORY_STORE_FILENAME)
 }
 
 /** One entry as written; anything malformed is dropped rather than trusted. */
@@ -50,15 +60,123 @@ function asCommand(value: unknown): PersistedCommand | undefined {
   }
 }
 
-/** The retained command list of one session, loaded at spawn and kept in sync. */
+/**
+ * The retained command list of one session, loaded at spawn and kept in sync.
+ *
+ * `sessionId` is the store key; `path` is the legacy JSON file, which is read
+ * once to seed the store and written only when the store is unusable.
+ */
 export class CommandHistory {
   private entries: PersistedCommand[] = []
   private saveTimer: ReturnType<typeof setTimeout> | undefined
+  private store: HistoryStore | undefined
 
-  constructor(private readonly path: string | undefined) {}
+  constructor(
+    private readonly sessionId: string,
+    private readonly path: string | undefined,
+  ) {}
 
-  /** Load what the previous shell left; a missing or broken file starts empty. */
+  /**
+   * Load what the previous shell left, preferring the store over the file.
+   *
+   * A store that opens takes over: its newest `MAX_COMMAND_HISTORY` commands
+   * fill the window, and a legacy file for a session the store has never seen
+   * is imported first (idempotent by `(session_id, seq)`, so a crash mid-import
+   * is not a problem). A store that cannot be opened leaves this instance
+   * reading and writing the legacy file exactly as before.
+   */
   async load(): Promise<void> {
+    if (this.path === undefined) return
+    try {
+      this.store = openHistoryStore(historyStorePath(this.path))
+    }
+    catch {
+      // Unusable store (read-only home, a foreign layout version, no sqlite):
+      // stay on the file rather than losing history altogether.
+      this.store = undefined
+    }
+    if (this.store === undefined) {
+      await this.loadFile()
+      return
+    }
+    if (this.store.count(this.sessionId) === 0) await this.importFile()
+    this.entries = this.store.recent(this.sessionId, MAX_COMMAND_HISTORY)
+  }
+
+  /** The retained commands, oldest first. */
+  list(): readonly PersistedCommand[] {
+    return this.entries
+  }
+
+  /** Add closed commands, newest last, and persist them. */
+  append(commands: readonly PersistedCommand[]): void {
+    if (commands.length === 0) return
+    this.entries.push(...commands)
+    this.trim()
+    if (this.store !== undefined) {
+      try {
+        this.store.append(this.sessionId, commands)
+      }
+      catch {
+        // Best effort, as the file write was: a failed insert must not take the
+        // shell down, and the next append retries the same way.
+      }
+      return
+    }
+    this.schedule()
+  }
+
+  /**
+   * Drop everything — the `/clear` path, which is a new shell epoch: the
+   * scrollback, the block log and the history all restart together, so neither
+   * the store nor the legacy file may resurrect commands the user just cleared.
+   *
+   * The delete is immediate rather than debounced: the shell's `seq` restarts
+   * after a clear, so a late write carrying the old numbering would land on the
+   * rows a new command is about to occupy.
+   */
+  clear(): void {
+    this.entries = []
+    if (this.saveTimer !== undefined) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = undefined
+    }
+    if (this.store !== undefined) {
+      try {
+        this.store.clearSession(this.sessionId)
+      }
+      catch {
+        // Same best-effort contract as an append.
+      }
+      // The legacy file is deleted, not emptied, and synchronously: leaving it
+      // behind — even for a moment, or past a process exit right here — would
+      // let a later boot's import hand the cleared commands back.
+      if (this.path !== undefined) {
+        try {
+          rmSync(this.path, { force: true })
+        }
+        catch {
+          // Same best-effort contract: a clear that cannot unlink a stale file
+          // still cleared the store, which is the copy that is read.
+        }
+      }
+      return
+    }
+    this.schedule()
+  }
+
+  /** Write now, cancelling any pending debounce (teardown path). */
+  async flush(): Promise<void> {
+    if (this.saveTimer !== undefined) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = undefined
+    }
+    if (this.store !== undefined) return
+    await this.save()
+  }
+
+  /** Read the legacy file; a missing or broken one starts empty. */
+  private async loadFile(): Promise<void> {
     if (this.path === undefined) return
     try {
       const parsed: unknown = JSON.parse(await readFile(this.path, 'utf8'))
@@ -73,36 +191,25 @@ export class CommandHistory {
     }
   }
 
-  /** The retained commands, oldest first. */
-  list(): readonly PersistedCommand[] {
-    return this.entries
-  }
-
-  /** Add closed commands, newest last, and schedule the write. */
-  append(commands: readonly PersistedCommand[]): void {
-    if (commands.length === 0) return
-    this.entries.push(...commands)
-    this.trim()
-    this.schedule()
-  }
-
-  /**
-   * Drop everything — the `/clear` path, which is a new shell epoch: the
-   * scrollback, the block log and the history all restart together, so the file
-   * must not resurrect commands the user just cleared.
-   */
-  clear(): void {
-    this.entries = []
-    this.schedule()
-  }
-
-  /** Write now, cancelling any pending debounce (teardown path). */
-  async flush(): Promise<void> {
-    if (this.saveTimer !== undefined) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = undefined
+  /** Seed the store from the legacy file, once per session. */
+  private async importFile(): Promise<void> {
+    if (this.path === undefined || this.store === undefined) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await readFile(this.path, 'utf8'))
     }
-    await this.save()
+    catch {
+      return
+    }
+    if (!Array.isArray(parsed)) return
+    const commands = parsed.map(asCommand).filter((command): command is PersistedCommand => command !== undefined)
+    if (commands.length === 0) return
+    try {
+      this.store.append(this.sessionId, commands)
+    }
+    catch {
+      // Leave the file in place: the next boot retries the import.
+    }
   }
 
   private trim(): void {

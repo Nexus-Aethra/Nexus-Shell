@@ -58,6 +58,44 @@ when it contributes to model-visible state.
   table only serves its own PLATFORM_MODULES plus registered client
   plugins; a `require` of a support package fails the plugin load.
 
+### `dshell-storage`
+
+- Role: **the storage engines.** It owns the medium behind the storage
+  contract that `dshell-std` declares (`src/storage.ts`): today one SQLite
+  database per harness home holding every session's command history.
+- Why it exists: the per-session `.history.json` array had no index — a read
+  parsed the whole list into memory, a write rewrote it in full, and staying
+  bounded meant dropping the oldest commands at a fixed 200-entry cap, which is
+  lossy exactly where a query would want them. A table answers the two shapes
+  the feature needs — the newest N of one session, and prefix matching for the
+  shell's up-arrow gesture — with a working set bounded by the query's `limit`
+  instead of by everything ever stored.
+- The engine is Node's built-in `node:sqlite`: no native dependency and no
+  install script, and FTS5 is present on both the host runtime and the packaged
+  desktop runtime (v24.17.0), which is what a later full-text search over
+  history would use.
+- The rule that keeps it useful: the contract (record shape, store surface, file
+  naming, layout version, failure vocabulary) lives in `dshell-std`; a feature
+  package imports only `openHistoryStore` / `closeHistoryStore` and never names
+  a file, a pragma or a schema.
+- dsh services depended on: none — it is a library, not a plugin, so it has no
+  bundle row. It is host-only by construction (`node:sqlite` cannot appear in a
+  client bundle), which is the second reason the contract lives separately.
+- Introduced in: the shell-history storage work (2026-09-13). Before the store,
+  `terminal-bridge` wrote `${logPath}.history.json`; those files are now read
+  once per session on first open (idempotent by `(session_id, seq)`) and never
+  written again.
+- Format: `PRAGMA user_version = 1`; `commands(session_id, seq, command,
+  command_norm, exit_code, at)` keyed by `(session_id, seq)`, plus
+  `commands_session_prefix(session_id, command_norm)` and `commands_at(at)`. A
+  database stamped with any other version is rejected rather than migrated.
+- Trap worth remembering: prefix matching is a **range predicate**
+  (`command_norm >= ? AND command_norm < ?`), not `LIKE 'x%'`. SQLite refuses
+  the LIKE optimization for a bound parameter, so with a session filter the
+  index serves only the session term and every row of that session is tested
+  against the pattern — cost that grows with history size, which is the thing
+  the store exists to avoid.
+
 ### `dshell-bundle`
 
 - Role: dsh `bundle` package that lists every other dshell package as a
@@ -409,6 +447,9 @@ dshell-bundle
         ├── dshell-terminal-bridge  (optional: the pane's shell jump)
         └── dshell-ssh              (optional: the device side of a transfer,
                                      read as a structural seat)
+  └── dshell-storage          (library, not a row: the SQLite medium behind
+                                dshell-std's storage contract, consumed by
+                                dshell-terminal-bridge)
 ```
 
 There are no cycles. `dshell-std` has no dependency at all: it is the

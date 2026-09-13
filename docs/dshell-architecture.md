@@ -21,6 +21,8 @@ Nexus-Shell/
 ├── cordis.patch.yml          # dshell bundle's own patch layer
 ├── docs/                     # dshell-design, roadmap, packages, architecture
 ├── packages/
+│   ├── dshell-std/           # the standard layer: wire contracts + the storage contract (no dsh deps)
+│   ├── dshell-storage/       # host-only library: the media behind the storage contract (node:sqlite)
 │   ├── dshell-bundle/        # dsh bundle: one cordis.patch.yml + package.json
 │   ├── dshell-conversation/  # dual-face: host registers target; browser renders
 │   ├── dshell-terminal-bridge/ # dual-face: host upgrade route + agent/PTY glue

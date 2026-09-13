@@ -153,6 +153,9 @@ importers:
       '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
+      '@nexus-aethra/dshell-storage':
+        specifier: workspace:^
+        version: link:../storage
       '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
@@ -333,15 +336,15 @@ importers:
 
   packages/dshell/mode:
     dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../dsh/vendor/schemastery
+        version: link:../../../dsh/vendor/schemastery
       '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
       '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
-      '@deepseek-ai/schemastery':
-        specifier: link:../../../dsh/vendor/schemastery
-        version: link:../../../dsh/vendor/schemastery
       '@xterm/xterm':
         specifier: 6.0.0
         version: 6.0.0
@@ -424,12 +427,12 @@ importers:
 
   packages/dshell/ssh:
     dependencies:
-      '@nexus-aethra/dshell-std':
-        specifier: workspace:^
-        version: link:../std
       '@deepseek-ai/schemastery':
         specifier: link:../../../dsh/vendor/schemastery
         version: link:../../../dsh/vendor/schemastery
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
@@ -501,11 +504,24 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/dshell/storage:
+    dependencies:
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/dshell/terminal-bridge:
     dependencies:
       '@nexus-aethra/dshell-std':
         specifier: workspace:^
         version: link:../std
+      '@nexus-aethra/dshell-storage':
+        specifier: workspace:^
+        version: link:../storage
       node-pty:
         specifier: link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty
         version: link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty

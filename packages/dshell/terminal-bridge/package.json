@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@nexus-aethra/dshell-std": "workspace:^",
+    "@nexus-aethra/dshell-storage": "workspace:^",
     "node-pty": "1.2.0-beta.15",
     "ws": "^8.21.0"
   },

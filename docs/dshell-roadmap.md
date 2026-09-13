@@ -1568,3 +1568,101 @@ Acceptance check — `pnpm typecheck`, `pnpm build`, browser, `pnpm package:linu
 Not addressed here: the checkout is pinned at the rc.2 *tag*, not master. Moving
 to master is a separate change that first needs the desktop-pipeline renames above.
 
+## Phase 10.5 — A storage engine for shell history
+
+Goal: replace the per-session `.history.json` array with a dshell-owned store
+that has an index, so history can grow past a cap and be queried — the shell's
+up-arrow prefix search now, an agent-facing query later.
+
+The problem, measured: `history.ts` kept `[{seq, command, exitCode, at}]` as one
+JSON array per session, capped at `MAX_COMMAND_HISTORY = 200`. A read parsed the
+whole array into memory and a write rewrote it in full (debounced), so the cap
+was what kept it bounded — and the cap is what made history **lossy**: the route
+could not answer for anything older than the newest 200 per session. The files
+were also `0644` inside a `0775` directory, while command lines routinely carry
+secrets.
+
+Layering (the std-tier split, so a feature never owns a file format):
+
+| layer | package | owns |
+|---|---|---|
+| contract | `dshell-std` (`src/storage.ts`) | record shape, store surface, file name, layout version, failure vocabulary — isomorphic, no Node builtin |
+| medium | `dshell-storage` (new) | the SQLite engine; host-only, because `node:sqlite` cannot enter a client bundle |
+| caller | `dshell-terminal-bridge` | `CommandHistory` as a facade: a bounded in-memory window for the keystroke path, the store behind it |
+
+Nothing in `dshell-std` or `dshell-storage` names a dsh service: the engine is a
+library, not a plugin, so it has no bundle row and does not appear in
+`cordis.patch.yml`.
+
+Format — `PRAGMA user_version = 1`, WAL, `synchronous = NORMAL` (history is
+best-effort by contract; the session log owns durability), owner-only file:
+
+```
+commands(session_id, seq, command, command_norm, exit_code, at)
+  PRIMARY KEY (session_id, seq)
+commands_session_prefix(session_id, command_norm)
+commands_at(at)
+```
+
+Three facts that shaped it, each verified rather than assumed:
+
+- `LIKE 'x%'` with a bound parameter **never uses the prefix index**: SQLite
+  refuses the LIKE optimization for a bound parameter, so with a session filter
+  the plan is `SEARCH … USING INDEX commands_session_prefix (session_id=?)` — the
+  index serves the session term and every row of that session is tested against
+  the pattern. The range form `command_norm >= ? AND command_norm < ?` turns the
+  prefix itself into an index seek. (The first draft of this note claimed a full
+  table scan; the check caught that the composite index does serve the session
+  term, and the honest statement is the one above.)
+- Prefix matching is **strict** (`startsWith`), one range query. The earlier
+  design walked k downward from the draft's length to rank by shared-prefix
+  length — but under a strict prefix every match shares the whole draft, so
+  there is nothing to rank, and the weaker k-bands let `grep -r git .` into an
+  answer for the draft `git` (caught by the check). Fuzzy ranking is a different
+  query and belongs with the caller over a bounded candidate set.
+- Answers come back in **timeline order** (oldest first), the same convention as
+  `recent` and the same order the history route already sends, so a caller
+  filters without reordering.
+
+Migration and the clear contract: a session's legacy file is imported on its
+first open after the upgrade, idempotently by `(session_id, seq)`, and never
+written again — the file stays in place as a rollback. `/clear` deletes the
+session's rows **and** the legacy file **synchronously**, because the shell's
+`seq` restarts after a clear: a deferred unlink or a late debounced write would
+either resurrect the cleared commands on the next boot or land old numbering on
+the rows new commands are about to occupy. A store that cannot be opened at all
+(read-only home, foreign layout) degrades to the file path rather than losing
+history.
+
+Acceptance check:
+
+- 30 behavioural checks pass against the built libs: append/recent/count,
+  idempotent re-append, strict-prefix matching (only the draft's prefix, no
+  substring hits, case-insensitive, `limit`-bounded), timeline order,
+  `clearSession` scoped to one session, the composite index in the plan for the
+  range form and not for `LIKE`, the database file at `0600`, migration from a
+  legacy file (blank commands dropped, idempotent on reload), the 200-entry
+  window still capping memory while the store keeps everything, a foreign
+  `user_version` rejected as `version-mismatch`, and the JSON fallback when the
+  store path is unusable.
+- In the running harness: `history.sqlite` is created `0600` in WAL mode with
+  `user_version = 1` and the three declared indexes; the resumed session's legacy
+  file had already been imported (9 rows, including a command from the earlier
+  transport test); a command sent through the real PTY landed as row 10; a
+  prefix range query answered exactly `echo history-store-ok`; the legacy file
+  was not rewritten (no marker in it); and the history route still returns the
+  newest commands, so the up-arrow gesture is unaffected.
+
+Not addressed here, deliberately, and in this order:
+
+1. The protocol: `requestHistory` posts `{action:'history', sessionId}` with no
+   draft, and the client ranks locally over whatever the route returns. Uncapping
+   without sending `{draft, limit}` would ship the whole history on every
+   up-arrow, which is a regression the store cannot prevent.
+2. Uncapping and a retention window (today the in-memory window still trims at
+   200; the store keeps everything).
+3. The query surface for agents (FTS5 is available on both runtimes for
+   full-text, `commands_at` for cross-session time queries), and the
+   `commonPrefix > 0` vs strict-prefix behaviour decision in `mode`.
+
+
