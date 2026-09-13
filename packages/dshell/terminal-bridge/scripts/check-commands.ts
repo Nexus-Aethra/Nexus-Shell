@@ -114,6 +114,27 @@ check('truncates oversized output with an explicit marker', () => {
   assert.match(records[0]!.output, /省略/)
 })
 
+check('keeps a longer tail for the store than for the preview', () => {
+  // Past the preview cap (16 KiB) but inside the store cap (64 KiB): the preview
+  // is truncated while the stored form is whole, and the counts say so.
+  const state = createSplitter()
+  const body = 'y'.repeat(20 * 1024)
+  trackInput(state, 'cat wide\r')
+  const record = splitOutput(state, `${PROMPT}cat wide${CRLF}${body}${CRLF}${MARK(0)}`, 1)[0]!
+  assert.match(record.output, /省略/)
+  assert.equal(record.stored!.dropped, 0)
+  assert.equal(record.stored!.text.trimEnd().endsWith('y'.repeat(100)), true)
+  assert.equal(record.stored!.bytes > 20 * 1024, true)
+
+  // Past the store cap too: the stored text is the tail and reports its front.
+  const state2 = createSplitter()
+  const huge = 'z'.repeat(80 * 1024)
+  trackInput(state2, 'cat huge\r')
+  const stored = splitOutput(state2, `${PROMPT}cat huge${CRLF}${huge}${CRLF}${MARK(0)}`, 1)[0]!.stored!
+  assert.equal(stored.dropped > 0, true)
+  assert.equal(Buffer.byteLength(stored.text, 'utf8') <= 64 * 1024, true)
+})
+
 check('sliceWindow returns only what the cursor has not seen', () => {
   const full = 'aaa\nbbb\nccc\n'
   const abs = Buffer.byteLength(full, 'utf8')

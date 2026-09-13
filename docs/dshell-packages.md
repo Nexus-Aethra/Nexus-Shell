@@ -85,13 +85,19 @@ when it contributes to model-visible state.
   `terminal-bridge` wrote `${logPath}.history.json`; those files are now read
   once per session on first open (idempotent by `(session_id, seq)`) and never
   written again.
-- Format: `PRAGMA user_version = 2`; `commands(session_id, seq, command,
+- Format: `PRAGMA user_version = 3`; `commands(session_id, seq, command,
   command_norm, exit_code, at)` keyed by `(session_id, seq)` plus
-  `commands_session_prefix(session_id, command_norm)`. Layout 1 also had
-  `commands_at(at)` for a cross-session time query that was never built and
-  that nothing read; layout 2 drops it, and a layout-1 database is migrated in
-  place rather than rejected (the `DROP INDEX` is the migration). An unknown
-  layout is still refused.
+  `commands_session_prefix(session_id, command_norm)`, and
+  `command_output(session_id, seq, output, bytes, dropped)` holding each
+  command's retained output tail. Layout 1 also had `commands_at(at)` for a
+  cross-session time query that was never built and that nothing read; layout 2
+  dropped it, and layout 3 added the output table. Older layouts are migrated in
+  place, one step at a time; an unknown layout is refused.
+- Output retention: the newest 1000 outputs per session, 64 KiB each (the store
+  cap equals the splitter's pending bound, so storing it costs no extra memory).
+  Eviction loses the text, never the fact that a command ran. The injected
+  preview and the in-memory window use a smaller cap (16 KiB, and 2 KiB in the
+  block) — the same output, deliberately read at three sizes.
 - Trap worth remembering: prefix matching is a **range predicate**
   (`command_norm >= ? AND command_norm < ?`), not `LIKE 'x%'`. SQLite refuses
   the LIKE optimization for a bound parameter, so with a session filter the
@@ -182,15 +188,19 @@ when it contributes to model-visible state.
 ### `dshell-commands`
 
 - Role: registers `/new` on `ctx.commands` (`/compact` is dsh's own
-  command and is not re-registered), and
-  one model-facing tool `dshell_get_agent_terminal` on `ctx.tools`
-  (Phase 9.11; it was `dshell_get_main_terminal` while the agent shared
-  the user's shell).
+  command and is not re-registered), and three model-facing tools on
+  `ctx.tools`: `dshell_get_agent_terminal` (Phase 9.11; it was
+  `dshell_get_main_terminal` while the agent shared the user's shell),
+  `dshell_terminal_read` (the user's shell: a delta from a cursor, or the latest
+  commands), and `dshell_terminal_output` (Phase 10.9 — `(cursor, seq, offset,
+  limit)` into one command's stored output, so a long command is read in bounded
+  slices instead of injected whole).
 - dsh services depended on: `ctx.commands`, `ctx.tools`,
   `dshell-terminal-bridge` (for the agent shell's PTY id returned by
-  the tool, and the read-only view of the user's shell).
+  the tool, the read-only view of the user's shell, and the stored output
+  slices).
 - Introduced in: Phase 6 (commands); expanded in Phase 8 (tool),
-  Phase 9.11 (own shell).
+  Phase 9.11 (own shell), Phase 10.9 (output slices).
 - Touches decisions: 4.5 (real commands), 4.6 (agent access to a PTY
   id), 4.10 (agent-owned shell).
 

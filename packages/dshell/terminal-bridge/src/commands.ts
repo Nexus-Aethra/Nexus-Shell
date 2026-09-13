@@ -19,6 +19,16 @@
  * the sanitized raw delta as a fallback.
  */
 
+/** One command's output as the durable store keeps it. */
+export interface StoredOutput {
+  /** Retained tail, with no truncation marker of its own. */
+  readonly text: string
+  /** Total bytes the command produced, before truncation. */
+  readonly bytes: number
+  /** Bytes missing from the front of {@link text}. */
+  readonly dropped: number
+}
+
 /** One completed command with the output it produced. */
 export interface TerminalCommandRecord {
   /** Monotonic within one shell generation. */
@@ -31,6 +41,13 @@ export interface TerminalCommandRecord {
   readonly output: string
   /** Arrival time of the chunk that closed the record. */
   readonly at: number
+  /**
+   * The same output as the durable store keeps it: a longer tail than
+   * {@link output} (the store's cap, not the preview's) with the byte counts a
+   * paged reader needs. Absent only on records that did not come from a live
+   * shell split.
+   */
+  readonly stored?: StoredOutput | undefined
 }
 
 /** Mutable splitter state for one shell. */
@@ -86,8 +103,20 @@ export function sliceWindow(windowText: string, absOffset: number, fromOffset: n
 /** Retain at most this much unmarked output (a shell that never prints markers). */
 const MAX_PENDING_OUTPUT_BYTES = 64 * 1024
 
-/** Per-record output cap; longer output is truncated with a marker. */
+/** Per-record output cap for the in-memory window: how much a preview shows. */
 export const MAX_RECORD_OUTPUT_BYTES = 16 * 1024
+
+/**
+ * Per-record output cap for the durable store — the ceiling on what the
+ * agent-facing reader can page through.
+ *
+ * Equal to the splitter's pending bound on purpose: a command's output is
+ * accumulated in memory until its end marker arrives, and that accumulation is
+ * already trimmed to {@link MAX_PENDING_OUTPUT_BYTES}. Keeping more would mean
+ * holding more, so the store's cap is that bound rather than a number of its
+ * own — raising it is a memory decision, not a storage one.
+ */
+export const MAX_STORED_OUTPUT_BYTES = MAX_PENDING_OUTPUT_BYTES
 
 /** Fresh splitter state for one shell generation. */
 export function createSplitter(): CommandSplitterState {
@@ -178,11 +207,35 @@ function stripEcho(slice: string, command: string): string {
   return firstBreak >= 0 ? slice.slice(firstBreak + 1) : ''
 }
 
-/** Bound one record's output, marking the truncation explicitly. */
-function capOutput(text: string): string {
-  if (Buffer.byteLength(text, 'utf8') <= MAX_RECORD_OUTPUT_BYTES) return text
+/** Cut `text` to its last `limit` bytes, reporting how many went. */
+function tailBytes(text: string, limit: number): { text: string; dropped: number } {
   const bytes = Buffer.from(text, 'utf8')
-  return `…(省略前 ${String(bytes.length - MAX_RECORD_OUTPUT_BYTES)} 字节)\n${bytes.subarray(bytes.length - MAX_RECORD_OUTPUT_BYTES).toString('utf8')}`
+  if (bytes.length <= limit) return { text, dropped: 0 }
+  let start = bytes.length - limit
+  // Do not start on a UTF-8 continuation byte: a character cut in half decodes
+  // as a replacement character at the seam.
+  while (start < bytes.length && (bytes[start]! & 0b1100_0000) === 0b1000_0000) start += 1
+  return { text: bytes.subarray(start).toString('utf8'), dropped: start }
+}
+
+/**
+ * One closed command's output in both forms: what the store keeps (the longer
+ * tail, with the byte counts a paged reader needs) and what a preview shows
+ * (the shorter tail, with the truncation spelled out so a reader knows it is
+ * not seeing everything).
+ *
+ * The tail, not the head, in both: a command that printed too much is explained
+ * by its end.
+ */
+function outputsOf(raw: string): { output: string; stored: StoredOutput } {
+  const bytes = Buffer.byteLength(raw, 'utf8')
+  const kept = tailBytes(raw, MAX_STORED_OUTPUT_BYTES)
+  const shown = tailBytes(kept.text, MAX_RECORD_OUTPUT_BYTES)
+  const dropped = kept.dropped + shown.dropped
+  return {
+    output: dropped > 0 ? `…(省略前 ${String(dropped)} 字节)\n${shown.text}` : shown.text,
+    stored: { text: kept.text, bytes, dropped: kept.dropped },
+  }
 }
 
 /**
@@ -210,21 +263,21 @@ export function splitOutput(
     const sanitized = sanitizeTerminalText(slice)
     const next = state.queued[0]
     if (next !== undefined) {
-      const output = capOutput(stripEcho(sanitized, next))
+      const { output, stored } = outputsOf(stripEcho(sanitized, next))
       // A bare prompt (startup, Ctrl+C at the line editor, an empty Enter)
       // carries no command and no output: it must not consume the command
       // queued behind it, and it is not worth recording.
       if (output.trim().length === 0 && !sanitized.includes(next)) continue
       state.queued.shift()
-      records.push({ seq: state.seq + 1, command: next, exitCode, output, at })
+      records.push({ seq: state.seq + 1, command: next, exitCode, output, at, stored })
       state.seq += 1
       continue
     }
     // No tracked command (history recall, external writer): keep the output
     // rather than losing it, attributed to no command line.
-    const output = capOutput(stripEcho(sanitized, ''))
+    const { output, stored } = outputsOf(stripEcho(sanitized, ''))
     if (output.trim().length === 0) continue
-    records.push({ seq: state.seq + 1, command: '', exitCode, output, at })
+    records.push({ seq: state.seq + 1, command: '', exitCode, output, at, stored })
     state.seq += 1
   }
   if (last > 0) state.output = state.output.slice(last)

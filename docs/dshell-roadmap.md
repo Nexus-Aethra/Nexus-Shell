@@ -1879,3 +1879,89 @@ Acceptance check:
   sparse fallback dropped from 507 µs to 136 µs.
 
 
+
+## Phase 10.9 — Per-command output, addressable by offset
+
+Goal: an injected terminal block must never carry a long command's output whole,
+and the model must be able to read the rest on demand — `(seq, offset, limit)`
+into one command's output, across boots. This is the first change that makes the
+store hold output rather than only the line.
+
+**Why new storage was needed even though three artifacts are already persisted.**
+None of them can answer that question:
+
+| artifact | holds | why it cannot be sliced per command |
+|---|---|---|
+| dsh session log (`sessions/<shard>/<id>/session.v3.jsonl.zstd`) | the conversation's events | the terminal stream is not in it; a zstd JSONL per turn, not a byte range per command |
+| PTY log (`dshell-pty/<id>.log`) | the raw byte stream | bytes are there, but raw ANSI, every command concatenated, prompts and echoes included, and **no seq anywhere** — locating command 57 means re-running the splitter over the whole file |
+| block log (`<id>.log.blocks.json`) | sanitized text | granularity is a *block* (a stretch between turns), and it is capped (400 blocks / 512 KiB) |
+| `commands` table (layout 2) | line, exit, time, indexed by `(session_id, seq)` | indexable, but deliberately without output |
+
+`seq` exists only in the splitter's own semantics, so no raw log has it. The fix
+is one more table in the same database — not a new engine, file or format:
+
+```
+command_output(session_id, seq, output, bytes, dropped)  PRIMARY KEY (session_id, seq)
+```
+
+`output` is the retained **tail** with `bytes` (what the command produced) and
+`dropped` (what is missing from the front), so offset 0 is honestly the start of
+*the retained text* and a reader is told when it is not the start of the output.
+It sits beside the narrow `commands` table rather than in it: the prefix probe
+reads those rows, and kilobytes of output on them would slow every search.
+
+Two caps, deliberately different, which is what makes the tool safe to use:
+
+| layer | cap | why that number |
+|---|---|---|
+| store | 64 KiB per command | equal to the splitter's own pending bound, so storing this much costs no extra memory; raising it is a memory decision |
+| window/preview | 16 KiB per command in memory, 2 KiB in the injected block | 200 × 64 KiB in memory is the one thing the cache must not become |
+
+Outputs are retained for the newest 1000 commands per session; eviction loses
+the text, never the metadata. `clearSession` drops both tables, so deleting a
+session still takes everything with it.
+
+**The tool.** `dshell_terminal_output` takes `{cursor, seq, offset, limit}`
+(default slice 2 KiB, never more than 8 KiB — the tool exists to keep reads
+bounded, so it cannot be asked for a whole output), and answers with the slice
+plus `[保留 N 字节, 原输出 M 字节; 本次 offset A -> B]` and a `next offset`.
+The cursor pins the shell generation: after a respawn the same `seq` names a
+different command, and the answer is `stale` rather than a wrong slice. With no
+store the in-memory window's display text answers instead, so a fallback
+deployment still reads the recent past.
+
+**The injected block is now a window.** On each user-driven step the newest
+three commands ride in with their output previews (2 KiB each, tail-first),
+the session cursor, each command's `seq` (the tool's key — without it the model
+could not ask for anything), a count of commands finished since the previous
+step, and — only when something was cut — a pointer at the tool. A shell that
+closes no command records at all (one without markers) falls back to a capped
+slice of its raw output. The watermark survives for the count line only; the
+block itself always shows the recent state, which is smaller than the old
+first-turn block (20 command lines + an 8 KiB raw tail).
+
+Acceptance check:
+
+- 20 output checks against the built libs: whole outputs, byte-window slicing
+  that snaps to UTF-8 boundaries (CJK), paging from the returned offset, an
+  offset past the end, negative offsets, non-positive limits, missing rows,
+  eviction past the retention window with metadata surviving, `clearSession`
+  dropping both tables, and the layout 2 → 3 and 1 → 3 migrations (the 2 → 3
+  case against a copy of the real store: 10 rows intact, pre-existing commands
+  reporting no output rather than empty output).
+- 13 splitter checks, including the two-tier truncation: a 20 KiB body keeps a
+  full stored tail while the preview carries its marker, and an 80 KiB body
+  stores only the last 64 KiB and reports the dropped front.
+- In the running harness: the live store migrated to layout 3 on boot (10 rows,
+  `command_output` created); a scratch session ran `seq 1 300` and `seq 1 800`,
+  both persisted with their outputs (1092 B and 3092 B, `dropped` 0); the agent
+  turn then quoted the injected block verbatim —
+  `[dshell 主终端 · 最近 2 条] cursor: g2:5460:2`, both commands with `exit` and
+  `seq=`, full output for the small one, `…(仅显示尾部)` for the other, and the
+  tool hint — and its two tool calls returned, verbatim:
+  `[保留 3092 字节, 原输出 3092 字节; 本次 offset 0 -> 512]` … `(next offset: 512)`
+  and then `本次 offset 512 -> 1024` … `(next offset: 1024)`, with the cursors
+  advancing `g2:5482:2` → `g2:5504:2`.
+- Deleting the scratch session through the route removed its 2 commands **and**
+  its 2 outputs while the real session's 10 rows stayed, so the output table
+  rides the existing deletion contract.

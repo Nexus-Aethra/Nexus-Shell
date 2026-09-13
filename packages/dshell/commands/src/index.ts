@@ -27,11 +27,41 @@ export const name = '@nexus-aethra/dshell-commands'
 
 export const inject = ['commands', 'tools', 'dshellTerminalBridge'] as const
 
+/** Bytes one `dshell_terminal_output` call returns by default. */
+const DEFAULT_OUTPUT_SLICE_BYTES = 2 * 1024
+
+/**
+ * Ceiling on one slice.
+ *
+ * The point of the tool is that reading is bounded: a caller must not be able to
+ * pull a command's output in one gulp and blow up the context the tool exists to
+ * protect.
+ */
+const MAX_OUTPUT_SLICE_BYTES = 8 * 1024
+
+/**
+ * UTF-8 byte length of a string.
+ *
+ * The offsets this tool speaks are bytes, while `String.length` counts UTF-16
+ * units. Counted here rather than with `Buffer` so this host-only package stays
+ * free of Node types for one arithmetic call.
+ */
+function utf8Bytes(text: string): number {
+  let bytes = 0
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x1_0000 ? 3 : 4
+  }
+  return bytes
+}
+
 /** Render one command record for the model. */
 function formatCommand(record: TerminalCommandRecord, includeOutput: boolean): string {
   const name = record.command.length > 0 ? record.command : '(未跟踪的命令)'
   const exit = record.exitCode === null ? '' : `  exit ${String(record.exitCode)}`
-  const head = `$ ${name}${exit}`
+  // The seq travels with the line: it is the key dshell_terminal_output takes to
+  // read more of this command's output.
+  const head = `$ ${name}${exit}  · seq=${String(record.seq)}`
   const output = record.output.trim()
   if (!includeOutput || output.length === 0) return head
   return `${head}\n${output}`
@@ -150,6 +180,94 @@ export function apply(ctx: Context): void {
       title: args.cursor === undefined ? '读取主终端历史' : '读取主终端增量',
       kind: 'read',
     }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'dshell_terminal_output',
+    description: 'Read one command\'s output from the USER\'s terminal in slices — the way to look '
+      + 'at a command whose output was too long to be injected whole. Pass the `cursor` from the '
+      + 'terminal block that was injected into your context (or from a previous call) and the '
+      + 'command\'s `seq`; `offset` and `limit` are bytes into the retained output. Output is kept '
+      + 'for the newest commands of the session, at most 64 KiB each, and the *tail* is what '
+      + 'survives: when `dropped` is larger than zero that many bytes are missing from the front, so '
+      + 'offset 0 is not the beginning of the output. List commands with dshell_terminal_read, then '
+      + 'come here for the parts you actually need.',
+    parameters: {
+      cursor: {
+        type: 'string',
+        description: 'Session cursor from the injected terminal block or a previous call. Required: '
+          + 'it pins the shell generation, so a respawned shell is reported as stale rather than '
+          + 'read at the wrong seq.',
+        required: true,
+      },
+      seq: {
+        type: 'integer',
+        description: 'The command whose output to read, as listed by dshell_terminal_read.',
+        required: true,
+      },
+      offset: {
+        type: 'integer',
+        description: `Byte offset into the retained output (default 0).`,
+      },
+      limit: {
+        type: 'integer',
+        description: `Bytes to return (default ${String(DEFAULT_OUTPUT_SLICE_BYTES)}, at most ${String(MAX_OUTPUT_SLICE_BYTES)}).`,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          text: { type: 'string', required: true },
+          cursor: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    async execute(
+      args: { cursor: string; seq: number; offset?: number; limit?: number },
+      exec,
+    ) {
+      const agent = exec.agent
+      if (agent === undefined) throw new Error('dshell_terminal_output requires an agent context')
+      const offset = Math.max(0, Math.trunc(args.offset ?? 0))
+      const limit = Math.max(1, Math.min(Math.trunc(args.limit ?? DEFAULT_OUTPUT_SLICE_BYTES), MAX_OUTPUT_SLICE_BYTES))
+      const answer = bridge.commandOutput(String(agent.id), args.cursor, Math.trunc(args.seq), offset, limit)
+      if (answer === undefined) {
+        return { text: '主终端尚未打开：用户还没有打开这个会话的终端。', cursor: '' }
+      }
+      if (answer.stale) {
+        return {
+          text: `游标来自已被替换的 shell，seq ${String(args.seq)} 可能指向别的命令。`
+            + '请重新读取终端历史（dshell_terminal_read），用新的游标和 seq 再试。',
+          cursor: answer.cursor,
+        }
+      }
+      if (!answer.retained || answer.output === null) {
+        return {
+          text: `seq ${String(args.seq)} 的输出未保留（已被保留期裁掉，或写入早于输出持久化）。`,
+          cursor: answer.cursor,
+        }
+      }
+      const slice = answer.output
+      const sliceBytes = utf8Bytes(slice.text)
+      const head = `$ ${answer.command ?? '(未跟踪的命令)'}`
+        + (answer.exitCode === null ? '' : `  exit ${String(answer.exitCode)}`)
+      const meta = `[保留 ${String(slice.total)} 字节, 原输出 ${String(slice.bytes)} 字节`
+        + (slice.dropped > 0 ? `, 前 ${String(slice.dropped)} 字节已丢弃` : '')
+        + `; 本次 offset ${String(slice.offset)}`
+        + (slice.truncated ? ` -> ${String(slice.offset + sliceBytes)}` : ' -> 末尾')
+        + ']'
+      const next = slice.truncated
+        ? `\n\n(next offset: ${String(slice.offset + sliceBytes)})`
+        : ''
+      return {
+        text: `${head}\n${meta}\n${slice.text}${next}\n\ncursor: ${answer.cursor}`,
+        cursor: answer.cursor,
+      }
+    },
+    presentCall: () => ({ card: 'generic', title: '读取命令输出', kind: 'read' }),
   }))
 }
 

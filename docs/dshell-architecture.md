@@ -101,7 +101,7 @@ form so implementers can match identifiers exactly.
 | `ctx.terminals` | `dshell-terminal-bridge` host | spawn/startSend/readOutput/signal/kill/list |
 | `ctx.agents` | `dshell-terminal-bridge` host, `dshell-mode` host | `inject`, agent lookup by sessionId |
 | `ctx.commands` | `dshell-commands` host | register `/new` (`/compact` stays dsh's own) |
-| `ctx.tools` | `dshell-commands` host | register `dshell_get_agent_terminal`, `dshell_terminal_read` |
+| `ctx.tools` | `dshell-commands` host | register `dshell_get_agent_terminal`, `dshell_terminal_read`, `dshell_terminal_output` |
 | `ctx.dshellMainPty` | `dshell-mode`, `dshell-commands` | consume the `Map<Agent, TerminalSessionId>` |
 | `ctx.dshellPtyBuffer` | `dshell-mode` host | consume the per-session rolling buffer |
 

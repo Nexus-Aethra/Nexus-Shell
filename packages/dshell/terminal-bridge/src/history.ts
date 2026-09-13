@@ -22,7 +22,7 @@ import { existsSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { openHistoryStore } from '@nexus-aethra/dshell-storage'
-import { HISTORY_STORE_FILENAME, type HistoryRecord, type HistoryStore } from '@nexus-aethra/dshell-std'
+import { HISTORY_STORE_FILENAME, type HistoryOutputRecord, type HistoryOutputSlice, type HistoryRecord, type HistoryStore } from '@nexus-aethra/dshell-std'
 
 /** Completed commands retained per session; the live array's cap too. */
 export const MAX_COMMAND_HISTORY = 200
@@ -155,13 +155,13 @@ export class CommandHistory {
   }
 
   /** Add closed commands, newest last, and persist them. */
-  append(commands: readonly PersistedCommand[]): void {
-    if (commands.length === 0) return
+  append(commands: readonly PersistedCommand[], outputs?: readonly HistoryOutputRecord[]): void {
+    if (commands.length === 0 && (outputs?.length ?? 0) === 0) return
     this.entries.push(...commands)
     this.trim()
     if (this.store !== undefined) {
       try {
-        this.store.append(this.sessionId, commands)
+        this.store.append(this.sessionId, commands, outputs)
       }
       catch {
         // Best effort, as the file write was: a failed insert must not take the
@@ -170,6 +170,23 @@ export class CommandHistory {
       return
     }
     this.schedule()
+  }
+
+  /**
+   * A window onto one command's stored output.
+   *
+   * Answers only when the store is open: without one there is nothing to page
+   * through, and the caller falls back to the in-memory window's display text.
+   */
+  output(seq: number, offset: number, limit: number): HistoryOutputSlice | undefined {
+    if (this.store === undefined) return undefined
+    try {
+      return this.store.readOutput(this.sessionId, seq, offset, limit)
+    }
+    catch {
+      // Best effort, as every other store call is.
+      return undefined
+    }
   }
 
   /**

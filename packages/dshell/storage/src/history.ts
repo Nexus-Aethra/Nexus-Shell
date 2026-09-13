@@ -13,17 +13,28 @@
  * write rewrote it in full, and the only way to keep it bounded was to drop the
  * oldest commands at a fixed cap — lossy exactly where a query would want them.
  *
- * Format — `PRAGMA user_version = 2` as the contract declares. Layout 1 carried
+ * Format — `PRAGMA user_version = 3` as the contract declares. Layout 1 carried
  * a third index, `commands_at(at)`, for a cross-session time query that was
- * never built and that nothing read; it only cost disk and write amplification,
- * so layout 2 drops it. A store stamped 1 is migrated in place (the DROP *is*
- * the migration); anything else is rejected.
+ * never built and that nothing read; layout 2 dropped it. Layout 3 adds
+ * `command_output`: the per-command output an agent-facing reader addresses by
+ * offset, so a long command can be read in slices instead of injected whole.
+ * Older layouts are migrated in place, one step at a time; anything unknown is
+ * rejected.
  *
  *   commands(session_id, seq, command, command_norm, exit_code, at)
  *     PRIMARY KEY (session_id, seq)
  *       the shell's own numbering, continued across restarts — `clearSession`
  *       deletes a whole session's rows when that session is deleted
  *   commands_session_prefix(session_id, command_norm)
+ *   command_output(session_id, seq, output, bytes, dropped)
+ *     PRIMARY KEY (session_id, seq)
+ *       the retained tail of a command's output, beside the narrow table rather
+ *       than in it: the prefix probe reads `commands` rows, and putting
+ *       kilobytes of output on them would slow every search for no benefit
+ *
+ * Outputs are retained for the newest `MAX_STORED_OUTPUTS_PER_SESSION` commands
+ * per session. The metadata itself is retained without limit, so evicting an
+ * output loses the text, never the fact that the command ran.
  *
  * `command_norm` is the lower-cased command and exists for the prefix index:
  * prefix matching is case-insensitive by design, the way a shell's own history
@@ -114,6 +125,9 @@ const PREFIX_SCAN_BIAS = 2.5
 /** Floor for a tiny session, where the formula would drop below useful. */
 const MIN_PREFIX_SCAN_BUDGET = 200
 
+/** How many commands' outputs one session keeps; older outputs are evicted. */
+const MAX_STORED_OUTPUTS_PER_SESSION = 1_000
+
 /**
  * The exclusive upper bound of every string starting with `prefix`.
  *
@@ -141,7 +155,18 @@ function createFilePrivate(path: string): void {
   }
 }
 
-/** Apply pragmas and the schema, migrating a known older layout. */
+/** The output table's DDL, shared by the fresh and the migrating paths. */
+const OUTPUT_TABLE = `
+  CREATE TABLE IF NOT EXISTS command_output (
+    session_id TEXT    NOT NULL,
+    seq        INTEGER NOT NULL,
+    output     TEXT    NOT NULL,
+    bytes      INTEGER NOT NULL,
+    dropped    INTEGER NOT NULL,
+    PRIMARY KEY (session_id, seq)
+  );`
+
+/** Apply pragmas and the schema, migrating every known older layout. */
 function initSchema(db: DatabaseSync, path: string): void {
   db.exec('PRAGMA busy_timeout = 5000')
   db.exec('PRAGMA journal_mode = WAL')
@@ -149,32 +174,35 @@ function initSchema(db: DatabaseSync, path: string): void {
   const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined
   const version = Number(row?.user_version ?? 0)
   if (version === HISTORY_STORE_SCHEMA_VERSION) return
-  if (version === 1) {
-    // Layout 1 carried `commands_at(at)` for a cross-session time query that was
-    // never built: nothing selected by it, so dropping it is the whole
-    // migration, and the rows are untouched.
-    db.exec(`
-      DROP INDEX IF EXISTS commands_at;
-      PRAGMA user_version = ${String(HISTORY_STORE_SCHEMA_VERSION)};
-    `)
-    return
-  }
-  if (version !== 0) {
+  if (version !== 0 && version !== 1 && version !== 2) {
     throw new HistoryStoreError('version-mismatch', `${path} carries history layout ${String(version)}, expected ${String(HISTORY_STORE_SCHEMA_VERSION)}`)
   }
-  db.exec(`
-    CREATE TABLE commands (
-      session_id   TEXT    NOT NULL,
-      seq          INTEGER NOT NULL,
-      command      TEXT    NOT NULL,
-      command_norm TEXT    NOT NULL,
-      exit_code    INTEGER,
-      at           INTEGER NOT NULL,
-      PRIMARY KEY (session_id, seq)
-    );
-    CREATE INDEX commands_session_prefix ON commands (session_id, command_norm);
-    PRAGMA user_version = ${String(HISTORY_STORE_SCHEMA_VERSION)};
-  `)
+  // Step through the layouts rather than jumping: each migration is the whole
+  // difference between two versions, so an old file lands on the current shape
+  // with nothing skipped.
+  if (version === 1) {
+    // Layout 1 carried `commands_at(at)` for a cross-session time query that was
+    // never built: nothing selected by it, so dropping it is the whole step.
+    db.exec('DROP INDEX IF EXISTS commands_at')
+  }
+  db.exec(version === 0
+    ? `
+      CREATE TABLE commands (
+        session_id   TEXT    NOT NULL,
+        seq          INTEGER NOT NULL,
+        command      TEXT    NOT NULL,
+        command_norm TEXT    NOT NULL,
+        exit_code    INTEGER,
+        at           INTEGER NOT NULL,
+        PRIMARY KEY (session_id, seq)
+      );
+      CREATE INDEX commands_session_prefix ON commands (session_id, command_norm);
+      ${OUTPUT_TABLE}
+    `
+    // Layout 2 has the commands table already; the output table is the whole
+    // step. `IF NOT EXISTS` makes 1 → 3 and 2 → 3 the same statement.
+    : OUTPUT_TABLE)
+  db.exec(`PRAGMA user_version = ${String(HISTORY_STORE_SCHEMA_VERSION)}`)
 }
 
 /** Map a database row to the contract's record shape. */
@@ -244,25 +272,68 @@ function openStore(path: string): HistoryStore {
   const head = db.prepare('SELECT max(seq) AS s FROM commands WHERE session_id = ?')
   const drop = db.prepare('DELETE FROM commands WHERE session_id = ?')
   const tally = db.prepare('SELECT count(*) AS n FROM commands WHERE session_id = ?')
+  const insertOutput = db.prepare(`
+    INSERT OR REPLACE INTO command_output (session_id, seq, output, bytes, dropped)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  const readOutputRow = db.prepare(`
+    SELECT output, bytes, dropped FROM command_output WHERE session_id = ? AND seq = ?
+  `)
+  const dropOutputs = db.prepare('DELETE FROM command_output WHERE session_id = ?')
+  const pruneOutputs = db.prepare('DELETE FROM command_output WHERE session_id = ? AND seq <= ?')
   let closed = false
 
   return {
     path,
 
-    append(sessionId, commands) {
-      if (closed || commands.length === 0) return
+    append(sessionId, commands, outputs) {
+      if (closed || (commands.length === 0 && (outputs?.length ?? 0) === 0)) return
       // One transaction per batch: the caller hands over a burst of finished
       // commands, and WAL makes the group barely more expensive than one row.
+      // Lines and outputs share it so a reader never sees one landed alone.
       db.exec('BEGIN')
       try {
         for (const item of commands) {
           insert.run(sessionId, item.seq, item.command, item.command.toLowerCase(), item.exitCode, item.at)
         }
+        for (const item of outputs ?? []) {
+          insertOutput.run(sessionId, item.seq, item.text, item.bytes, item.dropped)
+        }
+        // Evict the oldest outputs past the per-session retention. The `seq` of
+        // the newest row in this batch is the high-water mark; everything at or
+        // below the window's floor goes, in one indexed range delete.
+        const newest = commands.reduce((max, item) => Math.max(max, item.seq), 0)
+        const floor = newest - MAX_STORED_OUTPUTS_PER_SESSION
+        if (floor > 0) pruneOutputs.run(sessionId, floor)
         db.exec('COMMIT')
       }
       catch (error) {
         db.exec('ROLLBACK')
         throw error
+      }
+    },
+
+    readOutput(sessionId, seq, offset, limit) {
+      if (closed || limit <= 0) return undefined
+      const row = readOutputRow.get(sessionId, seq) as
+        | { output?: unknown; bytes?: unknown; dropped?: unknown }
+        | undefined
+      if (row === undefined || typeof row.output !== 'string') return undefined
+      const bytes = Buffer.from(row.output, 'utf8')
+      const total = bytes.length
+      // Snap both edges to UTF-8 character boundaries, so paging with a
+      // byte `limit` never hands back half a character at a seam.
+      let from = Math.min(Math.max(0, Math.trunc(offset)), total)
+      while (from < total && (bytes[from]! & 0b1100_0000) === 0b1000_0000) from += 1
+      let end = Math.min(from + Math.max(0, Math.trunc(limit)), total)
+      while (end > from && end < total && (bytes[end]! & 0b1100_0000) === 0b1000_0000) end -= 1
+      return {
+        text: bytes.subarray(from, end).toString('utf8'),
+        bytes: Number(row.bytes ?? total),
+        dropped: Number(row.dropped ?? 0),
+        offset: from,
+        total,
+        truncated: end < total,
       }
     },
 
@@ -307,6 +378,7 @@ function openStore(path: string): HistoryStore {
     clearSession(sessionId) {
       if (closed) return
       drop.run(sessionId)
+      dropOutputs.run(sessionId)
     },
 
     count(sessionId) {

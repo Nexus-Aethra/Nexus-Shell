@@ -36,7 +36,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { closeHistoryStore } from '@nexus-aethra/dshell-storage'
-import { HISTORY_STORE_FILENAME } from '@nexus-aethra/dshell-std'
+import { HISTORY_STORE_FILENAME, type HistoryOutputSlice } from '@nexus-aethra/dshell-std'
 import { CommandHistory, commandHistoryPath, forgetSessionHistory, MAX_COMMAND_HISTORY, type PersistedCommand } from './history.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
@@ -105,6 +105,27 @@ export interface TerminalHistory {
   readonly cursor: string
   readonly generation: number
   readonly commands: readonly TerminalCommandRecord[]
+}
+
+/**
+ * One command's output window, as an agent-facing read reports it.
+ *
+ * A flat shape rather than a union: a caller walks `stale` / `retained` and
+ * reads the rest, which keeps the tool's rendering a straight line.
+ */
+export interface TerminalCommandOutput {
+  /** Fresh session cursor, for the next call. */
+  readonly cursor: string
+  readonly generation: number
+  /** The shell was replaced since the cursor: `seq` names a different command now. */
+  readonly stale: boolean
+  /** The medium has no output for this command (evicted, or pre-output layout). */
+  readonly retained: boolean
+  /** The command line, when its metadata is still retained. */
+  readonly command: string | null
+  readonly exitCode: number | null
+  /** The slice itself; null unless `retained` and not `stale`. */
+  readonly output: HistoryOutputSlice | null
 }
 
 export const name = '@nexus-aethra/dshell-terminal-bridge'
@@ -563,18 +584,32 @@ export class DshellTerminalBridge extends Service {
       record.absOffset += Buffer.byteLength(chunk, 'utf8')
       const closed = splitOutput(record.splitter, chunk, Date.now())
       if (closed.length > 0) {
-        record.commands.push(...closed)
-        if (record.commands.length > MAX_COMMAND_HISTORY) {
-          record.commands.splice(0, record.commands.length - MAX_COMMAND_HISTORY)
-        }
-        // Only the line and its outcome are kept across boots; the output is
-        // what the PTY and block logs are for.
-        record.history.append(closed.map(command => ({
+        // The window keeps the display form only: `stored` carries the store's
+        // longer tail (up to 64 KiB per record), and 200 of those in memory is
+        // the one thing this cache must not become.
+        record.commands.push(...closed.map(command => ({
           seq: command.seq,
           command: command.command,
           exitCode: command.exitCode,
+          output: command.output,
           at: command.at,
         })))
+        if (record.commands.length > MAX_COMMAND_HISTORY) {
+          record.commands.splice(0, record.commands.length - MAX_COMMAND_HISTORY)
+        }
+        // The line, its outcome, and the output a reader can page through: the
+        // output no longer lives only in the PTY and block logs.
+        record.history.append(
+          closed.map(command => ({
+            seq: command.seq,
+            command: command.command,
+            exitCode: command.exitCode,
+            at: command.at,
+          })),
+          closed.flatMap(command => command.stored === undefined
+            ? []
+            : [{ seq: command.seq, ...command.stored }]),
+        )
       }
       this.broadcast(record.dshSessionId, { kind: 'output', chunk, time: Date.now() })
     })
@@ -1019,6 +1054,52 @@ export class DshellTerminalBridge extends Service {
     const record = this.liveRecord(dshSessionId)
     if (record === undefined) return undefined
     return record.history.match(draft, limit)
+  }
+
+  /**
+   * One command's output, `limit` bytes from `offset` into the retained tail —
+   * the read that lets a long command be looked at in slices instead of
+   * injected whole.
+   *
+   * `cursor` pins the shell generation: after a respawn the same `seq` names a
+   * different command, so a cursor from the previous shell answers `stale`
+   * rather than a wrong slice. The bytes come from the durable store when it is
+   * open, so this reaches across boots and past the in-memory window; without
+   * one the window's display text answers instead. Never spawns.
+   *
+   * @param dshSessionId - the dsh session whose main shell to read.
+   * @param cursor - a cursor the caller was handed; omitted means "not asking
+   *   about a specific shell generation", which is only safe on a first call.
+   * @param seq - the command whose output to read.
+   * @param offset - byte offset into the retained output.
+   * @param limit - how many bytes to return.
+   * @returns the window, or undefined when no live main shell exists.
+   */
+  commandOutput(
+    dshSessionId: string,
+    cursor: string | undefined,
+    seq: number,
+    offset: number,
+    limit: number,
+  ): TerminalCommandOutput | undefined {
+    const record = this.liveRecord(dshSessionId)
+    if (record === undefined) return undefined
+    const head = formatCursor(this.headCursor(record))
+    const parsed = parseCursor(cursor)
+    if (parsed !== undefined && parsed.generation !== record.generation) {
+      return { cursor: head, generation: record.generation, stale: true, retained: false, command: null, exitCode: null, output: null }
+    }
+    const known = record.commands.find(command => command.seq === seq)
+    const output = record.history.output(seq, offset, limit) ?? windowOutput(known, offset, limit)
+    return {
+      cursor: head,
+      generation: record.generation,
+      stale: false,
+      retained: output !== null,
+      command: known?.command ?? null,
+      exitCode: known?.exitCode ?? null,
+      output,
+    }
   }
 
   /** Deliver a foreground signal to the main PTY. */
@@ -1544,6 +1625,39 @@ function forkDirWord(record: MainRecord | undefined): string | undefined {
   if (dir.startsWith('~/')) return `"$HOME"/${shellQuote(dir.slice(2))}`
   if (!dir.startsWith('/')) return undefined
   return shellQuote(dir)
+}
+
+/**
+ * One command's display text sliced for a reader — the fallback when the store
+ * is unavailable.
+ *
+ * The window's text is the *preview* form: capped at 16 KiB and carrying its own
+ * truncation marker, so `bytes` here is what was retained rather than what the
+ * command produced, and `dropped` is unknown. That is exactly why the store is
+ * preferred whenever it is open.
+ */
+function windowOutput(
+  record: TerminalCommandRecord | undefined,
+  offset: number,
+  limit: number,
+): HistoryOutputSlice | null {
+  if (record === undefined || limit <= 0) return null
+  const bytes = Buffer.from(record.output, 'utf8')
+  const total = bytes.length
+  let from = Math.min(Math.max(0, Math.trunc(offset)), total)
+  let end = Math.min(from + Math.max(0, Math.trunc(limit)), total)
+  // Snap to UTF-8 character boundaries, so a byte-offset page never returns
+  // half a character at a seam.
+  while (from < total && (bytes[from]! & 0b1100_0000) === 0b1000_0000) from += 1
+  while (end > from && end < total && (bytes[end]! & 0b1100_0000) === 0b1000_0000) end -= 1
+  return {
+    text: bytes.subarray(from, end).toString('utf8'),
+    bytes: total,
+    dropped: 0,
+    offset: from,
+    total,
+    truncated: end < total,
+  }
 }
 
 /** Reject one unauthenticated upgrade with dsh's status semantics. */

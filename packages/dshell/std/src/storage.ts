@@ -25,11 +25,12 @@ export const HISTORY_STORE_FILENAME = 'history.sqlite'
  *
  * The engine migrates the layouts it knows: 1 dropped `commands_at(at)`, an
  * index for a cross-session time query that was never built and that nothing
- * read. A database stamped with anything else is rejected: this code is the
- * only producer, and history is a convenience the user may lose without losing
- * a session.
+ * read; 2 added `command_output`, the per-command output the agent-facing read
+ * tool addresses by offset. A database stamped with anything else is rejected:
+ * this code is the only producer, and history is a convenience the user may
+ * lose without losing a session.
  */
-export const HISTORY_STORE_SCHEMA_VERSION = 2
+export const HISTORY_STORE_SCHEMA_VERSION = 3
 
 /** Why a store could not be used; the caller decides whether to fall back. */
 export type HistoryStoreErrorCode = 'open-failed' | 'version-mismatch'
@@ -61,6 +62,39 @@ export interface HistoryRecord {
 }
 
 /**
+ * One command's output, as stored.
+ *
+ * Output is kept as a single contiguous tail: a command that produced more than
+ * the medium retains keeps its *end* (where an error explains itself) and says
+ * how much is missing from the front. Offsets are therefore relative to
+ * {@link text}, and {@link dropped} is what a reader must be told before it
+ * trusts offset 0 to be the beginning of anything.
+ */
+export interface HistoryOutput {
+  /** Retained output, truncated from the front — no marker text of its own. */
+  readonly text: string
+  /** Total bytes the command produced, before any truncation. */
+  readonly bytes: number
+  /** Bytes missing from the front of {@link text}. */
+  readonly dropped: number
+}
+
+/** One command's output plus the seq it belongs to, as written. */
+export interface HistoryOutputRecord extends HistoryOutput {
+  readonly seq: number
+}
+
+/** A window onto one stored command output. */
+export interface HistoryOutputSlice extends HistoryOutput {
+  /** Where {@link text} starts inside the retained output. */
+  readonly offset: number
+  /** Bytes of retained output in total, so a caller can page to the end. */
+  readonly total: number
+  /** The window ends before the retained output does. */
+  readonly truncated: boolean
+}
+
+/**
  * The durable history of every session under one store.
  *
  * Deliberately small and query-shaped rather than a generic KV: the two things
@@ -74,8 +108,20 @@ export interface HistoryRecord {
 export interface HistoryStore {
   /** Absolute path of the backing medium, for diagnostics. */
   readonly path: string
-  /** Insert a batch; an already-stored `(session, seq)` is left as it is. */
-  append(sessionId: string, commands: readonly HistoryRecord[]): void
+  /**
+   * Insert a batch; an already-stored `(session, seq)` is left as it is.
+   *
+   * `outputs` are the matching outputs for the same batch, when the caller has
+   * them: a command's line and its output are written together so a reader can
+   * never see one landed and the other lost. The medium may retain fewer
+   * outputs than commands (see {@link readOutput}); an omitted output is simply
+   * one no reader can fetch.
+   */
+  append(
+    sessionId: string,
+    commands: readonly HistoryRecord[],
+    outputs?: readonly HistoryOutputRecord[] | undefined,
+  ): void
   /** The newest `limit` commands of one session, oldest first. */
   recent(sessionId: string, limit: number): HistoryRecord[]
   /**
@@ -95,6 +141,17 @@ export interface HistoryStore {
    * query: the caller ranks a bounded candidate set by shared-prefix length.
    */
   matchPrefix(sessionId: string, draft: string, limit: number): HistoryRecord[]
+  /**
+   * One command's output, `limit` bytes from `offset` into the retained text.
+   *
+   * Answers `undefined` when the medium has no output for that `(session, seq)`
+   * — never written, already evicted, or written before the layout that added
+   * outputs. Callers report that as "not retained" rather than as empty output.
+   *
+   * `limit <= 0` answers nothing and a negative `offset` reads as 0, so a caller
+   * cannot page backwards out of the retained window.
+   */
+  readOutput(sessionId: string, seq: number, offset: number, limit: number): HistoryOutputSlice | undefined
   /** Drop one session's history — the session itself is gone. */
   clearSession(sessionId: string): void
   /** How many commands one session has stored. */
