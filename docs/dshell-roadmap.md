@@ -1481,7 +1481,8 @@ Acceptance check:
 - `pnpm package:linux` → `deepseek-harness-0.1.5-rc.1-linux-x86_64.AppImage`
   (245 MB) plus `rc-linux.yml`; the AppImage's sha512 matches the value in that
   metadata, and `--appimage-extract` yields `AppRun`, the `deepseek-harness`
-  binary, a `.desktop` entry and the same `resources/` payload.
+  binary, a `.desktop` entry and the same `resources/` payload. (Verified again at
+  `rc.2` in Phase 10.4.)
 - Not yet done, and blocked on something else: launching the desktop shell and
   exercising the dshell terminal inside it. The app installs plugins from
   npmjs.org only (the registry is hardcoded), so that check needs the published
@@ -1492,4 +1493,78 @@ Acceptance check:
 - The update feed in the AppImage points at upstream's production origin
   (`https://download.deepseek.com/_/harness/desktop/stable/linux-x64/`); override
   `DSH_DESKTOP_APP_ID` and `DSH_DESKTOP_AUTO_UPDATE_ENV` for a real release.
+
+## Phase 10.4 — Following dsh to 0.1.5-rc.2
+
+Goal: move the dsh baseline off `0.1.5-rc.1` and find what that breaks, before
+publishing dshell against it.
+
+Where we started: the checkout was 134 commits behind `master`, upstream had
+tagged `dsh-v0.1.5-rc.2` (2026-09-10, 272 manifests bumped rc.1 → rc.2), and
+master was a further 139 commits past that tag. **The target is the rc.2 tag, not
+master**: between the two, the desktop pipeline renames `prepare-seed.ts` to
+`prepare-dsh.ts` and the `seed`/`seedPnpm` build paths to `dsh`/`dshPnpm`, and adds
+`package-macos.ts`, `runtime-file-policy.ts`, `smoke-runtime.ts`, `installer.nsh`
+and a Windows-only `DSH_DESKTOP_UNSIGNED` — all of which would invalidate
+`scripts/package-linux.mjs`. rc.2 keeps the layout that script was written for.
+
+What the follow-up consisted of:
+
+- `dsh/` checked out at the tag: detached HEAD, working tree clean, version
+  `0.1.5-rc.2`. Only `git fetch --tags` had touched the checkout before that.
+- The ten `dshell-*` manifests move their exact dsh pins rc.1 → rc.2 (190 pins).
+  `dshell-std` carries none — it is the pure contract layer.
+- rc.2 changes no dependency edge: `pnpm-lock.yaml` and `pnpm-workspace.yaml` are
+  byte-identical between the two tags, so nothing needed reinstalling. Trap worth
+  knowing: `pnpm install --frozen-lockfile` in `dsh/` fails under the ambient pnpm
+  9.15.0 with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`, because pnpm 9 strips the
+  `overrides`/`patchedDependencies` blocks pnpm 11 wrote. The declared pnpm
+  (11.7.0, at `dsh/node_modules/.pnpm/pnpm@11.7.0`) validates the same lockfile
+  fine, and `pnpm run` is unaffected either way.
+- All 46 `link:` overrides still resolve, including the
+  `node-pty@1.2.0-beta.15` store path pin.
+
+The one real incompatibility — a latent bug of ours that rc.2 exposed:
+
+`dshell-mode` registers the `single` slot `sidebar.brand.name` (the empty
+placeholder that hides dsh's local-build label) at the default priority 0, where
+dsh's own `ui-brand-official` already has an occupant. `ui-slots` throws when a
+second `single` registration lands on the *same* priority, and only a different
+priority shadows (lowest renders). That rule is identical in rc.1 and rc.2, so
+this was never version drift — rc.1 happened to order our registration first.
+rc.2 ordered it second, so the mode plugin failed to apply and the client showed
+the Failed-to-load-plugins overlay while the other nine plugins loaded. Registering
+at `priority: -1` makes the shadow explicit and order-independent. The audit of our
+other registrations found no further exposure: everything else lands on `list` or
+`keyed` slots (which collide only on `id`+priority), or on the `single`
+`sidebar.workspaces`, which has no stock occupant.
+
+Acceptance check — `pnpm typecheck`, `pnpm build`, browser, `pnpm package:linux`:
+
+- Static: typecheck and build pass; client bundles keep `std` inlined and
+  externalize only `cordis`, `client-store` and `ui-primitives`, all rows of
+  rc.2's platform module table (which also still carries `react*`, `ui-slots`,
+  `ui-dockkit`).
+- Change surfaces checked, no action needed: `ui-primitives` still exports
+  `FileTypeIcon` (the files panel's icons) beside the new code-file artwork;
+  `ui-slots`/`ui-sidebar`/`ui-layout`/`ui-session` changed only their manifests;
+  the `connection` client transport hooks gained an optional `rpc` and made
+  `fetch` optional, but dshell touches neither — the host-side
+  `connection.fetch.register` is unchanged.
+- Browser against rc.2: ten of ten plugins load; the ws carrier reports
+  `open`/`ready` with `attempt: 0`; `useTransport('stream')` rebinds to the stream
+  carrier with `attempt: 0` and `echo rc2-stream-ok` returns over it; the files
+  panel lists `/home/wpp/nexus` with a `ui-primitives` icon on every row.
+- Host routes, after the cookie handshake: `/api/dshell/buffer` 200,
+  `/api/dshell/files` 200 for a POST naming a live session (404 on GET is correct —
+  the route registers POST only), `/api/dshell/stream` 200
+  `application/x-ndjson` holding open with 130 KB of replay, and
+  `/api/dshell/stream/send` 400 `clientId is required` without one; 401 without
+  the cookie.
+- Packaging: `pnpm package:linux:dir` succeeds on rc.2 with the same payload
+  (Node 24.17.0 + pnpm 11.7.0), and `pnpm package:linux` →
+  `deepseek-harness-0.1.5-rc.2-linux-x86_64.AppImage`.
+
+Not addressed here: the checkout is pinned at the rc.2 *tag*, not master. Moving
+to master is a separate change that first needs the desktop-pipeline renames above.
 
