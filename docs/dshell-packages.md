@@ -222,7 +222,10 @@ when it contributes to model-visible state.
     stubs plus the root `workspaces` hook, so the stock row
     `ui-workspace` can be disabled without hanging ui-conversation /
     ui-sidebar or crashing ConversationRoot. It also occupies
-    `sidebar.workspaces` with a flat session list, adds the
+    `sidebar.workspaces` with a flat session list grouped into the active
+    list, a collapsible `已归档` group, and a collapsible `待删除` group for
+    sessions whose log removal is already committed and runs at the next
+    start; adds the
     new-session dialog (optional name + starting directory, design
     4.7 naming paragraph), and hides the stock hero workspace chip
     with an interim stylesheet until the Phase 4 scaffold takeover
@@ -281,7 +284,10 @@ when it contributes to model-visible state.
     `/`, one namespace per session, and grant ids never leave the host.
   - **Browser face** provides the pipe panel in the frame-wide
     `shell.overlay` seat and the `dshellBuffer` service the sidebar
-    header button toggles.
+    header button toggles. The panel drops any session the host reports
+    as `departed` — a session dshell deleted that dsh still lists until
+    the next start — from the graph nodes and the endpoint pickers, so a
+    deleted session cannot linger as an edge-less node.
 - dsh services depended on: `ctx.tools`, `ctx.systemPrompt`, `ctx.fs`,
   `ctx.agents`, `ctx.sessionController`, `ctx.sandboxPolicy` (optional),
   `ctx.shell` (cross-world byte transfer), `ctx.connection.fetch`; the

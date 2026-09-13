@@ -28,8 +28,8 @@ import { ordinaryRows, type PresetChoice, type SessionRow } from './rows.js'
 import {
   archivedRowStyle, backdropStyle, cancelButtonStyle, dangerButtonStyle, dialogActionsStyle,
   dialogBodyStyle, dialogErrorStyle, dialogStyle, dialogTitleStyle, emptyStyle, groupCountStyle,
-  groupHeaderStyle, headerStyle, listStyle, newButtonStyle, noticeStyle, rowActionStyle, rowActionsStyle,
-  rowStyle, rowTitleStyle, scrollStyle, sshBadgeStyle,
+  groupHeaderStyle, groupNoteStyle, headerStyle, listStyle, newButtonStyle, noticeStyle, rowActionStyle,
+  rowActionsStyle, rowStyle, rowTitleStyle, scrollStyle, sshBadgeStyle,
 } from './list-styles.js'
 
 /** The device face another plugin provides, when the SSH plugin is composed. */
@@ -215,6 +215,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     )
   }
   const [archivedOpen, setArchivedOpen] = useState(true)
+  const [pendingOpen, setPendingOpen] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<{ id: SessionId; title: string } | undefined>(undefined)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
@@ -234,9 +235,9 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
   const archivedSet = new Set(archive.archived)
   const active = rows.filter(row => !archivedSet.has(String(row.id)))
   const byId = new Map(rows.map(row => [String(row.id), row]))
-  // A tag can outlive the row it names (the log was removed outside dshell),
-  // so the archived section falls back to the bare id instead of dropping it.
-  const archivedRows = archive.archived.map(id => byId.get(id) ?? {
+  // A tag can outlive the row it names (the log was removed outside dshell), so
+  // both tagged sections fall back to the bare id instead of dropping it.
+  const taggedRow = (id: string): SessionRow => byId.get(id) ?? {
     id: id as SessionId,
     cwd: undefined,
     blank: false,
@@ -244,13 +245,18 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     running: false,
     displayTitle: id,
     updatedAt: 0,
-  } satisfies SessionRow)
+  } satisfies SessionRow
 
   const pendingSet = new Set(archive.pending)
-  // Multi-select operates on what is actually listed and not already scheduled
-  // for purge — a pending row's removal is committed, so deleting it again
-  // would only re-schedule the same purge.
-  const selectable = archivedRows.filter(row => !pendingSet.has(String(row.id))).map(row => String(row.id))
+  // A scheduled row lives in its own section, not in 已归档: its removal is
+  // already committed, so its only remaining action is to cancel it, and mixing
+  // it in with rows that are merely put away made the two behave differently
+  // inside one list.
+  const pendingRows = archive.pending.map(taggedRow)
+  const archivedRows = archive.archived.filter(id => !pendingSet.has(id)).map(taggedRow)
+  // Multi-select covers the rows that are only archived — restore or delete.
+  // A pending row is past both.
+  const selectable = archivedRows.map(row => String(row.id))
   const checkedRows = selectable.filter(id => checked.includes(id))
   const allChecked = selectable.length > 0 && checkedRows.length === selectable.length
 
@@ -409,7 +415,6 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         ),
         ...archivedOpen
           ? archivedRows.map((row) => {
-            const pending = pendingSet.has(String(row.id))
             const id = String(row.id)
             const isChecked = checked.includes(id)
             return createElement('div', {
@@ -418,32 +423,30 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
               style: {
                 ...archivedRowStyle,
                 fontWeight: state.current === row.id ? 600 : 400,
-                ...(multi && !pending ? { background: isChecked ? 'rgba(127,127,127,.18)' : undefined } : {}),
+                ...(multi ? { background: isChecked ? 'rgba(127,127,127,.18)' : undefined } : {}),
               },
               onClick: () => {
                 // Multi-select rows toggle their check instead of opening:
                 // opening mid-selection would both lose the ticked set's
                 // context and surprise a reader aiming at the checkbox.
-                if (multi && !pending) toggleChecked(id)
+                if (multi) toggleChecked(id)
                 else props.open(row.id)
               },
             },
-              multi && !pending
+              multi
                 ? createElement('span', { style: { ...rowTitleStyle, flex: '0 0 auto' } }, isChecked ? '☑' : '☐')
                 : null,
-              rowMain(row, pending ? ' · 重启后清除' : ''),
-              multi && !pending ? null : createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
+              rowMain(row),
+              multi ? null : createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
                 createElement('button', {
                   style: rowActionStyle,
-                  title: pending ? '取消：撤销删除并移回主列表' : '恢复：移回主列表',
+                  title: '恢复：移回主列表',
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                     event.stopPropagation()
                     void props.panel.unarchive(id)
                   },
-                }, pending ? '取消' : '恢复'),
-                // A scheduled row's removal is already committed; deleting it
-                // again would only re-schedule the same purge.
-                pending ? null : createElement('button', {
+                }, '恢复'),
+                createElement('button', {
                   style: rowActionStyle,
                   title: '删除：清除该会话的全部历史',
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -452,6 +455,48 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
                     setDeleteTarget({ id: row.id, title: row.displayTitle })
                   },
                 }, '删除'),
+              ),
+            )
+          })
+          : [],
+      ),
+      // The scheduled-removal section, last: these sessions are past archiving,
+      // and dsh removes their logs at the next start (it cannot tear a loaded
+      // session down), so the group's meaning has to be on its header rather
+      // than inferred from one row's suffix.
+      pendingRows.length === 0 ? null : createElement('div', { key: 'pending-group' },
+        createElement('div', {
+          'data-dshell-row': 'pending-header',
+          style: groupHeaderStyle,
+          onClick: () => { setPendingOpen(open => !open) },
+        },
+          createElement(Chevron, { open: pendingOpen }),
+          createElement('span', null, '待删除'),
+          createElement('span', { style: groupNoteStyle }, '重启后清除'),
+          createElement('span', { style: groupCountStyle }, String(pendingRows.length)),
+        ),
+        ...pendingOpen
+          ? pendingRows.map((row) => {
+            const id = String(row.id)
+            return createElement('div', {
+              key: `pending-${row.id}`,
+              'data-dshell-row': 'pending',
+              style: { ...archivedRowStyle, fontWeight: state.current === row.id ? 600 : 400 },
+              onClick: () => { props.open(row.id) },
+            },
+              rowMain(row),
+              // Removal is already committed, so cancelling is the only action
+              // left: it drops the scheduled purge and returns the session to
+              // the active list, the same gesture unarchiving performs.
+              createElement('span', { 'data-dshell-row-actions': 'pending', style: rowActionsStyle },
+                createElement('button', {
+                  style: rowActionStyle,
+                  title: '取消：撤销删除并移回主列表',
+                  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
+                    event.stopPropagation()
+                    void props.panel.unarchive(id)
+                  },
+                }, '取消'),
               ),
             )
           })

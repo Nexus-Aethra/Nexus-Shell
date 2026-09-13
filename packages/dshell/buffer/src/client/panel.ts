@@ -157,14 +157,19 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
   // render would change the hook count between renders — the exact mistake
   // that once took the whole status card down (React #310).
   const graphSessions: GraphSession[] = useMemo(() => {
+    // A session dshell deleted is still in dsh's list until the next start, so
+    // it is filtered here — its pipes are already gone, and a node without
+    // edges would read as a peer that is merely idle.
+    const gone = new Set(snapshot.departed)
     if (sessionState === undefined) {
       // Without a sessions seat the nodes are the ids the links name.
       const ids = [...new Set(snapshot.links.flatMap(link => [link.a, link.b]))]
-      return ids.map(id => ({ id, label: id.slice(0, 8), sub: undefined, active: false, current: false }))
+      return ids.filter(id => !gone.has(id))
+        .map(id => ({ id, label: id.slice(0, 8), sub: undefined, active: false, current: false }))
     }
     const current = sessionState.current === undefined ? undefined : String(sessionState.current)
     const ids = [...new Set([...sessionState.ids.map(String), ...snapshot.links.flatMap(link => [link.a, link.b])])]
-    return ids.map(id => {
+    return ids.filter(id => !gone.has(id)).map(id => {
       const row = sessionState.byId[id]
       return {
         id,
@@ -174,7 +179,7 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
         current: id === current,
       }
     })
-  }, [sessionState, snapshot.links])
+  }, [sessionState, snapshot.links, snapshot.departed])
 
   if (!snapshot.open) return null
 
@@ -254,7 +259,12 @@ function ListPane(props: ListSideProps & {
   const [right, setRight] = useState('')
   const [label, setLabel] = useState('')
   const seat = sessions
-  const sessionIds = sessionState === undefined ? [] : sessionState.ids.map(String)
+  // A deleted session is still in dsh's list until the next start, but nothing
+  // may be piped to it any more, so it is not offered as an endpoint either.
+  const gone = new Set(snapshot.departed)
+  const sessionIds = sessionState === undefined
+    ? []
+    : sessionState.ids.map(String).filter(id => !gone.has(id))
 
   // Seed the two pickers once the list is known: the current session on the
   // left, the first other session on the right. Never overwrites a choice.
@@ -263,10 +273,10 @@ function ListPane(props: ListSideProps & {
     if (left === '' && sessionState.current !== undefined) setLeft(String(sessionState.current))
     if (right === '') {
       const current = sessionState.current === undefined ? undefined : String(sessionState.current)
-      const other = sessionState.ids.map(String).find(id => id !== current)
+      const other = sessionState.ids.map(String).find(id => id !== current && !snapshot.departed.includes(id))
       if (other !== undefined) setRight(other)
     }
-  }, [sessionState, left, right])
+  }, [sessionState, left, right, snapshot.departed])
 
   const create = (): void => {
     if (left === '' || right === '') return

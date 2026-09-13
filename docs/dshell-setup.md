@@ -6,10 +6,16 @@ a fresh machine.
 
 ## Branch model
 
-Development happens on `dev`; `main` holds the released line only.
-Work lands on `dev` and is squash-merged into `main` through a pull
-request once its acceptance check passes. Do not commit directly to
-`main`.
+`main` holds the released line only, and is never committed to directly:
+work reaches it by squash-merging a pull request once its acceptance
+check passes.
+
+`dev` was the branch for the initial development phase, which is over. It
+is kept for history, not for new work. Since then each development
+direction gets **its own branch** — `fix/session-delete` for the session
+deletion work, and so on — so a line of work can be reviewed, paused or
+abandoned without dragging anything else with it. Name a branch after the
+direction it serves, not after the phase number.
 
 ## Required tools
 

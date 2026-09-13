@@ -670,7 +670,9 @@ Shipped:
 
 - Archive is a dshell-owned durable tag (`$DSH_HOME/dshell/tags.json`),
   rendered as the collapsible `已归档` group; dsh's own archive lives on
-  the disabled workspace registry, so it is unusable here.
+  the disabled workspace registry, so it is unusable here. (The
+  scheduled-removal state this phase kept inside that group became its own
+  `待删除` group in Phase 10.11.)
 - Purge removes the session directory, its projection-cache entry and
   the dshell PTY log plus sidecars (`dshell-workspace/src/purge.ts`),
   and frees the session's shell via
@@ -2058,4 +2060,51 @@ should skip lines typed at a prompt that is not a shell prompt, since a secret
 typed at a remote `sudo`/`psql`/passphrase prompt is currently recorded as a
 "command" and injected; and that a live master means a connection *test* cannot
 prove a just-rotated credential within `ControlPersist`.
+
+## Phase 10.11 — The scheduled-removal state gets its own section, and a deleted session leaves the pipe graph
+
+Phase 9.5 left the scheduled-removal state *inside* `已归档`: a pending row was
+an archived row with a ` · 重启后清除` suffix, a `取消` action instead of `恢复`,
+no delete button and no checkbox. That made one list hold two different
+meanings, and the row-level special cases were the only place the distinction
+was visible. Two things were also still wrong about deletion itself:
+
+- **A deleted session stayed in the pipe graph as an edge-less node.** dsh
+  cannot tear a loaded session down (`ctx.sessions` keeps it until the next
+  start), so the raw session list keeps naming it, and the graph drew a node per
+  listed session. Its pipes had already been dropped by
+  `BufferService.detachSession`, which left a peer that looked merely idle.
+  The endpoint pickers in the create-pipe form also still offered it.
+- The sidebar gave no place to see "these are on their way out" as a state,
+  as opposed to a per-row annotation.
+
+Shipped:
+
+- **A third group, `待删除`, after `已归档`.** Its rows are `archive.pending`;
+  `已归档` now lists `archived` minus pending, so a row appears in exactly one
+  group. The header carries the meaning (`待删除` + a quiet `重启后清除`) and the
+  group is hidden while empty; each row's only action is `取消` (drop the
+  scheduled purge and return the session to the active list — the same
+  gesture unarchiving performs). Multi-select stays with `已归档`, where
+  恢复/删除 actually apply, so `selectable` keeps one meaning.
+  No protocol change: `pendingPurge` was already in the session response.
+- **`BufferState.departed`** — the ids a deletion has taken away, populated
+  only by `detachSession` and never persisted, because after a restart their
+  logs are purged during composition and dsh stops listing them, so there is
+  nothing left to hide. The pipe panel filters them out of the graph nodes and
+  the endpoint pickers. Archiving is deliberately *not* included: an archived
+  session is put away, not gone, and may still be a legitimate end of a pipe.
+
+The two pure derivations are the whole client change (the row split and the node
+filter); the panel learns about a deletion on its next read, which is
+immediate when it is opened and at most one 3 s poll otherwise.
+
+Verified against the built buffer service with a seeded pipe: `detachSession`
+reports the id in `snapshot().departed`, drops the pipe, leaves the other peer
+unmarked, writes a state document with no `departed` field, and a freshly
+constructed service does not inherit it — confirming the process-lifetime
+claim rather than asserting it. The client halves are typecheck- and
+build-verified; exercising them needs the harness restarted onto the rebuilt
+client bundle, which was not done here.
+
 
