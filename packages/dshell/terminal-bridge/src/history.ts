@@ -108,6 +108,32 @@ export class CommandHistory {
     return this.entries
   }
 
+  /**
+   * The newest commands whose line starts with `draft` (case-insensitively),
+   * oldest first.
+   *
+   * The store answers whenever it is open, and that is the point of this
+   * method: the window is only the newest `MAX_COMMAND_HISTORY` commands, so a
+   * window filter could never surface an older match. The window is the
+   * fallback for an unusable store, under the same strict prefix.
+   */
+  match(draft: string, limit: number): readonly PersistedCommand[] {
+    if (limit <= 0) return []
+    const norm = draft.toLowerCase()
+    if (this.store !== undefined) {
+      try {
+        return this.store.matchPrefix(this.sessionId, norm, limit)
+      }
+      catch {
+        // Best effort, as an append is: fall through to the window.
+      }
+    }
+    const matched = norm.length === 0
+      ? this.entries
+      : this.entries.filter(command => command.command.toLowerCase().startsWith(norm))
+    return matched.slice(-limit)
+  }
+
   /** Add closed commands, newest last, and persist them. */
   append(commands: readonly PersistedCommand[]): void {
     if (commands.length === 0) return

@@ -106,11 +106,17 @@ export interface ShellCompletion {
   /**
    * The session's command history, as the up-arrow list.
    *
-   * `draft` is the query: entries sharing a longer prefix with it rank first,
-   * so a half-typed line pulls its own past spellings to the top; an empty
-   * draft is plain history, newest first.
+   * `draft` is the query: only commands *starting with* it — compared
+   * case-insensitively, spaces included — come back, newest first in the answer
+   * and oldest first in the list, so a half-typed line pulls its own past
+   * spellings up with the newest match on the bottom row. An empty draft is
+   * plain history.
    *
-   * @returns the state to show, or null when the shell has no history yet.
+   * The matching happens on the host because the host owns the index over the
+   * whole history: filtering here could only ever see the rows this request was
+   * sent, which is precisely the ceiling that made an old command unfindable.
+   *
+   * @returns the state to show, or null when nothing matches.
    */
   requestHistory(sessionId: string, draft: string): Promise<CompletionState | null>
   /** The draft with candidate `index` substituted, and the state that follows. */
@@ -126,14 +132,6 @@ async function post(path: string, body: Record<string, unknown>): Promise<Record
     body: JSON.stringify(body),
   })
   return await response.json() as Record<string, unknown>
-}
-
-/** How much of two strings matches from the start. */
-function commonPrefix(a: string, b: string): number {
-  const max = Math.min(a.length, b.length)
-  let at = 0
-  while (at < max && a[at] === b[at]) at += 1
-  return at
 }
 
 /** Candidates one history answer lists. */
@@ -212,7 +210,16 @@ export function createShellCompletion(): ShellCompletion {
     },
 
     async requestHistory(sessionId, draft) {
-      const body = await post(HISTORY_PATH, { action: 'history', sessionId })
+      // The draft travels with the request. A whitespace-only draft is the
+      // plain-history case; anything else is a literal prefix, spaces included,
+      // because `git ` really is a prefix of `git status`.
+      const query = draft.trim().length === 0 ? '' : draft
+      const body = await post(HISTORY_PATH, {
+        action: 'history',
+        sessionId,
+        draft: query,
+        limit: MAX_HISTORY_ITEMS,
+      })
       const raw = Array.isArray(body.commands) ? body.commands : []
       const entries = raw.flatMap((entry) => {
         const command = (entry as { command?: unknown }).command
@@ -220,15 +227,9 @@ export function createShellCompletion(): ShellCompletion {
       })
       if (entries.length === 0) return null
       // Chronological, like a terminal: the newest command is the BOTTOM row
-      // and up-arrow walks upward into the past. The route already answers in
-      // that order, so a query only filters — it never reorders, or "the bottom
-      // is the most recent" would stop being true the moment something is
-      // typed.
-      const query = draft.trim().length === 0 ? '' : draft
-      const matched = query === '' ? entries : entries.filter(command => commonPrefix(command, query) > 0)
-      if (matched.length === 0) return null
-      // A long session keeps its recent past, not its first commands.
-      const items = matched.slice(-MAX_HISTORY_ITEMS)
+      // and up-arrow walks upward into the past. The host already answered with
+      // the newest matches in that order, so a filter here would only re-apply
+      // a local rule to a set that is no longer the whole story.
       return {
         sessionId,
         source: 'history',
@@ -236,9 +237,9 @@ export function createShellCompletion(): ShellCompletion {
         start: 0,
         end: draft.length,
         dir: '',
-        items: items.map(command => ({ name: command, kind: 'command' as const })),
+        items: entries.map(command => ({ name: command, kind: 'command' as const })),
         // The bottom row is the newest, which is where the gesture starts.
-        index: items.length - 1,
+        index: entries.length - 1,
         note: undefined,
         draft,
       }

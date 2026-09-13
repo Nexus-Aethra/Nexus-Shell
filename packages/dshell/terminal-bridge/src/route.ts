@@ -8,6 +8,13 @@
  * terminal's scrollback is a rendered stream, while these records are the lines
  * the user actually ran.
  *
+ * The request carries the composer's draft, and the answer is the *newest*
+ * commands starting with it (oldest first, so the list's bottom row stays the
+ * newest match). Searching here rather than in the browser is what makes the
+ * query cost independent of how much history exists: the bridge answers from
+ * the durable store's index, so the rows the composer may match are not limited
+ * to the ones it was sent — and the response stays bounded by `limit`.
+ *
  * Read-only on purpose, and never spawning: a session without a live shell
  * answers with no commands rather than getting one created to answer a
  * question about it.
@@ -23,7 +30,12 @@ import type { DshellTerminalBridge } from './index.js'
 export { DSHELL_PTY_PATH }
 export type { DshellPtyCommand, DshellPtyRequest, DshellPtyResponse }
 
-/** Commands one answer carries. Mirrors the bridge's own retention cap. */
+/**
+ * Commands one answer carries, as a bound on the response — not a mirror of the
+ * bridge's retention. The store holds every command and answers a newest-match
+ * query, so a caller asking for a prefix works over the whole history; this only
+ * keeps one reply from growing with it.
+ */
 const MAX_HISTORY = 200
 
 /** JSON response in the shape the browser face parses. */
@@ -50,9 +62,10 @@ export function createPtyRoute(bridge: DshellTerminalBridge): ConnectionFetchRou
         const input = await request.json() as DshellPtyRequest
         if (input.action !== 'history') return respond({ error: '未知操作' }, 400)
         const limit = Math.max(1, Math.min(input.limit ?? MAX_HISTORY, MAX_HISTORY))
+        const draft = input.draft ?? ''
         // A blank command is a tracked line that never assembled into one (the
         // splitter says so with ''), and offering it as history would be noise.
-        const commands = (bridge.history(input.sessionId, limit)?.commands ?? [])
+        const commands = (bridge.matchHistory(input.sessionId, draft, limit) ?? [])
           .filter(command => command.command.trim().length > 0)
           .map(command => ({
             command: command.command,

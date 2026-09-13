@@ -94,7 +94,12 @@ when it contributes to model-visible state.
   the LIKE optimization for a bound parameter, so with a session filter the
   index serves only the session term and every row of that session is tested
   against the pattern — cost that grows with history size, which is the thing
-  the store exists to avoid.
+  the store exists to avoid. The range seek alone is still not the whole
+  answer: the index is ordered by `command_norm`, so "the newest matches" needs
+  a sort of every match (`USE TEMP B-TREE FOR ORDER BY`). `matchPrefix` scans
+  newest-first through the primary key with a bounded budget and early exit,
+  and falls back to the range seek for a sparse prefix — Phase 10.7, measured
+  there.
 
 ### `dshell-bundle`
 

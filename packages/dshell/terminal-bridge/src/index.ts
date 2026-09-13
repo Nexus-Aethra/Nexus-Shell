@@ -37,7 +37,7 @@ import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { closeHistoryStore } from '@nexus-aethra/dshell-storage'
 import { HISTORY_STORE_FILENAME } from '@nexus-aethra/dshell-std'
-import { CommandHistory, commandHistoryPath, MAX_COMMAND_HISTORY } from './history.js'
+import { CommandHistory, commandHistoryPath, MAX_COMMAND_HISTORY, type PersistedCommand } from './history.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
 import { createStreamRoutes } from './stream.js'
@@ -992,6 +992,27 @@ export class DshellTerminalBridge extends Service {
       generation: record.generation,
       commands,
     }
+  }
+
+  /**
+   * The newest commands of one session's main shell whose line starts with
+   * `draft`, oldest first — the composer's up-arrow answer, and the one read
+   * that is not bounded by the in-memory window: the durable store answers
+   * whenever it is open, so a command older than the window is still findable.
+   *
+   * Never spawns, like `history`: a session without a live shell answers
+   * undefined rather than getting one created to answer a question about it.
+   * @param dshSessionId - the dsh session whose main record to read.
+   * @param draft - the line being typed; empty lists plain history.
+   * @param limit - how many matching commands to answer with, newest first.
+   * @returns the matching commands, oldest first, or undefined when no live
+   *   main shell exists. A match carries the line, its exit status and its time;
+   *   the output stays in the PTY and block logs.
+   */
+  matchHistory(dshSessionId: string, draft: string, limit: number): readonly PersistedCommand[] | undefined {
+    const record = this.liveRecord(dshSessionId)
+    if (record === undefined) return undefined
+    return record.history.match(draft, limit)
   }
 
   /** Deliver a foreground signal to the main PTY. */

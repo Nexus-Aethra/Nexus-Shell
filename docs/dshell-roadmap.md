@@ -1616,12 +1616,14 @@ Three facts that shaped it, each verified rather than assumed:
   prefix itself into an index seek. (The first draft of this note claimed a full
   table scan; the check caught that the composite index does serve the session
   term, and the honest statement is the one above.)
-- Prefix matching is **strict** (`startsWith`), one range query. The earlier
-  design walked k downward from the draft's length to rank by shared-prefix
-  length — but under a strict prefix every match shares the whole draft, so
-  there is nothing to rank, and the weaker k-bands let `grep -r git .` into an
-  answer for the draft `git` (caught by the check). Fuzzy ranking is a different
-  query and belongs with the caller over a bounded candidate set.
+- Prefix matching is **strict** (`startsWith`), and under a strict prefix every
+  match shares the whole draft, so there is nothing to rank — recency is the
+  only meaningful order. The earlier design walked k downward from the draft's
+  length to rank by shared-prefix length, but the weaker k-bands let
+  `grep -r git .` into an answer for the draft `git` (caught by the check).
+  Fuzzy ranking is a different query and belongs with the caller over a bounded
+  candidate set. *(Phase 10.7 replaced the single range query this originally
+  ran with a newest-first scan, keeping the range query as the fallback.)*
 - Answers come back in **timeline order** (oldest first), the same convention as
   `recent` and the same order the history route already sends, so a caller
   filters without reordering.
@@ -1658,15 +1660,15 @@ Acceptance check:
 
 Not addressed here, deliberately, and in this order:
 
-1. The protocol: `requestHistory` posts `{action:'history', sessionId}` with no
-   draft, and the client ranks locally over whatever the route returns. Uncapping
-   without sending `{draft, limit}` would ship the whole history on every
-   up-arrow, which is a regression the store cannot prevent.
-2. Uncapping and a retention window (today the in-memory window still trims at
-   200; the store keeps everything).
+1. ~~The protocol~~ — **done in Phase 10.7**: the request carries `draft` and
+   `limit`, and the route answers from the store, so the response is bounded by
+   `limit` rather than by the window.
+2. Uncapping and a retention window (the store already keeps everything; the
+   in-memory window still trims at 200 as a cache, not as the answer).
 3. The query surface for agents (FTS5 is available on both runtimes for
-   full-text, `commands_at` for cross-session time queries), and the
-   `commonPrefix > 0` vs strict-prefix behaviour decision in `mode`.
+   full-text, `commands_at` for cross-session time queries). The
+   `commonPrefix > 0` vs strict-prefix question is **decided in Phase 10.7**:
+   strict prefix, in the store and in the client's fallback window.
    A token prefix tree is **not** on that list: for the up-arrow path the
    B-tree range seek above is already the optimal structure for a strict
    prefix, and a trie would be a second in-memory format to rebuild, not a
@@ -1716,5 +1718,78 @@ Acceptance check:
 Still open from this: rows left in `history.sqlite` by a session that was
 already cold at delete time (no bridge record, so no `releaseSession`) belong to
 the retention pass in "Not addressed here" item 2.
+
+## Phase 10.7 — History retrieval goes to the index
+
+Goal: the up-arrow gesture searches the whole history, under one clear rule, at
+a cost that does not grow with how much history exists. Phase 10.5 built the
+index; this phase is the wiring, because the index had **no caller**: the route
+read `bridge.history()` — the live 200-row window — so nothing older than the
+window was reachable, and the browser filtered what it was sent with
+`commonPrefix(command, query) > 0`, i.e. **first character equal**. A draft of
+`git` listed `grep -r git .`, and a command older than the newest 200 could not
+be found at all. The client's `requestHistory` even took a `draft` parameter and
+dropped it from the request body.
+
+The three seams, and what each became:
+
+| seam | was | is |
+|---|---|---|
+| wire | `{action:'history', sessionId}` | `{action:'history', sessionId, draft, limit}` |
+| route | `bridge.history()` — the window | `bridge.matchHistory()` — the store, window as fallback |
+| rule | first character equal (`commonPrefix > 0`) | strict prefix, case-insensitive, in the store and in the fallback |
+
+`CommandHistory.match()` is the facade that keeps the store knowledge out of the
+route: it asks `store.matchPrefix` whenever the store is open and filters the
+in-memory window only when it is not, under the same strict rule. The window is
+now a cache for the empty-draft path, not the ceiling on what is findable.
+
+The query itself had to change, and this is the fourth measured fact from
+Phase 10.5 — measured at 200k commands in one session:
+
+| draft | matching rows | range seek + `ORDER BY seq DESC LIMIT` | newest-first scan, early exit |
+|---|---|---|---|
+| `g` | 20,000 | 9.09 ms | 0.11 ms |
+| `git` | 10,000 | 4.72 ms | 0.23 ms |
+| `git --flag 19` | 555 | 0.16 ms | 0.21 ms |
+| `zzzz` | 0 | 0.005 ms | 0.68 ms |
+
+The range seek is an index seek, but the index is ordered by `command_norm`
+while "the newest matches" is ordered by `seq`, so the plan adds
+`USE TEMP B-TREE FOR ORDER BY` and sorts every match — hence the linear growth,
+and hence 9 ms of **blocking** work on the event loop (`node:sqlite` is
+synchronous). Scanning newest-first through the primary key `(session_id, seq)`
+makes `ORDER BY seq DESC LIMIT` free and lets the scan stop as soon as enough
+matches are seen; it is bounded by `PREFIX_SCAN_BUDGET = 5000` rows and falls
+back to the range seek, which is the cheap path precisely when the prefix is
+sparse. `limit` matches inside the newest budget *are* the newest `limit`
+matches, so the two paths cannot disagree.
+
+No pagination, deliberately: the gesture wants the newest K matches, which is a
+top-K query, and a page of a prefix would put the *older* matches first —
+paging the gesture would make it wrong, not faster. A browsing UI (or the
+agent-facing query of item 3) is where paging belongs. And still no trie: for a
+strict prefix the B-tree is the same structure a trie would be, without a second
+in-memory copy to rebuild (see the note in Phase 10.5).
+
+Acceptance check:
+
+- 24 behavioural checks against the built libs: every draft agrees with a
+  brute-force computation over the raw rows (dense, sparse, deep, absent,
+  case-folded, empty), strict prefix never returns `grep` for `git`, timeline
+  order, `limit`, the fallback reaching rows older than the scan budget, the
+  newest-first statement's plan on the primary key with no temp B-tree, the
+  facade finding commands older than the 200-row window, and the JSON fallback
+  window keeping the same strict rule.
+- The fixture checks report, over 8k stored rows: dense prefix 171 µs, sparse
+  fallback 507 µs, empty draft 41 µs.
+- In the running harness, the route answers `draft: "npm l"` with only the
+  `npm login …` rows (the old rule would also have listed
+  `npm config set registry …`), `draft: "npm c"` with only the config row, and
+  an unknown prefix with none.
+- In the browser, the real gesture: `npm c` + ↑ left
+  `npm config set registry https://registry.npmjs.org/` in the composer with a
+  one-row list, and an empty draft + ↑ left `echo history-store-ok` (the newest
+  command) with the full ten-row list.
 
 

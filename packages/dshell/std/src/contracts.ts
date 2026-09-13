@@ -649,7 +649,20 @@ export interface DshellPtyRequest {
   readonly action: 'history'
   /** The session whose shell history to read. */
   readonly sessionId: string
-  /** Newest-commands cap; omitted means the bridge's own retention cap. */
+  /**
+   * The line being typed, when the caller wants the history searched rather
+   * than listed: only commands *starting with* it come back, compared
+   * case-insensitively. Omitted (or empty) means the newest commands, which is
+   * plain history for an empty composer.
+   *
+   * The query travels to the host because the host owns the index; a caller
+   * that filters locally can only ever see the rows it was sent.
+   */
+  readonly draft?: string | undefined
+  /**
+   * How many matching commands to answer with, newest first (the reply is still
+   * ordered oldest-first for the list). Omitted means the route's own cap.
+   */
   readonly limit?: number | undefined
 }
 

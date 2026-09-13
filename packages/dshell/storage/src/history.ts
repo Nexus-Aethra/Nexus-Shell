@@ -28,8 +28,9 @@
  * search is. `command` keeps the original text, which is what gets shown and
  * what replaces the draft.
  *
- * Three measured facts shape the queries; the first two were confirmed with
- * `EXPLAIN QUERY PLAN` against this exact schema:
+ * Four measured facts shape the queries; each was confirmed with
+ * `EXPLAIN QUERY PLAN` and timings against this exact schema at 200k commands
+ * in one session:
  *
  * - `LIKE ?` with a bound prefix argument never uses the prefix index: SQLite
  *   refuses the LIKE optimization for a bound parameter, so with a session
@@ -37,16 +38,25 @@
  *   (session_id=?)` — the index serves the session term and every one of that
  *   session's rows is tested against the pattern. The range form
  *   `command_norm >= ? AND command_norm < ?` turns the prefix itself into an
- *   index seek, which is what keeps an uncapped history cheap.
+ *   index seek.
+ * - The range form alone is not enough, because the index is ordered by
+ *   `command_norm` while "the newest matches" is ordered by `seq`: the plan
+ *   gains `USE TEMP B-TREE FOR ORDER BY` and sorts *every* match, so a
+ *   20k-match prefix cost 9.1 ms and a 10k-match one 4.7 ms. Scanning newest
+ *   first instead — the primary key's `(session_id, seq)` order plus
+ *   `ORDER BY seq DESC LIMIT` — lets SQLite stop as soon as enough matches are
+ *   seen and cost 0.11 ms / 0.23 ms for the same answers. It is bounded by
+ *   {@link PREFIX_SCAN_BUDGET} rows and falls back to the range seek, which is
+ *   the cheap one for a sparse prefix (0.005 ms with no match).
  * - `PRAGMA synchronous = NORMAL` under WAL: history is best-effort by an
  *   existing contract ("losing a line of history must never cost the session
  *   anything"), and the session event log owns real durability.
  *
- * Note on the shell's gesture as it stands: `mode`'s `requestHistory` filters
- * with `commonPrefix(command, query) > 0` (first character equal) and takes the
- * newest 60, although its docstring describes longest-prefix ranking.
- * `matchPrefix` is the strict-prefix query, so wiring a route to it is a
- * behaviour decision, not a performance one.
+ * The composer's up-arrow gesture sends its draft here (the route maps the wire
+ * request onto {@link HistoryStore.matchPrefix}), so the first-character filter
+ * that used to run in `mode` — `commonPrefix(command, query) > 0`, which listed
+ * `grep -r git .` for a draft of `git` — is gone. Strict prefix is the whole
+ * matching rule now, in the store and in the client's fallback window.
  */
 
 import { mkdirSync, openSync, closeSync } from 'node:fs'
@@ -66,6 +76,19 @@ interface CommandRow {
   readonly exit_code: number | null
   readonly at: number
 }
+
+/**
+ * How many of a session's newest commands a prefix search scans before it gives
+ * up on the newest-first path and lets the range seek answer.
+ *
+ * The scan wants the newest matches, and matches are usually dense near the
+ * draft (a shell repeats what it has run), so a few thousand rows cover the
+ * normal case at a bounded cost. A sparse prefix is the case the range seek
+ * exists for, and it is the *cheap* path there. Measured at 200k rows in one
+ * session: 5000 keeps every dense draft under 0.25 ms, and the miss case (scan
+ * 5000, find nothing, fall back) at 0.68 ms.
+ */
+const PREFIX_SCAN_BUDGET = 5_000
 
 /**
  * The exclusive upper bound of every string starting with `prefix`.
@@ -172,6 +195,20 @@ function openStore(path: string): HistoryStore {
     WHERE session_id = ? AND command_norm >= ?
     ORDER BY seq DESC LIMIT ?
   `)
+  // The newest-first variants: `seq > ?` keeps the primary key's
+  // `(session_id, seq)` order usable, so ORDER BY seq DESC needs no sort and
+  // LIMIT stops the scan early.
+  const bounded = db.prepare(`
+    SELECT seq, command, exit_code, at FROM commands
+    WHERE session_id = ? AND seq > ? AND command_norm >= ? AND command_norm < ?
+    ORDER BY seq DESC LIMIT ?
+  `)
+  const boundedOpen = db.prepare(`
+    SELECT seq, command, exit_code, at FROM commands
+    WHERE session_id = ? AND seq > ? AND command_norm >= ?
+    ORDER BY seq DESC LIMIT ?
+  `)
+  const head = db.prepare('SELECT max(seq) AS s FROM commands WHERE session_id = ?')
   const drop = db.prepare('DELETE FROM commands WHERE session_id = ?')
   const tally = db.prepare('SELECT count(*) AS n FROM commands WHERE session_id = ?')
   let closed = false
@@ -207,13 +244,28 @@ function openStore(path: string): HistoryStore {
       if (closed || limit <= 0) return []
       const norm = draft.toLowerCase()
       if (norm.length === 0) return this.recent(sessionId, limit)
-      // One range query, not a descending probe: under a *strict* prefix every
-      // match shares the whole draft, so "longest shared prefix" has nothing to
-      // rank — recency is the only meaningful order. (Ranking by partial
-      // overlap would be fuzzy matching, where `grep` deserves to sit below
-      // `git` for a draft of `g`; that is a different query and belongs with the
-      // caller, over a bounded candidate set.)
+      // Strict prefix, not a descending probe: under `startsWith` every match
+      // shares the whole draft, so "longest shared prefix" has nothing to rank —
+      // recency is the only meaningful order. (Ranking by partial overlap would
+      // be fuzzy matching, where `grep` deserves to sit below `git` for a draft
+      // of `g`; that is a different query and belongs with the caller, over a
+      // bounded candidate set.)
       const upper = prefixUpperBound(norm)
+      // Newest-first first: the answer is the newest `limit` matches, and the
+      // primary key's order is already the order they are wanted in, so the scan
+      // can stop the moment it has enough. `limit` matches inside the newest
+      // budget *are* the newest `limit` matches, which is why this path needs no
+      // tie-break with the range query below.
+      const newestSeq = (head.get(sessionId) as { s?: number | null } | undefined)?.s ?? null
+      if (newestSeq !== null) {
+        const floor = newestSeq - Math.max(PREFIX_SCAN_BUDGET, limit * 4)
+        const scanned = asRows(upper === undefined
+          ? boundedOpen.all(sessionId, floor, norm, limit)
+          : bounded.all(sessionId, floor, norm, upper, limit))
+        if (scanned.length >= limit) return scanned.map(toRecord).reverse()
+      }
+      // Sparse or absent prefix: the range seek answers from the index, and with
+      // few matches the sort the plan adds costs nothing.
       return asRows(upper === undefined
         ? bandOpen.all(sessionId, norm, limit)
         : band.all(sessionId, norm, upper, limit)).map(toRecord).reverse()
