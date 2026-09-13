@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Nexus-Aethra/Nexus-Shell.git",
+    "url": "git+https://github.com/Nexus-Aethra/Nexus-Terminal.git",
     "directory": "packages/dshell/storage"
   },
   "type": "module",

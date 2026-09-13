@@ -6,10 +6,10 @@ a fresh machine.
 
 ## Branch model
 
-Development happens on `dev`; `master` holds stable phase boundaries
-only. Every phase lands on `dev` and is merged back to `master`
-(usually a fast-forward) once its acceptance check passes. Do not
-commit directly to `master`.
+Development happens on `dev`; `main` holds the released line only.
+Work lands on `dev` and is squash-merged into `main` through a pull
+request once its acceptance check passes. Do not commit directly to
+`main`.
 
 ## Required tools
 
