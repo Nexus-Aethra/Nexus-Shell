@@ -246,16 +246,19 @@ when it contributes to model-visible state.
     provider that resolves a bound session's tree over SSH. It also
     publishes `dshellSshRouting` for packages that need to know which
     device a session runs on.
-  - Credential and host-trust posture (Phase 10.10, see `src/runner.ts`):
-    a device with a stored key connects with **only** that key
-    (`IdentitiesOnly=yes` — without it the user's ssh agent is offered
-    first and can authenticate as the wrong identity), password devices
-    pin `PreferredAuthentications=password` + `PubkeyAuthentication=no` +
-    one prompt and hand the secret over through the askpass hook, host keys
-    are trusted into `$DSH_HOME/dshell/ssh/known_hosts` rather than the
-    user's personal file, and the connection-sharing socket is keyed by
-    device (`%C` + a digest of the id) so two devices reaching the same
-    account cannot share one authenticated master.
+  - Credential and host-trust posture (Phase 10.10, see `src/runner.ts` and
+    `src/host-key.ts`): a device with a stored key connects with **only** that
+    key (`IdentitiesOnly=yes` — without it the user's ssh agent is offered
+    first and can authenticate as the wrong identity), password devices pin
+    `PreferredAuthentications=password` + `PubkeyAuthentication=no` + one prompt
+    and hand the secret over through the askpass hook, host keys are trusted
+    into `$DSH_HOME/dshell/ssh/known_hosts` rather than the user's personal
+    file, and the connection-sharing socket is named by a digest of the
+    destination and the device id (short enough for a unix socket path; dropped
+    entirely, with the connection made without reuse, where `$DSH_HOME` is too
+    deep for one). A successful connection **test** reports the fingerprint it
+    trusts — `主机密钥 SHA256:…（首次信任…／已信任）` — read back from that store,
+    since `accept-new` otherwise records a first contact silently.
   - **Browser face** provides the device card in the Plugins settings
     section and the `dshellSsh` service the session picker and the
     new-session dialog read.

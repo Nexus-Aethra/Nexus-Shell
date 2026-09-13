@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
+import { trustedHostKey } from './host-key.js'
 import { sshDeviceRoot } from './paths.js'
 import { isUnder, mountFor, remoteDirFor } from './mount.js'
 import { mountBase } from './paths.js'
@@ -325,6 +326,13 @@ export class SshRouter {
    * parent, no permission), and finding that out here keeps the new-session
    * dialog from creating a session that cannot work.
    *
+   * The result also names the host key dshell trusts for the device, because
+   * this action is where that trust is usually created: `accept-new` records an
+   * unknown host's key without asking, so without saying so afterwards the one
+   * decision the user could verify is also the one they never see. The trust is
+   * read before connecting as well, so a key this connection just learned is
+   * reported as first contact rather than as an established one.
+   *
    * @param deviceId - device to connect to.
    * @param ctx - host context holding the subprocess seam.
    * @param remoteRoot - session directory to also create; null checks nothing.
@@ -334,6 +342,7 @@ export class SshRouter {
     await this.refreshDevices()
     const device = this.connections.get(deviceId)
     if (device === undefined) throw new Error(`未知设备：${deviceId}`)
+    const trustedBefore = await trustedHostKey(device.host, device.port)
     const started = Date.now()
     const argv = sshArgv(device, 'printf "%s|%s|%s" "$(hostname)" "$(id -un)" "$(uname -sr)"')
     const env = sshEnv(device)
@@ -357,10 +366,13 @@ export class SshRouter {
     }
     const [host, user, system] = stdout.split('|')
     const line = `已连接 ${user ?? ''}@${host ?? device.host}（${system ?? '未知系统'}） · ${String(Date.now() - started)}ms`
+    const trusted = await trustedHostKey(device.host, device.port)
     // Same order the session's own start uses: connect, then make the
     // directory. A refusal here throws with ssh's own words.
     if (remoteRoot !== null) await this.ensureRemoteRoot(ctx, deviceId, remoteRoot)
-    return line
+    return trusted === undefined
+      ? line
+      : `${line}\n主机密钥 ${trusted}（${trustedBefore === undefined ? '首次信任，请与服务器管理员核对' : '已信任'}）`
   }
 
   /**

@@ -21,6 +21,17 @@ export function sshDeviceRoot(): string {
 }
 
 /**
+ * The host keys this plugin has trusted, one file for all devices.
+ *
+ * Deliberately not the harness user's `~/.ssh/known_hosts`: a device's host key
+ * is this plugin's own record, and mixing the two would make dshell's
+ * first-contact decisions that user's ssh client's as well.
+ */
+export function sshKnownHostsPath(): string {
+  return join(sshDeviceRoot(), 'known_hosts')
+}
+
+/**
  * Root of the local mount directories that stand in for remote trees.
  *
  * A device-bound session's working directory has to exist on THIS machine —

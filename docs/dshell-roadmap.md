@@ -766,8 +766,8 @@ Shipped since (the session now works in ONE place):
   fails with a message that says so (install ripgrep on the device, or the
   search tools have nothing to run).
 - **Connections are multiplexed** (`ControlMaster`, one socket per *device*
-  under `$DSH_HOME/dshell/ssh/ctl/` — `%C` plus a digest of the device id, since
-  `%C` alone keys only on the destination; Phase 10.10): one file read is a
+  under `$DSH_HOME/dshell/ssh/ctl/`, named by a digest of the destination and the
+  device id — Phase 10.10): one file read is a
   resolve, a stat and a cat, and a fresh connection each time costs a full
   handshake and authentication.
 - The new-session dialog keeps the run target visible when no device is
@@ -1995,15 +1995,32 @@ defects and two permission/leak surfaces.
   port and remote user, so two device records reaching the same account shared
   one master connection and whichever authenticated first served the other;
   changing a password or key did not invalidate that master for
-  `ControlPersist=120s`. The path is now `%C` plus a 12-hex digest of the device
-  id (a digest rather than the id itself because an id may be 64 characters and
-  a unix socket path is limited to about 108).
+  `ControlPersist=120s`. The path is now a 16-hex digest of the destination
+  *and* the device id, with the destination included so that editing a device's
+  host cannot leave a master authenticated to the old one in place. Not `%C`:
+  its 40 characters leave too little of the ~108 byte unix socket path for
+  `ssh`'s own listener name once `$DSH_HOME` is deep, and an over-long path does
+  not merely disable sharing — ssh fails the connection — so when the path would
+  not fit, the control options are dropped and the connection is made without
+  reuse.
 - **Host trust stays the plugin's own.** `StrictHostKeyChecking=accept-new`
   with no `UserKnownHostsFile` was writing dshell's first-contact decisions into
   the user's personal `~/.ssh/known_hosts` — hash-aware `ssh-keygen -F` found
   the rig and the remote server there — and reading it back. The option now
   points at `$DSH_HOME/dshell/ssh/known_hosts`, beside the keys, so dshell's
   trust and the user's ssh client's trust are separate stores.
+- **The trusted host key is shown.** `accept-new` records an unknown host's key
+  without asking, so the one decision the user could verify was also the one
+  they never saw: a successful Test reported only `已连接 user@host（system）· Nms`,
+  and the `Permanently added …` line ssh prints went to a stderr that is only
+  read on failure. `router.test` now reads this plugin's own `known_hosts` with
+  `ssh-keygen -F` (which resolves hashed entries) before and after connecting and
+  appends `主机密钥 SHA256:…（首次信任，请与服务器管理员核对）` or `（已信任）` — so
+  first contact is announced by name, and the fingerprint is there to compare
+  against an out-of-band value. It is read back from the local store on purpose:
+  a fingerprint the device reports would travel over the very connection whose
+  identity is in question. `host-key.ts` computes OpenSSH's `SHA256:` spelling
+  from the key blob in JS, cross-checked against `ssh-keygen -l`.
 - **Terminal transcripts are owner-only.** `$DSH_HOME/dshell-pty/` was `0775`
   with `0664` files while `history.sqlite` was already `0600`; a transcript holds
   everything the shell printed and (see the splitter) every line the user typed,
@@ -2018,16 +2035,25 @@ defects and two permission/leak surfaces.
 devices report `identitiesonly yes` with the device key as the only
 `identityfile` and `userknownhostsfile …/dshell/ssh/known_hosts`; a key device
 with no stored secret still reports `identitiesonly no`; password devices keep
-their pins; the two devices now hash to different socket paths and the whole path
-is 83 bytes. A live handshake against the local rig showed a fresh connection
-offering exactly one key — the device key — with no agent identity offered, and a
-second connection riding the master with zero offers. A `PtyBuffer` opened over a
-fixture that started `0775`/`0664` came back `0700`/`0600`, as did a log created
-from scratch, its timeline sidecar and a blocks json.
+their pins; the two devices hash to different socket paths, each short enough to
+leave room for ssh's listener name. A live handshake against the local rig showed
+a fresh connection offering exactly one key — the device key — with no agent
+identity offered, and a second connection riding the master with zero offers. A
+`PtyBuffer` opened over a fixture that started `0775`/`0664` came back
+`0700`/`0600`, as did a log created from scratch, its timeline sidecar and a
+blocks json.
 
-**Still open (needs a decision, not a patch):** whether a first contact should
-show a host-key fingerprint before it is trusted (the Test action reports
-hostname/user/uname but no fingerprint); whether the newest-command window
+The host-key line was verified by driving the real `router.test` against the rig
+with a stand-in subprocess service: against the real store it reports
+`已信任` with the same fingerprint `ssh-keygen -lF` reports, and
+`trustedHostKey` returns `undefined` for a device that is not trusted yet. Run
+against an isolated `DSH_HOME` with an empty store, the same call reports
+`首次信任，请与服务器管理员核对` and leaves the rig's key in *that* store while the
+personal one is untouched. A third run under a `DSH_HOME` too deep for any
+socket confirmed the fallback: the control options disappear and the connection
+still succeeds.
+
+**Still open (needs a decision, not a patch):** whether the newest-command window
 should skip lines typed at a prompt that is not a shell prompt, since a secret
 typed at a remote `sudo`/`psql`/passphrase prompt is currently recorded as a
 "command" and injected; and that a live master means a connection *test* cannot

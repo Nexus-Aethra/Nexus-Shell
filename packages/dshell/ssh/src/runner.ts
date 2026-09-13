@@ -21,25 +21,36 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { DeviceConnection } from './devices.js'
-import { sshDeviceRoot } from './paths.js'
+import { sshDeviceRoot, sshKnownHostsPath } from './paths.js'
+
+/** Linux's `sun_path` limit, and the room `ssh` needs for its own listener name. */
+const UNIX_SOCKET_PATH_MAX = 108
+const CONTROL_SOCKET_SLACK = 20
 
 /**
- * The control socket path for one device.
+ * The control socket path for one device, or undefined when it would not fit.
  *
- * `%C` is OpenSSH's own hash of the local host, the remote host and port and
- * the remote user — it says nothing about which device record or which
- * credential is in play, so two devices reaching the same account would share
- * one master connection, and whichever authenticated first would serve the
- * other. The device id is appended as a short digest: that separates them, and
- * keeps the path well inside the ~108 byte limit a unix socket path has (the
- * id itself may be up to 64 characters, so it cannot be appended verbatim).
+ * OpenSSH's own `%C` cannot be used here: it is a 40 character hash of the
+ * destination, which leaves too little of the ~108 byte unix socket path for
+ * `ssh`'s own temporary listener name once `$DSH_HOME` is more than a few
+ * directories deep — and an over-long path is not merely "no sharing", ssh
+ * fails the connection outright. A 16 hex character digest of the destination
+ * and the device id is short, fixed length, and still separates two device
+ * records that reach the same account, which is what `%C` alone got wrong (it
+ * ignores the record and its credential).
+ *
+ * The destination is part of the hash on purpose: editing a device's host must
+ * produce a different socket name, or an existing master authenticated to the
+ * old host could serve the new one.
  *
  * @param device - device the connection belongs to.
- * @returns the `ControlPath` value for that device.
+ * @returns the `ControlPath` value, or undefined when it would be too long.
  */
-function controlPath(device: DeviceConnection): string {
-  const tag = createHash('sha256').update(device.id).digest('hex').slice(0, 12)
-  return join(sshDeviceRoot(), 'ctl', `%C-${tag}`)
+function controlPath(device: DeviceConnection): string | undefined {
+  const destination = `${device.id}\n${device.user}@${device.host}:${String(device.port)}`
+  const tag = createHash('sha256').update(destination).digest('hex').slice(0, 16)
+  const path = join(sshDeviceRoot(), 'ctl', tag)
+  return path.length + CONTROL_SOCKET_SLACK > UNIX_SOCKET_PATH_MAX ? undefined : path
 }
 
 /**
@@ -55,6 +66,7 @@ function controlPath(device: DeviceConnection): string {
  * @returns the `-o` option words, in order.
  */
 function baseOptions(device: DeviceConnection): string[] {
+  const control = controlPath(device)
   return [
     // Trust on first use. The alternative — refusing unknown hosts — would make
     // a freshly added device unusable without a manual known_hosts edit.
@@ -63,16 +75,21 @@ function baseOptions(device: DeviceConnection): string[] {
     // user's. Without this, `accept-new` writes it into their personal
     // ~/.ssh/known_hosts, which makes dshell's first-contact decision their own
     // ssh client's too — and they never saw the fingerprint it trusted.
-    '-o', `UserKnownHostsFile=${join(sshDeviceRoot(), 'known_hosts')}`,
+    '-o', `UserKnownHostsFile=${sshKnownHostsPath()}`,
     '-o', 'ConnectTimeout=10',
     // Connection reuse. One tool call is several `ssh` invocations — a file read
     // is a resolve, a stat and a cat — and each fresh connection costs a TCP
     // handshake plus authentication (about a second against a remote host,
     // against roughly ten milliseconds over a shared master). Failure to create
-    // the socket is non-fatal under `auto`.
-    '-o', 'ControlMaster=auto',
-    '-o', `ControlPath=${controlPath(device)}`,
-    '-o', 'ControlPersist=120s',
+    // the socket is non-fatal under `auto`, but a path too long for a unix
+    // socket is fatal, so sharing is simply dropped rather than risked.
+    ...control === undefined
+      ? []
+      : [
+          '-o', 'ControlMaster=auto',
+          '-o', `ControlPath=${control}`,
+          '-o', 'ControlPersist=120s',
+        ],
     // Keepalives bound a master whose peer has gone away. Without them a
     // connection that dies half-open leaves a live control socket in front of a
     // dead sshd, and every later command and terminal hangs behind it with no

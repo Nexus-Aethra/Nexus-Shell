@@ -53,6 +53,10 @@ const fieldStyle: CSSProperties = {
 }
 const keyStyle: CSSProperties = { ...fieldStyle, gridColumn: '1 / -1', minHeight: 72, fontFamily: 'monospace', fontSize: 12 }
 const noteStyle: CSSProperties = { fontSize: 12, opacity: 0.65, gridColumn: '1 / -1' }
+/** The test result: two lines (what answered, then the host key) worth keeping apart. */
+const resultStyle: CSSProperties = {
+  ...noteStyle, whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
+}
 const errorStyle: CSSProperties = { fontSize: 12, color: '#f87171', gridColumn: '1 / -1' }
 const primaryStyle: CSSProperties = {
   border: 'none', background: 'var(--dsw-alias-brand-primary, #4f6bed)', color: '#fff',
@@ -256,7 +260,7 @@ export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
               ? '密码写入 $DSH_HOME/dshell/ssh/keys/<设备>.password（0600），连接时通过 OpenSSH 的 askpass 钩子交给 ssh，不出现在命令行里。'
               : '私钥写入 $DSH_HOME/dshell/ssh/keys/ 并设为 0600；编辑时留空表示不改动已存的凭据。'),
           snapshot.error !== undefined ? createElement('div', { style: errorStyle }, snapshot.error) : null,
-          snapshot.testResult !== undefined ? createElement('div', { style: noteStyle }, snapshot.testResult) : null,
+          snapshot.testResult !== undefined ? createElement('div', { style: resultStyle }, snapshot.testResult) : null,
           createElement('button', {
             type: 'button',
             style: primaryStyle,
