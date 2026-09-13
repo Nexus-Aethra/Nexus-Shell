@@ -14,23 +14,22 @@
  *   workspace's.
  * - the root `workspaces` standard hook that ConversationRoot requires.
  * - the `sidebar.workspaces` slot: a flat session list replaces the
- *   workspace-grouped browser, keeping multi-session navigation intact.
+ *   workspace-grouped browser, keeping multi-session navigation intact. Its
+ *   archive group and destructive delete ride the package's own
+ *   `/api/dshell/sessions` route (session-list.tsx / archive.ts).
  *
  * React reaches the component through the shell's frozen module table
  * (PLATFORM_MODULES), which is why 'react' is an external in the dshell
  * client bundle preset.
  */
 
-import { createElement, useSyncExternalStore, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement } from 'react'
-import { Service, type Context } from '@deepseek-ai/cordis'
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { Context } from '@deepseek-ai/cordis'
+import { Service } from '@deepseek-ai/cordis'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Type-only: `ctx.remote` plus the mounted `agentPresets` namespace merge.
 import type { DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
-import type {
-  ISessions,
-  SessionListState,
-} from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the Session Controller service merges.
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type {
@@ -44,19 +43,17 @@ import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 // Type-only: pulls ui-sidebar's SlotMap merge ('sidebar.workspaces' hole).
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+// Type-only: pulls the `dshellBuffer` service merge the pipe entry toggles.
+import type {} from '@nexus-aethra/dshell-buffer/client'
+import type { SshSnapshot } from '@nexus-aethra/dshell-ssh/client'
+import { SessionPanelClient } from './archive.js'
+import { newSessionDialog } from './dialog-store.js'
+import { activeRows, directoryName, presetChoices, type PresetChoice, type SessionRow } from './rows.js'
+import { FlatSessionList, type DeviceSeat, type FlatSessionListProps } from './session-list.js'
 
-export const name = '@deepseek-ai/dsh-dshell-workspace/client'
+export const name = '@nexus-aethra/dshell-workspace/client'
 
-export const inject = ['slots', 'sessions'] as const
-
-/**
- * New-session dialog signal. The `uiWorkspace.startSession` stand-in is
- * called by dsh's sidebar chrome button, which cannot render dshell UI —
- * the store bridges that service call to the dialog living inside the
- * flat list. Module-level on purpose: one browser window owns one shell
- * (design § 2).
- */
-const newSessionDialog = createSnapshotStore(false)
+export const inject = ['slots', 'sessions', 'remote', 'remote.agentPresets'] as const
 
 /** The permanent projection of a shell without workspaces. */
 const EMPTY_WORKSPACES: WorkspaceSnapshot = {
@@ -74,7 +71,7 @@ class DshellWorkspaces extends Service implements IWorkspaces {
     subscribe: () => () => {},
   }
 
-  constructor(ctx: Context) {
+  constructor(ctx: Context, private readonly panel: SessionPanelClient) {
     super(ctx, 'workspaces')
   }
 
@@ -94,45 +91,23 @@ class DshellWorkspaces extends Service implements IWorkspaces {
     throw new Error('dshell: workspace management is removed (dshell design 4.7)')
   }
 
-  async archiveSession(): Promise<void> {}
+  /** The stock client archive entry, pointed at dshell's own tag store. */
+  async archiveSession(sessionId: SessionId): Promise<void> {
+    await this.panel.archive(String(sessionId))
+  }
 
   async insertSessionBefore(): Promise<WorkspaceView> {
     throw new Error('dshell: workspace management is removed (dshell design 4.7)')
   }
 }
 
-/** dshell session creation: cwd-carrying sessions, never workspace-bound. */
-interface SessionRow {
-  id: SessionId
-  cwd: string | undefined
-  blank: boolean
-  origin: 'subagent' | undefined
-  running: boolean
-  displayTitle: string
-  updatedAt: number
-}
-
-function ordinaryRows(state: SessionListState): SessionRow[] {
-  const rows: SessionRow[] = []
-  for (const id of state.ids) {
-    const row = state.byId[id]
-    if (row === undefined || row.origin === 'subagent') continue
-    rows.push({
-      id: row.id,
-      cwd: row.cwd,
-      blank: row.blank,
-      origin: row.origin,
-      running: row.running,
-      displayTitle: row.displayTitle,
-      updatedAt: row.updatedAt,
-    })
-  }
-  return rows.sort((left, right) => right.updatedAt - left.updatedAt)
-}
-
 /** `uiWorkspace` stand-in: cwd-based session flows and boot navigation. */
 class DshellUiWorkspace extends Service implements UiWorkspace {
-  constructor(ctx: Context, private readonly sessions: ISessions) {
+  constructor(
+    ctx: Context,
+    private readonly sessions: ISessions,
+    private readonly panel: SessionPanelClient,
+  ) {
     super(ctx, 'uiWorkspace')
     ctx.effect(() => this.watchBootNavigation(), 'dshell-workspace: boot navigation')
   }
@@ -141,13 +116,41 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
     return await this.openBlankSession()
   }
 
+  /**
+   * dsh navigation action (rc.1): select a Session. dshell keeps dsh's own
+   * selection semantics, so this is the stock `open`.
+   */
+  openSession(sessionId: SessionId): void {
+    this.sessions.open(sessionId)
+  }
+
+  /**
+   * dsh navigation action (rc.1): "open a Workspace". dshell has no
+   * workspaces (design 4.7), so the action lands on the terminal-continuity
+   * blank session instead — the same target `connectWorkspace` uses.
+   */
+  async openWorkspace(_workspaceId: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void): Promise<void> {
+    const sessionId = await this.openBlankSession()
+    beforeOpen?.(sessionId)
+    this.sessions.open(sessionId)
+  }
+
+  /** dsh navigation action (rc.1): fork a Session and open the child. */
+  async forkSession(sessionId: SessionId): Promise<void> {
+    const child = await this.sessions.fork({ sessionId })
+    this.sessions.open(child)
+  }
+
   startSession(_workspaceId?: WorkspaceId): void {
     // The stock New-Session affordance opens dshell's naming dialog instead
     // of creating silently (design 4.7 naming paragraph).
     newSessionDialog.set(true)
   }
 
-  async archiveSession(_sessionId: SessionId): Promise<void> {}
+  /** The stock archive entry, pointed at dshell's own tag store. */
+  async archiveSession(sessionId: SessionId): Promise<void> {
+    await this.panel.archive(String(sessionId))
+  }
 
   async pickDirectory(): Promise<string | null> {
     throw new Error('dshell: directory picking is removed (dshell design 4.7)')
@@ -161,11 +164,36 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
     throw new Error('dshell: directory picking is removed (dshell design 4.7)')
   }
 
+  /**
+   * Rows continuity flows may land on: archived sessions are still real, but
+   * they are not what "the last session I used" means to the reader.
+   */
+  private visibleRows(): SessionRow[] {
+    return activeRows(this.sessions.list.getSnapshot(), this.panel.getSnapshot().archived)
+  }
+
+  /** The cwd a new session lands in: the requested one, else the most recent session's. */
+  private resolveCwd(cwd: string | undefined): string | undefined {
+    if (cwd !== undefined && cwd !== '') return cwd
+    return this.visibleRows().find(row => !row.blank)?.cwd
+  }
+
   /** Create a session bound to `cwd`; absent cwd falls back to the most recent session's directory, then the server default. */
   private async createCwdSession(cwd: string | undefined): Promise<SessionId> {
-    if (cwd !== undefined) return await this.sessions.create({ cwd })
-    const fallback = ordinaryRows(this.sessions.list.getSnapshot()).find(row => !row.blank)?.cwd
-    return await this.sessions.create({ ...(fallback === undefined ? {} : { cwd: fallback }) })
+    const target = this.resolveCwd(cwd)
+    return await this.sessions.create({ ...(target === undefined ? {} : { cwd: target }) })
+  }
+
+  /**
+   * The new-session dialog's roster. A deployment without the preset service
+   * reports `gateway/invocation-unavailable`, which is not an error here:
+   * every session then composes from the host default.
+   * @returns the selectable presets, empty when none are available.
+   */
+  async listPresets(): Promise<PresetChoice[]> {
+    const result = await this.ctx.remote.agentPresets.list()
+    if (!result.ok) return []
+    return presetChoices(result.value.presets)
   }
 
   /**
@@ -175,7 +203,7 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
    * so repeated new-session actions do not pile up empty shells.
    */
   private async openBlankSession(): Promise<SessionId> {
-    const rows = ordinaryRows(this.sessions.list.getSnapshot())
+    const rows = this.visibleRows()
     const targetCwd = rows.find(row => !row.blank)?.cwd
     const reusable = targetCwd === undefined
       ? undefined
@@ -186,16 +214,24 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
 
   /**
    * Create a named session through the new-session dialog (design 4.7
-   * naming paragraph): `sessions.create({ cwd })` then one durable rename
-   * through the session face. Auto-titling may overwrite the name on the
-   * first message — same lifetime as a stock sidebar rename.
+   * naming paragraph): pick the agent preset while the session is still
+   * blank (a started session refuses the switch), then one durable rename
+   * through the session face. An empty name falls back to the directory
+   * name the placeholder promises; pinning that title is what stops the
+   * first message's automatic title from renaming the session.
    */
-  async createNamedSession(name: string | undefined, cwd: string | undefined): Promise<SessionId> {
-    const sessionId = await this.createCwdSession(cwd)
-    if (name !== undefined && name !== '') {
+  async createNamedSession(name: string | undefined, cwd: string | undefined, presetId?: string): Promise<SessionId> {
+    const target = this.resolveCwd(cwd)
+    const sessionId = await this.createCwdSession(target)
+    if (presetId !== undefined && presetId !== '') {
+      const selected = await this.ctx.remote.agentPresets.select(sessionId, presetId)
+      if (!selected.ok) console.warn('dshell: agent preset select failed:', selected.error.message)
+    }
+    const title = name === undefined || name === '' ? directoryName(target) : name
+    if (title !== undefined && title !== '') {
       const binding = this.sessions.binding(sessionId)
       if (binding !== undefined) {
-        const result = await binding.session.rename(name)
+        const result = await binding.session.rename(title)
         if (!result.ok) console.warn('dshell: session rename failed:', result.error.message)
       }
     }
@@ -213,234 +249,31 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
       if (!armed) return
       const state = this.sessions.list.getSnapshot()
       if (state.phase !== 'ready') return
+      // The archive set decides which sessions are on stage; opening the most
+      // recent one before it arrives would resurrect an archived session.
+      if (!this.panel.getSnapshot().loaded) return
       armed = false
-      if (state.current !== undefined) return
-      const latest = ordinaryRows(state).at(0)
+      const archived = this.panel.getSnapshot().archived
+      // dsh restores the last selection from browser storage, so a reload can
+      // land on a session that has since been archived — an archived session
+      // belongs to the collapsed group, not to the main area.
+      const current = state.current
+      if (current !== undefined && !archived.includes(String(current))) return
+      const latest = activeRows(state, archived).at(0)
       if (latest !== undefined) this.sessions.open(latest.id)
+      else if (current !== undefined) this.sessions.clear()
     }
     const dispose = this.sessions.list.subscribe(reconcile)
+    // The boot target depends on the archive set, so the tag load is a trigger
+    // too: whichever of the two facts arrives last decides.
+    const disposePanel = this.panel.subscribe(reconcile)
     reconcile()
     return () => {
       armed = false
       dispose()
+      disposePanel()
     }
   }
-}
-
-/** Props the sidebar slot injects into the flat session list. */
-interface FlatSessionListProps {
-  sessions: {
-    getSnapshot: () => SessionListState
-    subscribe: (listener: () => void) => () => void
-  }
-  createSession(name: string | undefined, cwd: string | undefined): Promise<void>
-  open(sessionId: SessionId): void
-}
-
-const listStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  minHeight: 0,
-  flex: 1,
-  overflow: 'hidden',
-}
-const headerStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '4px 8px',
-  fontSize: 12,
-  opacity: 0.75,
-}
-const newButtonStyle: CSSProperties = {
-  border: 'none',
-  background: 'transparent',
-  color: 'inherit',
-  cursor: 'pointer',
-  fontSize: 12,
-  padding: '2px 6px',
-}
-const rowStyle: CSSProperties = {
-  padding: '6px 10px',
-  cursor: 'pointer',
-  fontSize: 13,
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-}
-const emptyStyle: CSSProperties = {
-  padding: '8px 10px',
-  fontSize: 12,
-  opacity: 0.5,
-}
-const backdropStyle: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0, 0, 0, 0.55)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 1000,
-}
-const dialogStyle: CSSProperties = {
-  background: '#1b1b1f',
-  border: '1px solid #33333a',
-  borderRadius: 10,
-  padding: 18,
-  width: 400,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  color: '#e8e8ec',
-}
-const dialogTitleStyle: CSSProperties = { fontSize: 15, fontWeight: 600 }
-const fieldLabelStyle: CSSProperties = { fontSize: 12, opacity: 0.7, marginBottom: 4 }
-const fieldInputStyle: CSSProperties = {
-  width: '100%',
-  boxSizing: 'border-box',
-  background: '#101013',
-  border: '1px solid #3a3a42',
-  borderRadius: 6,
-  color: 'inherit',
-  padding: '7px 9px',
-  fontSize: 13,
-  outline: 'none',
-}
-const dialogErrorStyle: CSSProperties = { color: '#f87171', fontSize: 12 }
-const dialogActionsStyle: CSSProperties = {
-  display: 'flex',
-  gap: 8,
-  justifyContent: 'flex-end',
-}
-const cancelButtonStyle: CSSProperties = {
-  border: '1px solid #3a3a42',
-  background: 'transparent',
-  color: 'inherit',
-  cursor: 'pointer',
-  borderRadius: 6,
-  padding: '6px 14px',
-  fontSize: 13,
-}
-const createButtonStyle: CSSProperties = {
-  border: 'none',
-  background: '#4f6bed',
-  color: '#fff',
-  cursor: 'pointer',
-  borderRadius: 6,
-  padding: '6px 14px',
-  fontSize: 13,
-}
-
-/**
- * The new-session dialog (design 4.7 naming paragraph): optional name and
- * starting directory, defaulted to terminal continuity (the most recent
- * session's cwd). Confirm creates the session, renames it durably, and
- * opens it; failures surface inline and keep the dialog up.
- */
-function NewSessionDialog(props: {
-  defaultCwd: string | undefined
-  createSession(name: string | undefined, cwd: string | undefined): Promise<void>
-}): ReactElement {
-  const [name, setName] = useState('')
-  const [dir, setDir] = useState(props.defaultCwd ?? '')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const submit = async (): Promise<void> => {
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    try {
-      await props.createSession(
-        name.trim() === '' ? undefined : name.trim(),
-        dir.trim() === '' ? undefined : dir.trim(),
-      )
-      newSessionDialog.set(false)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return createElement('div', {
-    style: backdropStyle,
-    onClick: (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (event.target === event.currentTarget && !busy) newSessionDialog.set(false)
-    },
-  },
-    createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
-      createElement('div', { style: dialogTitleStyle }, '新会话'),
-      createElement('div', null,
-        createElement('div', { style: fieldLabelStyle }, '名称'),
-        createElement('input', {
-          style: fieldInputStyle,
-          value: name,
-          autoFocus: true,
-          placeholder: '可选，留空则用目录名',
-          onChange: (event) => { setName(event.target.value) },
-          onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
-        })),
-      createElement('div', null,
-        createElement('div', { style: fieldLabelStyle }, '起始目录'),
-        createElement('input', {
-          style: fieldInputStyle,
-          value: dir,
-          placeholder: props.defaultCwd === undefined ? '服务器默认目录' : '会话的工作目录',
-          onChange: (event) => { setDir(event.target.value) },
-          onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
-        })),
-      error !== null ? createElement('div', { style: dialogErrorStyle }, error) : null,
-      createElement('div', { style: dialogActionsStyle },
-        createElement('button', {
-          style: cancelButtonStyle,
-          disabled: busy,
-          onClick: () => { newSessionDialog.set(false) },
-        }, '取消'),
-        createElement('button', {
-          style: createButtonStyle,
-          disabled: busy,
-          onClick: () => { void submit() },
-        }, busy ? '创建中…' : '创建'),
-      ),
-    ))
-}
-
-/** Flat session browser: dshell's replacement for the workspace-grouped list. */
-function FlatSessionList(props: FlatSessionListProps): ReactElement {
-  const state = useSyncExternalStore(props.sessions.subscribe, props.sessions.getSnapshot)
-  const dialogOpen = useSyncExternalStore(newSessionDialog.subscribe, newSessionDialog.getSnapshot)
-  const rows = ordinaryRows(state)
-  const defaultCwd = rows.find(row => !row.blank)?.cwd
-  const children = [
-    createElement(
-      'div',
-      { key: 'header', style: headerStyle },
-      createElement('span', null, `会话 (${rows.length})`),
-      createElement(
-        'button',
-        { style: newButtonStyle, onClick: () => { newSessionDialog.set(true) } },
-        '＋ 新会话',
-      ),
-    ),
-  ]
-  if (rows.length === 0) {
-    children.push(createElement('div', { key: 'empty', style: emptyStyle }, '暂无会话'))
-  }
-  for (const row of rows) {
-    const selected = state.current === row.id
-    children.push(createElement(
-      'div',
-      {
-        key: row.id,
-        style: { ...rowStyle, fontWeight: selected ? 600 : 400, opacity: selected ? 1 : 0.8 },
-        onClick: () => { props.open(row.id) },
-      },
-      `${row.running ? '● ' : ''}${row.displayTitle}`,
-    ))
-  }
-  return createElement('div', { style: listStyle }, children,
-    dialogOpen
-      ? createElement(NewSessionDialog, { key: 'dialog', defaultCwd, createSession: props.createSession })
-      : null)
 }
 
 /**
@@ -449,34 +282,157 @@ function FlatSessionList(props: FlatSessionListProps): ReactElement {
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
-  const sessions = ctx.get('sessions') as ISessions
-  const workspaces = new DshellWorkspaces(ctx)
-  const uiWorkspace = new DshellUiWorkspace(ctx, sessions)
+  // The host SessionStore declaration is visible in this program too (the
+  // package compiles both halves at once), so the client contract needs the
+  // explicit two-step cast.
+  const sessions = ctx.get('sessions') as unknown as ISessions
+  const panel = new SessionPanelClient()
+  // The SSH plugin is a sibling row: present in the dshell bundle, absent in a
+  // composition that omits it, so the seat is filled by injection rather than
+  // assumed. List and dialog both tolerate its absence.
+  let deviceSeat: DeviceSeat | undefined
+  ctx.inject(['dshellSsh'], (sshCtx) => {
+    const ssh = sshCtx.dshellSsh
+    deviceSeat = {
+      getSnapshot: () => ssh.getSnapshot() as SshSnapshot,
+      subscribe: listener => ssh.subscribe(listener),
+      devices: () => ssh.getSnapshot().devices.map(device => ({
+        id: device.id,
+        name: device.name,
+        remoteRoot: device.remoteRoot,
+      })),
+      bind: (sessionId, deviceId, remoteRoot, mount) =>
+        ssh.bind(String(sessionId), deviceId, remoteRoot ?? null, mount ?? null),
+      mountFor: (deviceId, remoteRoot) => ssh.mountFor(deviceId, remoteRoot),
+      test: (deviceId, remoteRoot) => ssh.test(deviceId, remoteRoot),
+      revealSettings: () => ssh.revealInSettings(),
+      isMountPath: (path) => ssh.isMountPath(path),
+    }
+  })
+  const workspaces = new DshellWorkspaces(ctx, panel)
+  const uiWorkspace = new DshellUiWorkspace(ctx, sessions, panel)
+  void panel.load()
+
+  // The cross-session pipe entry, filled by injection like the device seat:
+  // present in the dshell bundle, absent in a composition that omits
+  // dshell-buffer — and then the header keeps its new-session button.
+  let pipe: { toggle: () => void } | undefined
+  ctx.inject(['dshellBuffer'], (bufferCtx) => {
+    pipe = { toggle: () => { bufferCtx.dshellBuffer.toggle() } }
+  })
 
   // ConversationRoot resolves its chip via the global useWorkspaces hook;
   // the empty 'pending' snapshot routes it to the cwd-label branch.
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
 
-  // Interim (removed with the Phase 4 scaffold takeover, design 4.8): the
-  // stock hero row hardcodes a WorkspaceChip whose label falls back to the
-  // session cwd. The row is plain scaffold, not a slot, so a plugin cannot
-  // unmount it — hide it with a stylesheet instead. The CSS-module suffix
-  // is stable; the hash prefix is not, hence the contains-selector.
+  // dshell is terminal-first: the blank-session hero banner ("探索未至之境")
+  // and its workspace chip fight the terminal surface, and neither is a slot,
+  // so a plugin cannot unmount them — hide/reposition with a stylesheet. The
+  // CSS-module suffixes are stable; the hash prefixes are not, hence the
+  // contains-selectors. Nothing here touches the active phase: the stock
+  // layout (docked composer + `conversation.view` area) is exactly where the
+  // dshell PTY canvas and composer belong, so it stays stock.
   ctx.effect(() => {
     const style = document.createElement('style')
-    style.dataset.dshell = 'hero-workspace-row-hide'
-    style.textContent = '[class*="heroWorkspaceRow"] { display: none !important; }'
+    style.dataset.dshell = 'hero-interim-hide'
+    style.textContent = [
+      '[class*="heroWorkspaceRow"] { display: none !important; }',
+      '[class*="headline"] { display: none !important; }',
+      // The view-tab strip stays visible: the terminal is one surface, but the
+      // trajectory ledger (`轨迹`, ui-trajectory) is a second reading of the
+      // same session worth switching to, and the strip dsh draws is exactly
+      // that switcher. It shows `会话` (dshell's block view) and `轨迹`; the
+      // stock `ui-chat` view is disabled in the bundle patch so it cannot add
+      // a third tab beside them. Nothing else about the strip is restyled —
+      // dsh owns its geometry and active-tab marking.
+      // Hero phase (no open session): pin the composer stack to the bottom of
+      // the scroll column instead of the stock vertical center. data-phase is
+      // a stable stock attribute on the conversation root.
+      '[data-phase="hero"] [class*="scrollBody"] { justify-content: flex-end !important; }',
+      '[class*="composerHero"] { padding-bottom: 14px !important; }',
+      // The composer is an input line, not a floating dialog card (design
+      // 4.8): strip the stock elevation (22px radius, surface fill, soft
+      // shadow, hairline stroke) and mark the boundary with one bottom rule
+      // that spans the terminal's content width. `data-phase` rides the
+      // conversation root, whose inherited geometry variables we retune to
+      // the canvas' own 10px inset.
+      '[data-phase] { --dsh-composer-side-clearance: 10px !important; --dsh-composer-card-max-width: 100% !important; }',
+      '[data-composer-card] {',
+      '  border-radius: 0 !important;',
+      '  background: transparent !important;',
+      '  box-shadow: none !important;',
+      '  --dsw-elevation-stroke-color: transparent !important;',
+      '  border-bottom: 1px solid var(--dsw-alias-border-l4) !important;',
+      '  padding: 6px 0 4px !important;',
+      '  gap: 8px !important;',
+      '}',
+      // The dashed pick-a-workspace ring only makes sense on a rounded card.
+      '[data-composer-card]::after { display: none !important; }',
+      // Stock chat-width drag handles (a col-resize strip whose ::after is a
+      // short 3px glow bar that lights up on hover). They resize the chat
+      // content width, which dshell's full-bleed canvas and composer ignore —
+      // in a terminal surface they read as a stray sliding light column.
+      '[class*="widthHandle"] { display: none !important; }',
+      // The submit affordance is a RETURN KEY, not a chat bubble. Stock draws
+      // a 34px filled blue circle with an up arrow, which reads as "send a
+      // chat message" — the wrong promise for a composer whose text goes
+      // straight into a shell. Transparency plus the key glyph says what the
+      // Enter key already does, so the button and the keyboard agree.
+      //
+      // Send and Stop share the `primary` class, so the glyph is selected by
+      // SHAPE, not by the aria-label (which is translated): the stop icon is
+      // an svg `rect`, the send icon an svg `path`. `:has()` keeps this
+      // language-independent, so a locale switch cannot move the styles.
+      '[class*="primary"]:has(svg path) {',
+      '  width: 28px !important;',
+      '  height: 28px !important;',
+      '  background: transparent !important;',
+      '  border-radius: 6px !important;',
+      '  color: var(--dsw-alias-label-tertiary) !important;',
+      // The stock circle lifts itself 2px to clear the row's top padding;
+      // a bare glyph belongs on the row's own baseline.
+      '  transform: none !important;',
+      '}',
+      '[class*="primary"]:has(svg path):hover:not(:disabled) {',
+      '  background: var(--dsw-alias-interactive-bg-hover) !important;',
+      '  color: var(--dsw-alias-label-primary) !important;',
+      '}',
+      '[class*="primary"]:has(svg path):disabled {',
+      '  background: transparent !important;',
+      '  opacity: 0.4 !important;',
+      '}',
+      '[class*="primary"]:has(svg path) > svg { display: none !important; }',
+      // The keycap: a return arrow (down, along, then back to the left). Drawn
+      // as a mask so `currentColor` still drives it and the disabled/hover
+      // colors above keep working — a background-image could not be recolored.
+      '[class*="primary"]:has(svg path)::after {',
+      '  content: \'\' !important;',
+      '  width: 15px;',
+      '  height: 15px;',
+      '  background-color: currentColor;',
+      '  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M12.7 2.7v4.9a2.5 2.5 0 0 1-2.5 2.5H3.4\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3Cpath d=\'M6.1 7.5 3.4 10.1l2.7 2.6\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3C/svg%3E") center / contain no-repeat;',
+      '  mask: url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M12.7 2.7v4.9a2.5 2.5 0 0 1-2.5 2.5H3.4\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3Cpath d=\'M6.1 7.5 3.4 10.1l2.7 2.6\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3C/svg%3E") center / contain no-repeat;',
+      '}',
+    ].join('\n')
     document.head.appendChild(style)
     return () => { style.remove() }
-  }, 'dshell-workspace: hero row interim hide')
+  }, 'dshell-workspace: hero interim hide')
 
   ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register(
     {
       name: 'sidebar.workspaces',
       inject: (): FlatSessionListProps => ({
         sessions: sessions.list,
-        createSession: (name, cwd) =>
-          uiWorkspace.createNamedSession(name, cwd).then((sessionId) => { sessions.open(sessionId) }),
+        panel,
+        device: deviceSeat,
+        pipe,
+        refresh: () => sessions.refresh(),
+        createSession: (name, cwd, presetId) =>
+          uiWorkspace.createNamedSession(name, cwd, presetId).then((sessionId) => {
+            sessions.open(sessionId)
+            return sessionId
+          }),
+        listPresets: () => uiWorkspace.listPresets(),
         open: (sessionId) => { sessions.open(sessionId) },
       }),
     },

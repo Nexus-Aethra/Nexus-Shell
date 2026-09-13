@@ -4,10 +4,61 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@deepseek-ai/cordis': link:./dsh/vendor/cordis
+  '@deepseek-ai/dsh-agent': link:./dsh/packages/core/agent
+  '@deepseek-ai/dsh-agent-presets': link:./dsh/packages/preset/agent-presets
+  '@deepseek-ai/dsh-api-remotes': link:./dsh/packages/api/remotes
+  '@deepseek-ai/dsh-api-session-controller': link:./dsh/packages/api/session-controller
+  '@deepseek-ai/dsh-api-workspace-controller': link:./dsh/packages/api/workspace-controller
+  '@deepseek-ai/dsh-client-connection': link:./dsh/packages/client/connection
+  '@deepseek-ai/dsh-client-locale': link:./dsh/packages/client/locale
+  '@deepseek-ai/dsh-client-store': link:./dsh/packages/client/store
+  '@deepseek-ai/dsh-client-ui-conversation': link:./dsh/packages/client/ui-conversation
+  '@deepseek-ai/dsh-client-ui-dockkit': link:./dsh/packages/client/ui-dockkit
+  '@deepseek-ai/dsh-client-ui-input-trigger': link:./dsh/packages/client/ui-input-trigger
+  '@deepseek-ai/dsh-client-ui-layout': link:./dsh/packages/client/ui-layout
+  '@deepseek-ai/dsh-client-ui-model-selection': link:./dsh/packages/client/ui-model-selection
+  '@deepseek-ai/dsh-client-ui-primitives': link:./dsh/packages/client/ui-primitives
+  '@deepseek-ai/dsh-client-ui-renderer': link:./dsh/packages/client/ui-renderer
+  '@deepseek-ai/dsh-client-ui-session': link:./dsh/packages/client/ui-session
+  '@deepseek-ai/dsh-client-ui-settings': link:./dsh/packages/client/ui-settings
+  '@deepseek-ai/dsh-client-ui-settings-plugins': link:./dsh/packages/client/ui-settings-plugins
+  '@deepseek-ai/dsh-client-ui-sidebar': link:./dsh/packages/client/ui-sidebar
+  '@deepseek-ai/dsh-client-ui-sidebar-right': link:./dsh/packages/client/ui-sidebar-right
+  '@deepseek-ai/dsh-client-ui-slots': link:./dsh/packages/client/ui-slots
+  '@deepseek-ai/dsh-client-ui-workspace': link:./dsh/packages/client/ui-workspace
+  '@deepseek-ai/dsh-commands': link:./dsh/packages/interaction/commands
+  '@deepseek-ai/dsh-fs': link:./dsh/packages/fs/fs
+  '@deepseek-ai/dsh-fs-local': link:./dsh/packages/fs/fs-local
+  '@deepseek-ai/dsh-fs-sandbox': link:./dsh/packages/fs/fs-sandbox
+  '@deepseek-ai/dsh-host-webserver': link:./dsh/packages/host/webserver
+  '@deepseek-ai/dsh-llm': link:./dsh/packages/llm/llm
+  '@deepseek-ai/dsh-sandbox': link:./dsh/packages/sandbox/sandbox
+  '@deepseek-ai/dsh-sandbox-local': link:./dsh/packages/sandbox/sandbox-local
+  '@deepseek-ai/dsh-sandbox-policy': link:./dsh/packages/sandbox/sandbox-policy
+  '@deepseek-ai/dsh-session': link:./dsh/packages/core/session
+  '@deepseek-ai/dsh-session-stats': link:./dsh/packages/session/session-stats
+  '@deepseek-ai/dsh-settings': link:./dsh/packages/settings/settings
+  '@deepseek-ai/dsh-shell': link:./dsh/packages/shell/shell
+  '@deepseek-ai/dsh-subprocess': link:./dsh/packages/subprocess/subprocess
+  '@deepseek-ai/dsh-subprocess-local': link:./dsh/packages/subprocess/subprocess-local
+  '@deepseek-ai/dsh-system-prompt': link:./dsh/packages/core/system-prompt
+  '@deepseek-ai/dsh-terminal': link:./dsh/packages/terminal/terminal
+  '@deepseek-ai/dsh-terminal-bash': link:./dsh/packages/terminal/terminal-bash
+  '@deepseek-ai/dsh-token-meter': link:./dsh/packages/llm/token-meter
+  '@deepseek-ai/dsh-tool-terminal': link:./dsh/packages/terminal/tool-terminal
+  '@deepseek-ai/dsh-tools': link:./dsh/packages/core/tools
+  '@deepseek-ai/schemastery': link:./dsh/vendor/schemastery
+  node-pty: link:./dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty
+
 importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
       tsx:
         specifier: ^4.23.13
         version: 4.23.13
@@ -15,8 +66,103 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/dshell/buffer:
+    dependencies:
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+      '@xyflow/react':
+        specifier: ^12.11.6
+        version: 12.11.6(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../dsh/vendor/cordis
+        version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-ui-layout':
+        specifier: link:../../../dsh/packages/client/ui-layout
+        version: link:../../../dsh/packages/client/ui-layout
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-fs':
+        specifier: link:../../../dsh/packages/fs/fs
+        version: link:../../../dsh/packages/fs/fs
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../dsh/packages/llm/llm
+        version: link:../../../dsh/packages/llm/llm
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../../../dsh/packages/sandbox/sandbox-policy
+        version: link:../../../dsh/packages/sandbox/sandbox-policy
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-shell':
+        specifier: link:../../../dsh/packages/shell/shell
+        version: link:../../../dsh/packages/shell/shell
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: link:../../../dsh/packages/core/system-prompt
+        version: link:../../../dsh/packages/core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../dsh/packages/core/tools
+        version: link:../../../dsh/packages/core/tools
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      tsdown:
+        specifier: ^0.22.14
+        version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/dshell/bundle:
     dependencies:
+      '@nexus-aethra/dshell-buffer':
+        specifier: workspace:^
+        version: link:../buffer
+      '@nexus-aethra/dshell-commands':
+        specifier: workspace:^
+        version: link:../commands
+      '@nexus-aethra/dshell-conversation':
+        specifier: workspace:^
+        version: link:../conversation
+      '@nexus-aethra/dshell-files':
+        specifier: workspace:^
+        version: link:../files
+      '@nexus-aethra/dshell-mode':
+        specifier: workspace:^
+        version: link:../mode
+      '@nexus-aethra/dshell-ssh':
+        specifier: workspace:^
+        version: link:../ssh
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+      '@nexus-aethra/dshell-storage':
+        specifier: workspace:^
+        version: link:../storage
+      '@nexus-aethra/dshell-terminal-bridge':
+        specifier: workspace:^
+        version: link:../terminal-bridge
+      '@nexus-aethra/dshell-workspace':
+        specifier: workspace:^
+        version: link:../workspace
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
@@ -26,21 +172,6 @@ importers:
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../dsh/packages/client/ui-conversation
         version: link:../../../dsh/packages/client/ui-conversation
-      '@deepseek-ai/dsh-dshell-commands':
-        specifier: link:../commands
-        version: link:../commands
-      '@deepseek-ai/dsh-dshell-conversation':
-        specifier: link:../conversation
-        version: link:../conversation
-      '@deepseek-ai/dsh-dshell-mode':
-        specifier: link:../mode
-        version: link:../mode
-      '@deepseek-ai/dsh-dshell-terminal-bridge':
-        specifier: link:../terminal-bridge
-        version: link:../terminal-bridge
-      '@deepseek-ai/dsh-dshell-workspace':
-        specifier: link:../workspace
-        version: link:../workspace
       '@deepseek-ai/dsh-sandbox-local':
         specifier: link:../../../dsh/packages/sandbox/sandbox-local
         version: link:../../../dsh/packages/sandbox/sandbox-local
@@ -59,7 +190,6 @@ importers:
       '@deepseek-ai/dsh-tool-terminal':
         specifier: link:../../../dsh/packages/terminal/tool-terminal
         version: link:../../../dsh/packages/terminal/tool-terminal
-    devDependencies:
       tsdown:
         specifier: ^0.22.14
         version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
@@ -69,10 +199,28 @@ importers:
 
   packages/dshell/commands:
     dependencies:
+      '@nexus-aethra/dshell-terminal-bridge':
+        specifier: workspace:^
+        version: link:../terminal-bridge
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
-    devDependencies:
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-commands':
+        specifier: link:../../../dsh/packages/interaction/commands
+        version: link:../../../dsh/packages/interaction/commands
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../dsh/packages/llm/llm
+        version: link:../../../dsh/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-tools':
+        specifier: link:../../../dsh/packages/core/tools
+        version: link:../../../dsh/packages/core/tools
       tsdown:
         specifier: ^0.22.14
         version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
@@ -81,17 +229,19 @@ importers:
         version: 6.0.3
 
   packages/dshell/conversation:
-    dependencies:
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
-      '@deepseek-ai/dsh-client-store':
-        specifier: link:../../../dsh/packages/client/store
-        version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: link:../../../dsh/packages/client/ui-conversation
         version: link:../../../dsh/packages/client/ui-conversation
-    devDependencies:
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
@@ -104,6 +254,79 @@ importers:
       react-dom:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
+      tsdown:
+        specifier: ^0.22.14
+        version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/dshell/files:
+    dependencies:
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+      '@nexus-aethra/dshell-terminal-bridge':
+        specifier: workspace:^
+        version: link:../terminal-bridge
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../dsh/vendor/cordis
+        version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-locale':
+        specifier: link:../../../dsh/packages/client/locale
+        version: link:../../../dsh/packages/client/locale
+      '@deepseek-ai/dsh-client-store':
+        specifier: link:../../../dsh/packages/client/store
+        version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-client-ui-dockkit':
+        specifier: link:../../../dsh/packages/client/ui-dockkit
+        version: link:../../../dsh/packages/client/ui-dockkit
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: link:../../../dsh/packages/client/ui-primitives
+        version: link:../../../dsh/packages/client/ui-primitives
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-session':
+        specifier: link:../../../dsh/packages/client/ui-session
+        version: link:../../../dsh/packages/client/ui-session
+      '@deepseek-ai/dsh-client-ui-sidebar-right':
+        specifier: link:../../../dsh/packages/client/ui-sidebar-right
+        version: link:../../../dsh/packages/client/ui-sidebar-right
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
+      '@deepseek-ai/dsh-fs':
+        specifier: link:../../../dsh/packages/fs/fs
+        version: link:../../../dsh/packages/fs/fs
+      '@deepseek-ai/dsh-sandbox':
+        specifier: link:../../../dsh/packages/sandbox/sandbox
+        version: link:../../../dsh/packages/sandbox/sandbox
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-shell':
+        specifier: link:../../../dsh/packages/shell/shell
+        version: link:../../../dsh/packages/shell/shell
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
       tsdown:
         specifier: ^0.22.14
         version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
@@ -113,13 +336,76 @@ importers:
 
   packages/dshell/mode:
     dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../dsh/vendor/schemastery
+        version: link:../../../dsh/vendor/schemastery
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+      '@nexus-aethra/dshell-terminal-bridge':
+        specifier: workspace:^
+        version: link:../terminal-bridge
+      '@xterm/xterm':
+        specifier: 6.0.0
+        version: 6.0.0
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
-    devDependencies:
+      '@deepseek-ai/dsh-client-ui-conversation':
+        specifier: link:../../../dsh/packages/client/ui-conversation
+        version: link:../../../dsh/packages/client/ui-conversation
+      '@deepseek-ai/dsh-client-ui-input-trigger':
+        specifier: link:../../../dsh/packages/client/ui-input-trigger
+        version: link:../../../dsh/packages/client/ui-input-trigger
+      '@deepseek-ai/dsh-client-ui-model-selection':
+        specifier: link:../../../dsh/packages/client/ui-model-selection
+        version: link:../../../dsh/packages/client/ui-model-selection
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: link:../../../dsh/packages/client/ui-primitives
+        version: link:../../../dsh/packages/client/ui-primitives
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-session':
+        specifier: link:../../../dsh/packages/client/ui-session
+        version: link:../../../dsh/packages/client/ui-session
+      '@deepseek-ai/dsh-client-ui-settings':
+        specifier: link:../../../dsh/packages/client/ui-settings
+        version: link:../../../dsh/packages/client/ui-settings
+      '@deepseek-ai/dsh-client-ui-settings-plugins':
+        specifier: link:../../../dsh/packages/client/ui-settings-plugins
+        version: link:../../../dsh/packages/client/ui-settings-plugins
+      '@deepseek-ai/dsh-client-ui-sidebar':
+        specifier: link:../../../dsh/packages/client/ui-sidebar
+        version: link:../../../dsh/packages/client/ui-sidebar
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
+      '@deepseek-ai/dsh-llm':
+        specifier: link:../../../dsh/packages/llm/llm
+        version: link:../../../dsh/packages/llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-session-stats':
+        specifier: link:../../../dsh/packages/session/session-stats
+        version: link:../../../dsh/packages/session/session-stats
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../dsh/packages/settings/settings
+        version: link:../../../dsh/packages/settings/settings
+      '@deepseek-ai/dsh-token-meter':
+        specifier: link:../../../dsh/packages/llm/token-meter
+        version: link:../../../dsh/packages/llm/token-meter
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
@@ -139,21 +425,143 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/dshell/terminal-bridge:
+  packages/dshell/ssh:
     dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../dsh/vendor/schemastery
+        version: link:../../../dsh/vendor/schemastery
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-client-ui-renderer':
+        specifier: link:../../../dsh/packages/client/ui-renderer
+        version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-settings':
+        specifier: link:../../../dsh/packages/client/ui-settings
+        version: link:../../../dsh/packages/client/ui-settings
+      '@deepseek-ai/dsh-client-ui-settings-plugins':
+        specifier: link:../../../dsh/packages/client/ui-settings-plugins
+        version: link:../../../dsh/packages/client/ui-settings-plugins
+      '@deepseek-ai/dsh-fs':
+        specifier: link:../../../dsh/packages/fs/fs
+        version: link:../../../dsh/packages/fs/fs
+      '@deepseek-ai/dsh-fs-local':
+        specifier: link:../../../dsh/packages/fs/fs-local
+        version: link:../../../dsh/packages/fs/fs-local
+      '@deepseek-ai/dsh-fs-sandbox':
+        specifier: link:../../../dsh/packages/fs/fs-sandbox
+        version: link:../../../dsh/packages/fs/fs-sandbox
+      '@deepseek-ai/dsh-sandbox':
+        specifier: link:../../../dsh/packages/sandbox/sandbox
+        version: link:../../../dsh/packages/sandbox/sandbox
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../../../dsh/packages/sandbox/sandbox-policy
+        version: link:../../../dsh/packages/sandbox/sandbox-policy
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../dsh/packages/settings/settings
+        version: link:../../../dsh/packages/settings/settings
+      '@deepseek-ai/dsh-shell':
+        specifier: link:../../../dsh/packages/shell/shell
+        version: link:../../../dsh/packages/shell/shell
+      '@deepseek-ai/dsh-subprocess':
+        specifier: link:../../../dsh/packages/subprocess/subprocess
+        version: link:../../../dsh/packages/subprocess/subprocess
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      tsdown:
+        specifier: ^0.22.14
+        version: 0.22.14(tsx@4.23.13)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/dshell/std:
     devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/dshell/storage:
+    dependencies:
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/dshell/terminal-bridge:
+    dependencies:
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+      '@nexus-aethra/dshell-storage':
+        specifier: workspace:^
+        version: link:../storage
+      node-pty:
+        specifier: link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty
+        version: link:../../../dsh/node_modules/.pnpm/node-pty@1.2.0-beta.15/node_modules/node-pty
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: link:../../../dsh/vendor/cordis
+        version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-api-session-controller':
+        specifier: link:../../../dsh/packages/api/session-controller
+        version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-store':
+        specifier: link:../../../dsh/packages/client/store
+        version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: link:../../../dsh/packages/host/webserver
+        version: link:../../../dsh/packages/host/webserver
+      '@deepseek-ai/dsh-session':
+        specifier: link:../../../dsh/packages/core/session
+        version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-terminal':
+        specifier: link:../../../dsh/packages/terminal/terminal
+        version: link:../../../dsh/packages/terminal/terminal
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
       '@types/react-dom':
         specifier: ~18.3.0
         version: 18.3.7(@types/react@18.3.31)
+      '@types/ws':
+        specifier: ^8.5.10
+        version: 8.18.1
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -169,9 +577,25 @@ importers:
 
   packages/dshell/workspace:
     dependencies:
+      '@nexus-aethra/dshell-buffer':
+        specifier: workspace:^
+        version: link:../buffer
+      '@nexus-aethra/dshell-ssh':
+        specifier: workspace:^
+        version: link:../ssh
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: link:../../../dsh/vendor/cordis
         version: link:../../../dsh/vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: link:../../../dsh/packages/core/agent
+        version: link:../../../dsh/packages/core/agent
+      '@deepseek-ai/dsh-agent-presets':
+        specifier: link:../../../dsh/packages/preset/agent-presets
+        version: link:../../../dsh/packages/preset/agent-presets
       '@deepseek-ai/dsh-api-remotes':
         specifier: link:../../../dsh/packages/api/remotes
         version: link:../../../dsh/packages/api/remotes
@@ -181,9 +605,15 @@ importers:
       '@deepseek-ai/dsh-api-workspace-controller':
         specifier: link:../../../dsh/packages/api/workspace-controller
         version: link:../../../dsh/packages/api/workspace-controller
+      '@deepseek-ai/dsh-client-connection':
+        specifier: link:../../../dsh/packages/client/connection
+        version: link:../../../dsh/packages/client/connection
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: link:../../../dsh/packages/client/ui-primitives
+        version: link:../../../dsh/packages/client/ui-primitives
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer
@@ -196,7 +626,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
-    devDependencies:
+      '@types/node':
+        specifier: ^24
+        version: 24.13.3
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
@@ -473,6 +905,27 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
+  '@types/d3-color@3.1.3':
+    resolution: {integrity: sha512-iO90scth9WAbmgv7ogoq57O9YpKmFBbmoEoCHDB2xMBY0+/KVrqAaCDyCE16dUspeOvIxFFRI+0sEtqDqy2b4A==}
+
+  '@types/d3-drag@3.0.7':
+    resolution: {integrity: sha512-HE3jVKlzU9AaMazNufooRJ5ZpWmLIoc90A37WU2JMmeq28w1FQqCZswHZ3xR+SuxYftzHq6WU6KJHvqxKzTxxQ==}
+
+  '@types/d3-interpolate@3.0.4':
+    resolution: {integrity: sha512-mgLPETlrpVV1YRJIglr4Ez47g7Yxjl1lj7YKsiMCb27VJH9W8NVM6Bb9d8kkpG/uAQS5AmbA48q2IAolKKo1MA==}
+
+  '@types/d3-selection@3.0.11':
+    resolution: {integrity: sha512-bhAXu23DJWsrI45xafYpkQ4NtcKMwWnAC/vKrd2l+nxMFuvOT3XMYTIj2opv8vq8AO5Yh7Qac/nSeP/3zjTK0w==}
+
+  '@types/d3-transition@3.0.9':
+    resolution: {integrity: sha512-uZS5shfxzO3rGlu0cC3bjmMFKsXv+SmZZcgp0KD22ts4uGXp5EVYGzu/0YdwZeKmddhcAccYtREJKkPfXkZuCg==}
+
+  '@types/d3-zoom@3.0.8':
+    resolution: {integrity: sha512-iqMC4/YlFCSlO8+2Ii1GGGliCAY4XdeG748w5vQUbevlbDu0zSjH/+jojorQVBK/se0j6DUFNPBGSqD3YWYnDw==}
+
+  '@types/node@24.13.3':
+    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
   '@types/prop-types@15.7.15':
     resolution: {integrity: sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==}
 
@@ -483,6 +936,28 @@ packages:
 
   '@types/react@18.3.31':
     resolution: {integrity: sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
+
+  '@xyflow/react@12.11.6':
+    resolution: {integrity: sha512-9XsEJNHjatKYndszKTF/bsU7FOP9dJ6V/EQwzy3oMdtqgBuUq7BjKSwkEo+C7s4qHstHQfwwoHA3E8QfpPxZZQ==}
+    peerDependencies:
+      '@types/react': '>=17'
+      '@types/react-dom': '>=17'
+      react: '>=17'
+      react-dom: '>=17'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      '@types/react-dom':
+        optional: true
+
+  '@xyflow/system@0.0.82':
+    resolution: {integrity: sha512-4DKnL3CGtCGLRSmgDqaajRVgeksMXq/Yw4wPfdMfm7JvdIiWHGzVYOfFUztiATwdBXZqUU6HhehwUdbV9G23PQ==}
 
   '@yuku-codegen/binding-android-arm64@0.8.7':
     resolution: {integrity: sha512-C/0zV5IhgVdYhGJTwrY0v8dknxlhiKwtVJkMUaexu9/QvRmzlV4vfU3hZlUSgqc2BxQHntL1mCVbDq8j0FRFDw==}
@@ -627,8 +1102,49 @@ packages:
     resolution: {integrity: sha512-tixWYgm5ZoOD+3g6UTea91eow5z6AAHaho3g0V9CNSNb45gM8SmflpAc+GRd1InC4AqN/07Unrgp56Y94N9hJQ==}
     engines: {node: '>=20.19.0'}
 
+  classcat@5.0.5:
+    resolution: {integrity: sha512-JhZUT7JFcQy/EzW605k/ktHtncoo9vnyW/2GspNYwFlN1C/WmjuV/xtS04e9SOkL2sTdw0VAZ2UGCcQ9lR6p6w==}
+
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
+
+  d3-color@3.1.0:
+    resolution: {integrity: sha512-zg/chbXyeBtMQ1LbD/WSoW2DpC3I0mpmPdW+ynRTj/x2DAWYrIY7qeZIHidozwV24m4iavr15lNwIwLxRmOxhA==}
+    engines: {node: '>=12'}
+
+  d3-dispatch@3.0.1:
+    resolution: {integrity: sha512-rzUyPU/S7rwUflMyLc1ETDeBj0NRuHKKAcvukozwhshr6g6c5d8zh4c2gQjY2bZ0dXeGLWc1PF174P2tVvKhfg==}
+    engines: {node: '>=12'}
+
+  d3-drag@3.0.0:
+    resolution: {integrity: sha512-pWbUJLdETVA8lQNJecMxoXfH6x+mO2UQo8rSmZ+QqxcbyA3hfeprFgIT//HW2nlHChWeIIMwS2Fq+gEARkhTkg==}
+    engines: {node: '>=12'}
+
+  d3-ease@3.0.1:
+    resolution: {integrity: sha512-wR/XK3D3XcLIZwpbvQwQ5fK+8Ykds1ip7A2Txe0yxncXSdq1L9skcG7blcedkOX+ZcgxGAmLX1FrRGbADwzi0w==}
+    engines: {node: '>=12'}
+
+  d3-interpolate@3.0.1:
+    resolution: {integrity: sha512-3bYs1rOD33uo8aqJfKP3JWPAibgw8Zm2+L9vBKEHJ2Rg+viTR7o5Mmv5mZcieN+FRYaAOWX5SJATX6k1PWz72g==}
+    engines: {node: '>=12'}
+
+  d3-selection@3.0.0:
+    resolution: {integrity: sha512-fmTRWbNMmsmWq6xJV8D19U/gw/bwrHfNXxrIN+HfZgnzqTHp9jOmKMhsTUjXOJnZOdZY9Q28y4yebKzqDKlxlQ==}
+    engines: {node: '>=12'}
+
+  d3-timer@3.0.1:
+    resolution: {integrity: sha512-ndfJ/JxxMd3nw31uyKoY2naivF+r29V+Lc0svZxe1JvvIRmi8hUsrMvdOwgS1o6uBHmiz91geQ0ylPP0aj1VUA==}
+    engines: {node: '>=12'}
+
+  d3-transition@3.0.1:
+    resolution: {integrity: sha512-ApKvfjsSR6tg06xrL434C0WydLr7JewBB3V+/39RMHsaXTOG0zmt/OAXeng5M5LBm0ojmxJrpomQVZ1aPvBL4w==}
+    engines: {node: '>=12'}
+    peerDependencies:
+      d3-selection: 2 - 3
+
+  d3-zoom@3.0.0:
+    resolution: {integrity: sha512-b8AmV3kfQaqWAuacbPuNbL6vahnOJflOhexLzMMNLga62+/nh0JzvJ0aO/5a5MVgUFGS7Hu1P9P03o3fJkDCyw==}
+    engines: {node: '>=12'}
 
   defu@6.1.7:
     resolution: {integrity: sha512-7z22QmUWiQ/2d0KkdYmANbRUVABpZ9SNYyH5vx6PZ+nE5bcC0l7uFvEfHlyld/HcGBFTL536ClDt3DEcSlEJAQ==}
@@ -792,9 +1308,29 @@ packages:
   unconfig-core@7.5.0:
     resolution: {integrity: sha512-Su3FauozOGP44ZmKdHy2oE6LPjk51M/TRRjHv2HNCWiDvfvCoxC2lno6jevMA91MYAdCdwP05QnWdWpSbncX/w==}
 
+  undici-types@7.18.2:
+    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+  use-sync-external-store@1.7.0:
+    resolution: {integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
   verkit@0.3.2:
     resolution: {integrity: sha512-zj/ob3UsvJGN0whEAKFp53REA5X66hvffVqoCtVQAakJKnKlH+/PcOfMoFwIG/o4rElqLv/ycAFlx8ZlXUorCg==}
     engines: {node: '>=18.12.0'}
+
+  ws@8.21.3:
+    resolution: {integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
   yuku-ast@0.8.7:
     resolution: {integrity: sha512-h6+4bDfyootiMB9vckk5uKo5r5j0GHrkr17FQTDNfEsFT3DWlN9uu1HJwQwc64pgmLCI945fWM3lbTIqxjT3GQ==}
@@ -804,6 +1340,21 @@ packages:
 
   yuku-parser@0.8.7:
     resolution: {integrity: sha512-vRD9nwt4L3aYpxNqeSC4WqLv58xrXef0Ong1Mc45CTXTIpvLafx7JO05sczmQZwdLEZvywrLOGdNC5+Rp5N1BQ==}
+
+  zustand@4.5.7:
+    resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}
+    engines: {node: '>=12.7.0'}
+    peerDependencies:
+      '@types/react': '>=16.8'
+      immer: '>=9.0.6'
+      react: '>=16.8'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
 
 snapshots:
 
@@ -938,6 +1489,31 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@types/d3-color@3.1.3': {}
+
+  '@types/d3-drag@3.0.7':
+    dependencies:
+      '@types/d3-selection': 3.0.11
+
+  '@types/d3-interpolate@3.0.4':
+    dependencies:
+      '@types/d3-color': 3.1.3
+
+  '@types/d3-selection@3.0.11': {}
+
+  '@types/d3-transition@3.0.9':
+    dependencies:
+      '@types/d3-selection': 3.0.11
+
+  '@types/d3-zoom@3.0.8':
+    dependencies:
+      '@types/d3-interpolate': 3.0.4
+      '@types/d3-selection': 3.0.11
+
+  '@types/node@24.13.3':
+    dependencies:
+      undici-types: 7.18.2
+
   '@types/prop-types@15.7.15': {}
 
   '@types/react-dom@18.3.7(@types/react@18.3.31)':
@@ -948,6 +1524,37 @@ snapshots:
     dependencies:
       '@types/prop-types': 15.7.15
       csstype: 3.2.3
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 24.13.3
+
+  '@xterm/xterm@6.0.0': {}
+
+  '@xyflow/react@12.11.6(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
+    dependencies:
+      '@xyflow/system': 0.0.82
+      classcat: 5.0.5
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+      zustand: 4.5.7(@types/react@18.3.31)(react@18.3.1)
+    optionalDependencies:
+      '@types/react': 18.3.31
+      '@types/react-dom': 18.3.7(@types/react@18.3.31)
+    transitivePeerDependencies:
+      - immer
+
+  '@xyflow/system@0.0.82':
+    dependencies:
+      '@types/d3-drag': 3.0.7
+      '@types/d3-interpolate': 3.0.4
+      '@types/d3-selection': 3.0.11
+      '@types/d3-transition': 3.0.9
+      '@types/d3-zoom': 3.0.8
+      d3-drag: 3.0.0
+      d3-interpolate: 3.0.1
+      d3-selection: 3.0.0
+      d3-zoom: 3.0.0
 
   '@yuku-codegen/binding-android-arm64@0.8.7':
     optional: true
@@ -1027,7 +1634,45 @@ snapshots:
 
   cac@7.0.0: {}
 
+  classcat@5.0.5: {}
+
   csstype@3.2.3: {}
+
+  d3-color@3.1.0: {}
+
+  d3-dispatch@3.0.1: {}
+
+  d3-drag@3.0.0:
+    dependencies:
+      d3-dispatch: 3.0.1
+      d3-selection: 3.0.0
+
+  d3-ease@3.0.1: {}
+
+  d3-interpolate@3.0.1:
+    dependencies:
+      d3-color: 3.1.0
+
+  d3-selection@3.0.0: {}
+
+  d3-timer@3.0.1: {}
+
+  d3-transition@3.0.1(d3-selection@3.0.0):
+    dependencies:
+      d3-color: 3.1.0
+      d3-dispatch: 3.0.1
+      d3-ease: 3.0.1
+      d3-interpolate: 3.0.1
+      d3-selection: 3.0.0
+      d3-timer: 3.0.1
+
+  d3-zoom@3.0.0:
+    dependencies:
+      d3-dispatch: 3.0.1
+      d3-drag: 3.0.0
+      d3-interpolate: 3.0.1
+      d3-selection: 3.0.0
+      d3-transition: 3.0.1(d3-selection@3.0.0)
 
   defu@6.1.7: {}
 
@@ -1190,7 +1835,15 @@ snapshots:
       '@quansync/fs': 1.0.0
       quansync: 1.0.0
 
+  undici-types@7.18.2: {}
+
+  use-sync-external-store@1.7.0(react@18.3.1):
+    dependencies:
+      react: 18.3.1
+
   verkit@0.3.2: {}
+
+  ws@8.21.3: {}
 
   yuku-ast@0.8.7:
     dependencies:
@@ -1230,3 +1883,10 @@ snapshots:
       '@yuku-parser/binding-linux-x64-musl': 0.8.7
       '@yuku-parser/binding-win32-arm64': 0.8.7
       '@yuku-parser/binding-win32-x64': 0.8.7
+
+  zustand@4.5.7(@types/react@18.3.31)(react@18.3.1):
+    dependencies:
+      use-sync-external-store: 1.7.0(react@18.3.1)
+    optionalDependencies:
+      '@types/react': 18.3.31
+      react: 18.3.1

@@ -17,14 +17,20 @@ PROFILE="${1:-web}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 DSH_PKG="${DSH_CMD:-pnpm dsh}"
 
-# Order matters: bundle must be added last so its deps are already present
-# when dsh's reconcile pass promotes it into dsh.profile.bundles.
+# Order matters: the standard layer first (every plugin depends on its
+# contracts), and bundle last so its deps are already present when dsh's
+# reconcile pass promotes it into dsh.profile.bundles.
 PLUGINS=(
+  std
+  storage
   conversation
   terminal-bridge
   mode
   commands
   workspace
+  ssh
+  buffer
+  files
 )
 
 echo "Installing dshell plugins into profile '$PROFILE'..."
@@ -41,5 +47,15 @@ done
 
 echo "  + dshell-bundle (as patch layer)"
 ( cd "$HERE/dsh" && $DSH_PKG plugin --profile "$PROFILE" add -w "$HERE/packages/dshell/bundle" )
+
+# dshell is not a preset: the terminal unification is a host-side backend
+# takeover (the bridge registers the `shell` PTY type), so no preset is
+# installed. Remove a copy left by an earlier install so the roster does not
+# list a stale fifth mode.
+PRESET_HOME="${DSH_HOME:-$HOME/.dsh}/.agent-presets/dshell"
+if [ -d "$PRESET_HOME" ]; then
+  rm -rf "$PRESET_HOME"
+  echo "  - stale dshell agent preset removed from $PRESET_HOME"
+fi
 
 echo "Done. Run 'pnpm dsh web --profile $PROFILE' to verify."

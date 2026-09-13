@@ -21,6 +21,8 @@ Nexus-Shell/
 ├── cordis.patch.yml          # dshell bundle's own patch layer
 ├── docs/                     # dshell-design, roadmap, packages, architecture
 ├── packages/
+│   ├── dshell-std/           # the standard layer: wire contracts + the storage contract (no dsh deps)
+│   ├── dshell-storage/       # host-only library: the media behind the storage contract (node:sqlite)
 │   ├── dshell-bundle/        # dsh bundle: one cordis.patch.yml + package.json
 │   ├── dshell-conversation/  # dual-face: host registers target; browser renders
 │   ├── dshell-terminal-bridge/ # dual-face: host upgrade route + agent/PTY glue
@@ -53,7 +55,7 @@ and the [`dsh-tsdown preset`](../../dsh/packages/client/tsdown.client.ts):
 
 ```jsonc
 {
-  "name": "@deepseek-ai/dsh-dshell-<role>",
+  "name": "@nexus-aethra/dshell-<role>",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -76,10 +78,10 @@ and the [`dsh-tsdown preset`](../../dsh/packages/client/tsdown.client.ts):
 }
 ```
 
-`tsdown.config.ts` uses `clientBundle('@deepseek-ai/dsh-dshell-<role>', ['lib/types/index.js'])`
+`tsdown.config.ts` uses `clientBundle('@nexus-aethra/dshell-<role>', ['lib/types/index.js'])`
 so the same preset emits both the Node lib half and the browser client
 bundle. CSS Modules and global CSS use the same virtual-id pipeline as
-dsh (`@deepseek-ai/dsh-dshell-<role>.module.css` → hashed class map,
+dsh (`@nexus-aethra/dshell-<role>.module.css` → hashed class map,
 injected style tag).
 
 ## 3. Cordis surface used and contributed
@@ -94,11 +96,12 @@ form so implementers can match identifiers exactly.
 | `ctx.uiConversation.events` | `dshell-conversation` host | register NodeDefinitions for target `terminal` |
 | `ctx.uiConversation.views` | `dshell-conversation` host | register ViewDefinition for target `terminal` |
 | `ctx.uiSession` | `dshell-mode` browser | patch `inputActions` exposed via `provide()` |
-| `ctx.webServer` | `dshell-terminal-bridge` host | `registerUpgrade('/dshell/pty', ...)` |
+| `ctx.connection` | `dshell-terminal-bridge` host | `connection.fetch.register` for the frame stream (`/api/dshell/stream`, `/api/dshell/stream/send`) and the history read |
+| `ctx.webServer` | `dshell-terminal-bridge` host | `registerUpgrade('/dshell/pty', ...)` — the browser's ws fast path |
 | `ctx.terminals` | `dshell-terminal-bridge` host | spawn/startSend/readOutput/signal/kill/list |
 | `ctx.agents` | `dshell-terminal-bridge` host, `dshell-mode` host | `inject`, agent lookup by sessionId |
-| `ctx.commands` | `dshell-commands` host | register `/clear`, `/new`, `/compact` |
-| `ctx.tools` | `dshell-commands` host | register `dshell_get_main_terminal` |
+| `ctx.commands` | `dshell-commands` host | register `/new` (`/compact` stays dsh's own) |
+| `ctx.tools` | `dshell-commands` host | register `dshell_get_agent_terminal`, `dshell_terminal_read`, `dshell_terminal_output` |
 | `ctx.dshellMainPty` | `dshell-mode`, `dshell-commands` | consume the `Map<Agent, TerminalSessionId>` |
 | `ctx.dshellPtyBuffer` | `dshell-mode` host | consume the per-session rolling buffer |
 
@@ -115,19 +118,27 @@ plural" rule (see [`adding-a-package.md`](../../dsh/docs/cookbook/adding-a-packa
 
 ## 4. Browser↔host wire protocol
 
-`dshell-terminal-bridge` registers one ws upgrade route:
+The frames below are carrier-independent. `dshell-terminal-bridge` serves
+them over two carriers, and the browser face picks one by what the page can
+reach:
 
-```
-GET /dshell/pty  HTTP/1.1
-Upgrade: websocket
-Connection: Upgrade
-Sec-WebSocket-Key: ...
-Sec-WebSocket-Version: 13
-```
+- **ws** (`/dshell/pty`, registered through `ctx.webServer.registerUpgrade`):
+  one socket for the session's life with no per-frame request — the browser's
+  fast path.
+- **stream** (`ctx.connection.fetch` routes): a long-lived
+  `GET /api/dshell/stream?clientId=…&sessionId=…&stream=main|agent` whose body
+  is newline-delimited frames, plus one `POST /api/dshell/stream/send` per
+  client frame carrying the same `clientId`. This is the desktop shell's only
+  option (its page runs on the `dsh-app://` scheme with no listening port), and
+  it exists precisely because `connection` is composed there while `webServer`
+  is not.
 
-The host handler owns the entire post-handshake protocol. Frames are
-JSON UTF-8 text, each exactly one object per frame. Newline is not a
-delimiter.
+Both carriers are authenticated by dsh's own gate — the ws by
+`connection.requestRejection` on the upgrade, the stream by whatever carrier
+serves `/api` (the web server's `/api` prefix, or the desktop pipe).
+
+The frame model is unchanged: JSON UTF-8 text, one object per frame. Newline is
+the stream carrier's delimiter and nothing else's.
 
 ### 4.1 Client → host frames
 
@@ -315,7 +326,7 @@ with a wrapper that:
    - `/agent <rest>` → switch mode to `agent`, then `agent.inject(rest)`.
    - `/shell <rest>` → switch mode to `shell`, then ws `input` frame
      with `<rest>`.
-   - `/clear`, `/new`, `/compact` → `ctx.commands.execute(...)` via
+   - `/new`, `/compact` → `ctx.commands.execute(...)` via
      the standard command surface; this path **does not** patch
      `inputActions`, it goes through the existing `/`-dispatcher that
      `ui-input-trigger` and `ui-commands` already own.
@@ -344,13 +355,13 @@ Every user-visible string is locale-owned. dshell registers a single
 locale namespace per dsh convention:
 
 ```
-'@deepseek-ai/dsh-dshell/locale/<package-name>'
+'@nexus-aethra/dshell/locale/<package-name>'
 ```
 
 Three namespaces for now:
 
 - `dshell-conversation` — terminal title, mode toggle labels.
-- `dshell-mode` — `/agent`, `/shell`, `/clear`, `/new`, `/compact`
+- `dshell-mode` — `/agent`, `/shell`, `/new`, `/compact`
   command descriptions and input hints.
 - `dshell-terminal-bridge` — connection status badge strings.
 
@@ -374,9 +385,10 @@ the standard Node-side target on host halves.
 ## 12. What dshell does not introduce
 
 - No changes to dsh source. No fork.
-- No new model-facing tool *other than* `dshell_get_main_terminal`,
-  which exists solely to give the agent a stable reference to the
-  bridge's `main` PTY.
+- No new model-facing tool *other than* the two terminal tools
+  (`dshell_get_agent_terminal`, `dshell_terminal_read`), which exist
+  solely to give the agent a shell of its own and a read-only view of
+  the user's (Phase 9.11).
 - No new session events. PTY bytes never reach `ctx.sessionPersistence`.
 - No cross-process PTY. Session restart loses PTY scrollback.
 - No multi-tab browser surface.

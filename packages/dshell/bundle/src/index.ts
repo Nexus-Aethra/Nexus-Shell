@@ -9,7 +9,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 
-export const name = '@deepseek-ai/dsh-dshell-bundle'
+export const name = '@nexus-aethra/dshell-bundle'
 
 export function apply(ctx: Context): void {
   ctx.set('dshell.bundle.active', { since: Date.now() })

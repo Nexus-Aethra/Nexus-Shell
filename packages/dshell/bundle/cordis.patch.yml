@@ -15,37 +15,60 @@
 # not collide with a shipped tooling id.
 
 - insert:
-    # PTY service + bash backend; these ids are distinct from any
-    # shipped web-profile row, so they coexist with the existing tools.
+    # PTY service; this id is distinct from any shipped web-profile row, so it
+    # coexists with the existing tools.
     - id: dshell-terminal
       name: '@deepseek-ai/dsh-terminal'
 
-    - id: dshell-terminal-bash
-      name: '@deepseek-ai/dsh-terminal-bash'
+    # NOTE: no terminal-bash row on purpose. dshell's bridge registers its raw
+    # PTY backend under the type `shell` — the name dsh's persistent shell
+    # tools resolve by default (`backendType` defaults to `'shell'`) — so any
+    # composition whose persistent shell group does NOT isolate the terminals
+    # realm resolves the bridge's backend and its bash lands on the agent's
+    # watched terminal. A terminal-bash row here would race the bridge for the
+    # same backend name and fail loud at boot (DUPLICATE_BACKEND).
 
     - id: dshell-tool-terminal
       name: '@deepseek-ai/dsh-tool-terminal'
 
     # Browser half of the `terminal` Conversation target.
     - id: dshell-conversation
-      name: '@deepseek-ai/dsh-dshell-conversation'
+      name: '@nexus-aethra/dshell-conversation'
 
     # Browser↔host PTY wire bridge.
     - id: dshell-terminal-bridge
-      name: '@deepseek-ai/dsh-dshell-terminal-bridge'
+      name: '@nexus-aethra/dshell-terminal-bridge'
 
     # Composer mode toggle and prefix handling.
     - id: dshell-mode
-      name: '@deepseek-ai/dsh-dshell-mode'
+      name: '@nexus-aethra/dshell-mode'
 
     # /clear, /new, /compact, plus dshell_get_main_terminal model tool.
     - id: dshell-commands
-      name: '@deepseek-ai/dsh-dshell-commands'
+      name: '@nexus-aethra/dshell-commands'
 
     # Workspace removal (design 4.7): stub providers for the disabled
     # stock rows below, plus the flat session list for the sidebar.
     - id: dshell-workspace
-      name: '@deepseek-ai/dsh-dshell-workspace'
+      name: '@nexus-aethra/dshell-workspace'
+
+    # SSH devices: durable device/key registry, per-session assignment, and
+    # routing of a bound session's shell commands to that device.
+    - id: dshell-ssh
+      name: '@nexus-aethra/dshell-ssh'
+
+    # Cross-session pipe: user-established links between sessions, deferred
+    # requests one agent hands to another, scoped revocable folder grants, and
+    # the watchdog that guarantees the requester is always woken.
+    - id: dshell-buffer
+      name: '@nexus-aethra/dshell-buffer'
+
+    # Right-sidebar file navigator: takes over the `files` tab kind (dsh's
+    # registry keeps one builtin and one extension per kind, and the extension
+    # is the one in force) so the pane can walk — `..`, clickable crumbs,
+    # back/forward — through the session's own execution world.
+    - id: dshell-files
+      name: '@nexus-aethra/dshell-files'
 
 # ── workspace removal (design 4.7) ────────────────────────────────────
 # dshell has no use for dsh's directory-workspace grouping: a terminal's
@@ -54,6 +77,14 @@
 # (host `workspaceRegistry`, client `workspaces` + `uiWorkspace` + root
 # hook) so session-controller and ui-conversation/ui-sidebar still resolve.
 # Sessions are created by cwd instead; see docs/dshell-design.md § 4.7.
+# The filesystem provider is dshell's own. `ctx.fs` has exactly one provider,
+# and dshell's takes the stock backend's place (extending it) so a session
+# bound to a device has its file operations — read, write, edit, list — run on
+# that device instead of this machine. The local half of every call is the
+# stock implementation verbatim; see packages/dshell/ssh/src/fs-routing.ts.
+- id: fs-sandbox
+  disabled: true
+
 - id: workspace
   disabled: true
 - id: workspace-controller
@@ -62,6 +93,43 @@
   disabled: true
 - id: ui-workspace
   disabled: true
+
+# ── the view tab strip ─────────────────────────────────────────────────
+# dsh shows the conversation view tabs as soon as more than one view is
+# registered, and it builds that list from the RAW slot entries rather than
+# the shadowed ones — so a shadowing registration appears as a second tab
+# instead of replacing the first. dshell's block view already shadows
+# `ui-chat`'s `chat` entry for rendering; disabling the stock row is what
+# stops it from also contributing a duplicate tab, leaving the strip with
+# exactly two: `会话` (dshell's block view) and `轨迹` (ui-trajectory).
+#
+# The two child slots ui-chat declared go with it: `conversation.chat.node`
+# and `conversation.message.images`. Nothing is lost — dshell's view renders
+# neither, so `ui-goal`, `ui-workflow-run` and `ui-attachment` simply never
+# get asked to draw into them (the `slots.inject` wait for a declaration that
+# never arrives, which is silent by design).
+- id: ui-chat
+  disabled: true
+
+# ── background jobs header widget ──────────────────────────────────────
+# The stock session-header jobs dropdown renders the same jobsBySession
+# mirror the status card reads. The card now carries the jobs as its
+# 后台任务 row (live count in the headline, per-job detail expanded), so
+# a second control for the same data in the header goes. Disabling the
+# row removes only the header widget — the data lives in the session
+# store either way.
+- id: ui-jobs
+  disabled: true
+
+# ── default agent preset ────────────────────────────────────────────────────
+# No override and no dshell preset. The stock presets own their shell stacks
+# behind deliberate isolation (tool-bash via the single-provider `ctx.shell`,
+# persistent-bash inside an `isolate: terminals` realm), so no plugin can — or
+# should — rewire them. They already satisfy dshell's one hard requirement on
+# their own: the model's commands run in fresh sandboxed processes and never
+# occupy the user's terminal, while the block view keeps every tool call
+# visible and the stop affordance keeps it controllable. New sessions follow
+# dsh's default (standard); the user picks any of the shipped modes freely.
 
 # ── dev-only hot reload (skip in non-dev sessions) ─────────────────────
 # dsh's web profile mounts @deepseek-ai/dsh-client-hmr as a client

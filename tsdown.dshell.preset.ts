@@ -23,25 +23,35 @@ interface DshellClientBundleConfig {
   dts: false
   sourcemap: boolean
   clean: false
+  define: Record<string, string>
   external: string[]
+  /** Dependency specifiers to force-inline (rolldown auto-externals deps). */
+  noExternal: string[]
   outputOptions: {
     entryFileNames: string
     sourcemapExcludeSources: false
+    // The closure handoff lives here rather than at the top level: tsdown
+    // honors a top-level `banner` but not a top-level `intro`, and the intro is
+    // what defines the `module`/`exports` bindings the CJS interop writes to.
+    banner: string
+    footer: string
+    intro: string
   }
-  banner: string
-  footer: string
-  intro: string
 }
 
 /**
  * Build the client bundle config for one dshell package.
  * @param id - package name; stamped into the __ModuleLoader__.load handoff.
  * @param entry - tsc-emitted JS entry for the browser face (lib/client/index.js).
+ * @param inline - dependency specifiers to bundle instead of `require`-ing:
+ *   the combo loader's require only knows the dsh platform modules, so any
+ *   runtime dependency outside that table must be inlined here.
  * @returns tsdown config emitting lib/client.js in the closure format.
  */
 export function dshellClientBundle(
   id: string,
   entry = 'lib/client/index.js',
+  inline: string[] = [],
 ): DshellClientBundleConfig {
   return {
     entry: { client: entry },
@@ -52,12 +62,32 @@ export function dshellClientBundle(
     dts: false,
     sourcemap: true,
     clean: false,
+    // dsh's module table only serves its own PLATFORM_MODULES plus registered
+    // client plugins, so a `require` of one of OUR support packages fails the
+    // plugin load — which is exactly what happened when the contracts moved
+    // into `dshell-std` and the bundler externalized it as a dependency. The
+    // standard layer is contracts and seam helpers: tiny, stateless, and safe
+    // to inline into every face, so it is always inlined rather than listed
+    // per package.
+    noExternal: ['@nexus-aethra/dshell-std', ...inline],
+    // Inlined libraries reference Node's `process.env.NODE_ENV` for their
+    // dev/prod switches; the closure bundle runs in a browser with no
+    // `process`, so the reference is baked to production at build time.
+    define: { 'process.env.NODE_ENV': '"production"' },
     // Module-table specifiers (dsh packages/client/web/src/platform.ts
     // PLATFORM_MODULES) that dshell client faces resolve through the
     // injected require instead of inlining. Extend when a face gains
     // another runtime import; type-only imports are erased by tsc before
     // this bundler runs.
-    external: ['react', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store'],
+    external: [
+      'react',
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/dsh-client-store',
+      // The icon/primitive set dsh's own panes draw with (dshell-files uses it);
+      // present in PLATFORM_MODULES, so the loader serves it rather than us
+      // bundling a second copy.
+      '@deepseek-ai/dsh-client-ui-primitives',
+    ],
     outputOptions: {
       entryFileNames: 'client.js',
       sourcemapExcludeSources: false,

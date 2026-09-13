@@ -1,3 +1,3 @@
 import { dshellClientBundle } from '../../../tsdown.dshell.preset.ts'
 
-export default dshellClientBundle('@deepseek-ai/dsh-dshell-terminal-bridge')
+export default dshellClientBundle('@nexus-aethra/dshell-terminal-bridge')

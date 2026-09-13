@@ -10,7 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 
-export const name = '@deepseek-ai/dsh-dshell-conversation/host'
+export const name = '@nexus-aethra/dshell-conversation/host'
 
 export function apply(_ctx: Context): void {
   // Reserved for future host-side concerns; target registration is in

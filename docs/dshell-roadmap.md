@@ -85,25 +85,38 @@ Acceptance check:
 
 ## Phase 1.6 — New-session dialog
 
-Goal: session naming and start directory are chosen at creation time.
+Goal: session naming, start directory, and agent preset are chosen at
+creation time.
 
 Covers decision: 4.7 (naming paragraph).
 
 Plugins touched:
 
 - `dshell-workspace` (browser face) — the flat list gains a new-session
-  dialog (optional name + starting directory); `uiWorkspace.startSession`
-  (the shell's stock New-Session button) opens the same dialog instead of
-  creating silently; the stock hero workspace chip is hidden by an
-  interim stylesheet until the Phase 4 scaffold takeover removes the
-  whole hero row.
+  dialog (optional name + starting directory + agent-preset picker);
+  `uiWorkspace.startSession` (the shell's stock New-Session button)
+  opens the same dialog instead of creating silently; the stock hero
+  workspace chip is hidden by an interim stylesheet until the Phase 4
+  scaffold takeover removes the whole hero row. The preset roster comes
+  from `ctx.remote.agentPresets.list()` (injected as
+  `remote.agentPresets`), broken compositions are dropped from the
+  picker, and the choice is applied with `select(sessionId, presetId)`
+  while the session is still blank — a started session refuses the
+  switch. The name falls back to the start directory's basename, so an
+  empty name still pins a title and the first message's automatic
+  title cannot rename the session.
 
-Acceptance check:
+Acceptance check (verified in the browser):
 
 - `＋ 新会话` (list header) and the shell's `新会话` button both open the
   dialog.
+- The preset picker lists `跟随默认` + the shipped roster
+  (`标准模式（默认）` / `PTC 模式` / `极简模式` / `创造模式`); picking
+  `极简模式` shows that mode in the session header.
 - Creating with a name lands in the sidebar under that name; creating
-  with a custom directory creates the session in it.
+  with a custom directory creates the session in it; creating with no
+  name lands under the directory's basename and keeps it after the
+  first agent turn.
 - The hero workspace chip no longer renders.
 
 ## Phase 2 — Main shell lifecycle
@@ -129,6 +142,17 @@ Acceptance check:
 - A second `terminal_open({ name: 'main' })` from the agent creates a
   separate session; `mainPtyByAgent` is untouched.
 - The bridge's per-session buffer accumulates bytes after `startSend`.
+- The buffer persists to `$DSH_HOME/dshell-pty/<session-id>.log`
+  (design 4.9; owner-only — `0600` files in a `0700` directory since Phase 10.10,
+  which also tightens files an earlier build left `0664`); memory holds only the
+  fixed window; a fresh main shell
+  for the same session seeds from the file tail, and the prompt-rewrite
+  init restores that snapshot instead of emptying the log — truncating
+  it wholesale (the first cut) erased the previous shell's scrollback on
+  every harness restart, since the seed had already been loaded.
+
+Status: implemented together with Phase 3 (the ws transport is the
+first consumer of the buffer and the tail loop).
 
 ## Phase 3 — WebSocket transport
 
@@ -152,63 +176,360 @@ Acceptance check:
 - The ws respects `{ kind: 'bind', sessionId }` authorization: a bind
   with a wrong id is rejected and closed.
 
-## Phase 4 — Terminal scaffold + xterm.js canvas
+## Phase 4 — Fused terminal surface
 
-Goal: dshell owns the whole conversation surface. The stock
-`conversation` slot occupant is shadowed at a lower priority by
-dshell's terminal scaffold (design 4.8): a full-bleed xterm.js canvas
-renders PTY bytes and session events interleaved by the merge rule from
-4.4 — no hero, no chat cards, no stock composer.
+Goal: dshell owns the conversation surface without forking dsh's
+layout. The stock `conversation.bar` composer stays in place — it is
+dsh's InputBar, and dshell borrows it wholesale for its `/` | `@`
+trigger popup, context-occupancy ring, model select, attachment
+surface, and send/stop. dshell contributes exactly two entries into
+the stock slot tree:
 
-Covers decisions: 4.1 (ViewBuilder per session), 4.4 (interleaved
-rendering), 4.8 (terminal layout).
+- `conversation.input.left` — the dual-mode chip (`$ shell` /
+  `✦ agent`) plus the shell-mode hint.
+- `conversation.view` (id `chat`, shadowed) — the PTY canvas takes
+  over the stock chat cell rather than registering a sibling tab:
+  the view preference falls back to `chat`, so the canvas is what
+  renders there with no second view and no tab split. The canvas
+  interleaves PTY output with session records (design 4.4) and long
+  assistant/tool records render collapsed with a click-to-expand
+  header. The terminal background is transparent so the canvas blends
+  with the app surface instead of painting its own card.
 
-Plugins touched:
+The earlier attempt to shadow `conversation.composer.bar` with a
+self-built dock was abandoned: it dropped every stock composer feature
+(no `/` popup, no context meter, no model select) and left the page
+layout to hand-written CSS overrides that fought the stock flex chain.
+Borrowing the composer and adding slots keeps the stock layout intact.
 
-- `dshell-conversation` (browser face) — registers the shadowing
-  scaffold; materializes `Snapshot.rows` into one xterm.js buffer;
-  serializes session nodes to ANSI; drops the Phase 1.6 interim
-  stylesheet.
-- `dshell-conversation` (host face) — drives the ViewBuilder from
-  both the PTY byte source and the dsh engine's `replace` / `apply`
-  calls.
-
-Acceptance check:
-
-- With a session open, the content area is one xterm canvas edge to
-  edge: the stock hero, workspace chip and chat composer are gone.
-- An agent turn (`/agent hello`) and a shell command (`/shell echo
-  hi`) appear interleaved in one xterm scrollback, ordered by `time`.
-- Switching to a different session shows that session's terminal
-  surface independently; switching back shows the original buffer
-  preserved.
-
-## Phase 5 — Input dock + mode toggle + `/agent` / `/shell`
-
-Goal: the user controls where the next message goes from the slim
-input dock under the canvas (design 4.8); focus follows mode.
-
-Covers decisions: 4.5 (mode state), 4.8 (dock).
+Covers decisions: 4.1 (terminal-first surface), 4.5 (mode state),
+4.8 (terminal layout).
 
 Plugins touched:
 
-- `dshell-mode` (new, browser face) — owns the per-session mode store;
-  drives the dock's Enter to dispatch by mode; parses `/agent` and
-  `/shell` prefixes before dispatch; keeps canvas focus in `shell`
-  mode.
-- `dshell-mode` (new, host face) — exposes the main PTY session id to
-  the browser side through the same channel used by 4.4.
+- `dshell-mode` (browser face) — registers the mode chip, the canvas
+  view, the `/shell` `/agent` slash source, and the Settings palette
+  row. The per-session mode store (`shell` | `agent`, default `shell`)
+  drives both rendering and input: in `shell` mode a capture-phase
+  listener routes the composer's Enter (and its primary send button) to
+  the bridge PTY and clears the stock draft through
+  `inputActions.setDraft`; a leading `/` is always left to the stock
+  trigger pipeline so `/new`, skills, *and* dshell's own
+  `/shell` `/agent` keep working. In `agent` mode the stock submit path
+  runs untouched.
+  - `/shell` and `/agent` are **client-side** commands, not host
+    `ctx.commands` rows: they flip a browser store, which no host
+    handler can reach. Registered through `ctx.inputTriggers` as a `/`
+    source (`name: 'dshell'`): menu rows in the `/` popup plus a
+    `matchEnter` claim whose local `CommandClaim.submit` sets the mode
+    and returns a notice — no RPC and no durable `command/run`/`done`
+    pollution. `/terminal` stays a typed alias for shell; typed args
+    (`/shell ls`) run immediately after the switch.
+  - The palette picker is a `settings.general.item` row (Settings ›
+    General), not a composer chip: four palettes write the module-level
+    theme store, and the canvas view + mode chip read it through a
+    `useSyncExternalStore` hook, so a palette change re-themes xterm in
+    place.
+- `dshell-conversation` (browser face) — registers the no-renderer
+  `ConversationViewDefinition` on target `terminal` (`isActive` →
+  `true`) and re-asserts `terminal` activation on every sessions-list
+  and view-slot change. Activation must not race the stock `chat`
+  fallback: the strip offers the user a real choice between `会话` and
+  `轨迹`, but `会话` is the default, so the terminal target is asserted
+  rather than merely offered.
+- `dshell-workspace` (browser face) — hero chrome hiding
+  (`heroWorkspaceRow`, `headline`), the hero composer bottom-pin, and
+  the composer's input-line restyle: the stock card's 22px radius,
+  surface fill, elevation shadow, and hairline stroke are stripped and
+  replaced with a single bottom rule spanning the column (design 4.8).
+  The submit button is restyled the same way: the stock 34px filled blue
+  circle with an up arrow promises "send a chat message", which is the
+  wrong reading for a composer whose text goes into a shell, so it
+  becomes a transparent return-key glyph that agrees with the Enter key
+  that actually submits. Send and Stop share the `primary` class, so the
+  glyph is selected by SVG shape (`:has(svg path)` — the stop icon is a
+  `rect`) rather than by the aria-label, keeping it locale-independent.
+  The old `[data-phase="active"]` overrides (including `viewArea
+  { display: none }`) are gone: the stock active layout is where the
+  canvas and composer belong. The `uiWorkspace` stub also implements
+  dsh rc.1's added navigation actions (`openSession`, `openWorkspace`,
+  `forkSession`) against the cwd-session model: selecting a session is
+  the stock `open`, "open workspace" lands on the terminal-continuity
+  blank session, and fork uses the session controller's `fork`.
 
-Acceptance check:
+Acceptance check (current state — see screenshot in conversation):
 
-- In `shell` mode, Enter sends the dock line to `startSend(mainId,
-  text)` and focus returns to the canvas.
-- In `agent` mode, Enter sends the dock line to `agent.inject`.
-- `/agent plan a feature` from shell mode switches to agent mode and
-  injects "plan a feature" as a user message.
-- `/shell ls -la` from agent mode switches to shell mode and runs
-  `ls -la` in `main`.
-- Mode survives a session switch; mode resets to `shell` on `/new`.
+- New session creation opens straight into a full-column fused
+  terminal: PTY scrollback fills the column above an input line pinned
+  to the bottom, separated by one rule rather than a dialog card. The
+  hero banner ("探索未至之境") and centered composer are gone.
+- Shell input roundtrips: typing `echo hi` and pressing Enter sends to
+  the main PTY; the next prompt appears in the scrollback above.
+- Mode toggles: clicking the `$ shell` / `✦ agent` chip flips mode;
+  typing `/shell` and `/agent` in the composer flips mode with a
+  notice; the two commands also appear in the `/` popup under a
+  "dshell" group.
+- Model chip lists the shared directory and updates selection in
+  sync with `/model`.
+- Settings › General carries the "终端配色" row; picking a palette
+  re-themes the canvas and the mode chip.
+
+### 4.x Shell-interaction mechanics (hard-won constraints)
+
+- **The main shell is a push-based raw PTY, not a polled tail**
+  (superseded in Phase 5). The bridge registers its own
+  `TerminalBackend` (`dshell-pty`: plain node-pty bash,
+  `TERM=xterm-256color`) and pushes raw ANSI chunks to the browser
+  canvas. The original pull model — poll `ctx.terminals.read`, diff
+  the retained text against the previous tick, broadcast the prefix
+  extension — existed because dsh's scrollback is a mutating stream:
+  the trailing prompt is a partial line that grows in place, echo
+  completion rewrites the last line, and `split('\n')` counts all of
+  it. A seen-lines cursor double-consumed the prompt line (duplicate
+  prompts/commands) and consumed phantom empty lines (lost echoes);
+  even the content-diff variant lagged a tick behind. Raw push
+  deleted the whole class: ANSI colors reach xterm.js untouched, and
+  agent-facing reads strip ANSI on demand.
+- **`clear` is a bridge operation, not bash's ANSI clear.** The
+  sanitizer historically stripped ANSI clear from scrollback, so the
+  bridge owns the wipe: truncate the retained buffer, broadcast a
+  replay (the canvas redraws the merged timeline), queue a newline so
+  bash prints a fresh prompt. Init writes the custom PS1 +
+  `PROMPT_COMMAND` (OSC 133;D marker) once, then `clear`; every
+  session open starts from a replayed clean prompt.
+- **Focus follows mode (design 4.8), and the terminal chords work from
+  both focus owners.** Shell mode focuses the xterm canvas so raw keys
+  reach the PTY: `term.onData` forwards them while the mode ref says
+  `shell`, so Ctrl+C arrives as `\x03` (SIGINT), and Tab / arrows /
+  every readline key pass through untouched. `agent` mode blurs the
+  canvas and focuses the stock composer editor. A 400 ms heartbeat
+  re-claims the keyboard only when focus has fallen back to `body`
+  (page load, a modal closing), never stealing a deliberate click.
+  Because the composer is also an input line, its capture-phase router
+  mirrors the terminal chords in shell mode: Ctrl+C clears the draft
+  and sends `\x03`; Ctrl+Shift+C copies the canvas selection
+  (`term.getSelection()` through the module-level live-terminal
+  handle); Ctrl+Shift+V pastes into the PTY. The old dock's readline
+  key mapping is gone — raw mode makes it unnecessary.
+- **Selection is reverse video in the active palette.** xterm paints
+  the selection with the theme's `selectionBackground`; the old
+  12%-alpha accent was effectively invisible, and the *inactive* pair
+  is what shows while focus sits in the composer. Both pairs now use
+  the palette's `accent` for the highlight and `menuBg` for the glyphs,
+  so a selection reads as part of the current theme (`森林` highlights
+  green, `神秘` pink, …).
+- **Send settle with a custom PS1 (now agent-side only):** dsh's fast
+  settle needs the stock `dsh> ` cue after the OSC 133;D marker
+  (`promptTextSeen`); a custom PS1 disables it permanently, so sends
+  held the exclusive startSend slot until the 3s `inferred_idle`
+  timeout and back-to-back commands crawled. The bundle patch pins
+  the dshell-terminal-bash row — since Phase 5 only the agent's
+  `terminal_send` path; main shells moved to the raw backend — to
+  `idleSilenceMs: 300` / `handoffGraceMs: 50`. The raw backend
+  settles its own sends instead: marker + 60ms quiet fast path,
+  350ms inferred-idle fallback, 15s timeout.
+- **The ws client must guard socket handover:** `sessions.list` churns
+  several times around a session switch, and a redundant `openSocket`
+  used to leave two live sockets feeding one history (every frame
+  ingested twice). `bind` is idempotent while the session's socket is
+  connecting/open, and a superseded socket's frames/closes are ignored.
+- **Dev-workflow trap:** composite `tsbuildinfo` caching silently skips
+  tsc/tsdown emit — a rebuilt lib can stay stale (the browser then runs
+  old client code and everything looks "already broken"). When in doubt
+  `rm -rf packages/dshell/*/lib packages/dshell/*/tsbuildinfo lib types`
+  and `pnpm build` fresh; verify the change actually landed in
+  `lib/client.js` before restarting dsh.
+
+## Phase 5 — ANSI canvas (raw PTY backend + xterm.js + 4.4 merge)
+
+Goal: the conversation column becomes a real terminal canvas — raw
+ANSI PTY bytes stream into a full-bleed xterm.js instance, and durable
+session events interleave as rule-marked rows (design 4.4).
+
+Covers decisions: 4.4 (interleaved rendering), 4.8 (terminal layout).
+Retires the Phase 4 pull-model tail (see 4.x).
+
+Plugins touched:
+
+- `dshell-terminal-bridge` (host face) — registers its own
+  `TerminalBackend` (`type: 'dshell-pty'`) on `ctx.terminals` next to
+  dsh's bash backend: plain node-pty `/bin/bash -i` with
+  `TERM=xterm-256color`. Output pushes to subscribers raw
+  (`onOutput`), exit pushes (`onExit`), resize is real (the canvas
+  drives cols/rows), agent-facing reads strip ANSI on demand, and
+  sends settle on the bridge's own logic (marker + 60ms quiet fast
+  path, 350ms inferred-idle fallback, 15s timeout; Ctrl+C cancels the
+  active send). The bridge spawns one `main` shell per dsh session;
+  init sets the PS1 + `PROMPT_COMMAND` marker once and replays a
+  clean prompt, and the same truncate + replay is the spawn reset that
+  keeps the init echo out of the persisted log.
+- `dshell-mode` (browser face) — the dock's scrollback div becomes a
+  full-bleed xterm.js canvas. xterm.js and its CSS are inlined into
+  the client bundle (rolldown `noExternal` + CSS-as-string module —
+  the combo loader only resolves dsh platform modules, so anything
+  else must ship inside the bundle). A hidden probe span measures
+  char width; the cell height comes from the rendered `.xterm-screen`
+  (its height is rows × cell height), because xterm's own measurement
+  is 16px where the probe's CSS line box is 15px. A ResizeObserver
+  fits cols/rows from the container minus its computed padding and
+  resizes the PTY. Trusting the probe overshot by a row or two, and
+  the overflow was clipped — the live prompt vanished under the
+  composer as soon as output filled the canvas.
+  The theme maps the dock palette (bg/text/cursor/selection).
+- `dshell-mode` (browser face, 4.4 merge) — `PtyCanvas` subscribes to
+  the session's event window (`sessions.binding(id).eventSource`,
+  retried until the binding materializes — it is `undefined` for a
+  session neither listed nor scoped) and draws the agent's work as task
+  blocks. One block covers one turn: it opens on the request (or
+  `turn/start`, whichever comes first — a request adopts the empty
+  block), splits when `todo/write` moves the `in_progress` item (a
+  supervised phase), and closes on `turn/end` with a one-line notice at
+  the timeline's tail (`✓ AI 回答完成 · N 步 · M tok · HH:MM`; `◼` for
+  aborted, `✗` for failed). Rows inside a block keep their roles: `你`
+  (user), `AI` (assistant), `⎿ 思考过程` (reasoning), `→ <tool>`
+  (call), `← <tool>` (result), `⚡ 命令` (command run/done).
+  A collapsed block is **exactly three lines** — a status header plus
+  the newest two content lines — and that fixed height is the contract:
+  while the model is still writing, the block is repainted in place
+  (`ESC[s` → CUU → rewrite each row with `ESC[K` → `ESC[u`), so the
+  shell's rows below never move. The repaint is skipped when the view
+  is scrolled away or the block is off-screen; the next full replay
+  corrects it. Clicking a block unfolds it to every row (each row keeps
+  its own fold and click identity) through a full replay, and clicking
+  again folds it back. Live `assistant/live-chunk` transients
+  (`text-delta` / `reasoning-delta`) feed a streaming row at the block's
+  tail, coalesced to ~80ms and dropped on `settle-assistant` or the
+  durable `assistant/message`, so progress shows during a step instead
+  of only between steps.
+  Each block's rule is a CSS band painted per buffer row
+  (`paintGutter`, repainted from `onRender`), not the `┃` glyph: a
+  stacked glyph inks ~14px of the 16px cell and reads as a dashed line,
+  while the band fills the row box and stays unbroken across blank
+  lines and column re-wraps. The gutter only reads as a separator when
+  no glyph ever reaches it, which takes three rules: every logical line
+  is hard-wrapped to `cols - 2` and indented, so xterm's soft wrap
+  never restarts a continuation at column 0 under the rule; a block
+  starts on its own line whenever the pty did not end its last line
+  with `\n` (a bare `\r` means readline still owns that line and will
+  erase it); and row text is sanitized — captured terminal output
+  carries real `\r`s that otherwise rewind to column 0 and overwrite
+  the row's own indent and fold hint. Window `replace`/`prepend`
+  replays the merged timeline (pty chunks + blocks, stable sort by
+  time, pty first on ties) and anchors the event watermark at the
+  window's newest seq, so an append can never re-fold history into
+  duplicate blocks. A pty replay chunk schedules one coalesced redraw
+  (~150ms) and suppresses block appends meanwhile, so a command's rows
+  never interleave with the prompts its wipe just printed. Reload
+  replays the persisted window the same way. The pty side of that merge
+  is timed by arrival frames, not by the replayed chunk: a bind replay
+  is a single frame, so timing it by the chunk would drag the whole
+  scrollback to the bind moment and bunch every shell record after
+  every block. Each live frame's `(time, length)` is persisted per
+  session in localStorage, and the replayed text is sliced back into
+  timed segments from the end (`segments()`); a resync trims the
+  timeline to what the replayed text still covers, and a session this
+  browser never watched falls back to its raw chunks. Verified in
+  `block-test`: shell output injected between two turns keeps its place
+  across a reload.
+
+Blocks as the view's primary unit. The single-canvas surface caps
+presentation at the character grid — per-cell colour, no rounded
+corners, no element-level type, no hover states. The block view
+(`block-view.ts`) makes a DOM column the surface, and a block is a
+*stretch of the session*, not a command:
+
+- Everything the terminal printed between two agent tasks is one shell
+  region, rendered by a real xterm (`block-terminal.ts`) with no chrome
+  of its own: PS1 line, command echoes and output exactly as the shell
+  produced them. Regions are cut by wall-clock task boundaries
+  (`splitByTime` in the bridge), so a stretch spanning several tasks is
+  split between them and interleaving survives — verified live with a
+  shell/agent/shell/agent run yielding `S A…A S A S A`.
+- An agent task is a card: coloured, labelled rows in the canvas's own
+  role palette, a two-line preview folded, every row expanded, and its
+  closing line.
+- The seat mirrors the canvas's view shell. Its scrolling column is
+  absolutely positioned so it contributes no intrinsic height — without
+  that the view area grows to content and the composer lands on top of
+  the output (522px view area vs a composer starting at 604px).
+
+Dropped along the way: slicing shell output per command. A block per
+`OSC 133;D` run gave every command a synthetic header card and destroyed
+the terminal's own design; the marker scanner and its `commands()` API
+were removed again.
+
+The block view occupies the stock `chat` view cell (same id, lower
+priority), which is `DEFAULT_VIEW_ID` in
+`ui-conversation/src/client/view-selection.ts`. That placement is
+load-bearing, not cosmetic: a sibling tab is reachable only through a
+stored view selection, so while the canvas held `chat` a fresh session
+silently opened the old surface.
+
+The strip is visible again, because a session has two worthwhile
+readings — the terminal (`会话`) and the trajectory ledger (`轨迹`,
+`ui-trajectory`) — and dsh already draws that switcher. One dsh detail
+had to be worked around: `viewTabs()` in `ui-conversation/apply.ts`
+builds the tab list from the RAW slot entries rather than the shadowed
+ones, so a shadowing registration shows up as a *second* tab instead of
+replacing the first. The stock `ui-chat` row is therefore disabled in
+`packages/dshell/bundle/cordis.patch.yml`; its two child slots
+(`conversation.chat.node`, `conversation.message.images`) go with it,
+which costs nothing because the block view renders neither.
+
+The canvas is now deleted — `canvas.ts`, its `DshellTerminalView`, the
+ANSI block renderers in `blocks.ts` (`blockSegments`, `renderNotice`, the
+gutter/colour helpers) and `activeTerm`, which existed only so the
+composer could copy the canvas selection. The block view is the only
+conversation surface.
+
+How the block view stays live (each of these was a visible defect before it
+was written down):
+
+- **Streaming.** The event window delivers the model's partial answer as
+  client-only `transient` entries (`assistant/live-chunk`); the durable
+  `assistant/message` only lands when the attempt settles. The view folds the
+  deltas into `TurnBlock.stream` and drops that line the moment the message
+  arrives (`settle-assistant` carries it), so the answer grows token by token
+  and is then replaced in place rather than duplicated. The fold is advanced
+  incrementally with a durable watermark and renders on one `requestAnimationFrame`
+  at most, instead of re-folding the whole window per event.
+- **A sent message is on screen immediately.** The durable `user/message` is
+  appended when the first step begins — measured at 8–11 s after `turn/start` on
+  this route — so waiting for it left the request invisible for that whole
+  window. Three sources cover the path, all keyed by prompt id (`rpcId`) and all
+  retired by the durable row: the durable `agent/inbox/spliced` event (the host
+  admitting the prompt, ~1 ms after the turn opens), the host queue, and the
+  client's local submission echo (`beginSubmission`). A rejected prompt clears
+  them via `promptError`.
+- **A shell region renders at the width its output was produced at.** The grid
+  spans the column and widens only as far as a *redraw* needs (a stretch drawn
+  and then drawn again), measured by simulating the cursor column: `\r` and
+  `ESC 8` rewinds are what move a repaint's origin, while a long echoed line that
+  merely ends with a carriage return is left to wrap. Without this a padded
+  progress bar stacked one row per repaint. The PTY itself is
+  driven to the same width, so this normally matches; see Phase 9.6 for the
+  resize path.
+- **The font size is one value for the whole view.** A session's PTY width
+  changes over its life — it starts at the backend's default and is resized to
+  the column once the view measures one — so historical regions legitimately
+  hold lines printed at a different width than today's. Scaling each region's
+  font to fit its own widest line rendered those stretches at different sizes in
+  the same view (13px for the ones at the column's width, 9px for the ones
+  printed wider), which reads as a broken terminal rather than as history. Every
+  region now renders at the base size, and a grid wider than the column scrolls
+  horizontally instead: correct redraws are unaffected, since the grid is what
+  keeps them on one row, not the font.
+- **Regions update in place.** A region's React key is its identity alone: keying
+  it by the PTY version remounted every terminal on every output chunk, which
+  threw away its scroll position and re-parsed the whole region per frame.
+
+Still open: terminal input parity (`onData` for Tab, arrows and Ctrl+C
+had no owner once the canvas went: shell input goes through the composer,
+so interactive full-screen programs still need a terminal that owns the
+keyboard), full-screen programs (PTY rows follow the seat, but a region
+renders at its own content height), per-row folding inside an expanded
+task card, virtualizing long sessions, and image attachments on a
+not-yet-durable bubble (its text shows, its previews do not).
 
 ## Phase 6 — Real commands (`/clear`, `/new`, `/compact`)
 
@@ -225,38 +546,86 @@ Plugins touched:
 Acceptance check:
 
 - `/clear` clears the xterm buffer and the main PTY scrollback in one
-  operation.
+  operation. *(Retired in Phase 10.6 — the in-terminal `clear` already
+  clears the canvas, and the command's epoch reset was the only thing
+  that could drop persisted history mid-session.)*
 - `/new` opens a new session through dsh's standard creation path;
   the new session starts in `shell` mode with no PTY until first
   access.
 - `/compact` triggers dsh's compaction service and reports its result.
 
-## Phase 7 — Terminal context injection
+## Phase 7 — Terminal context management (cursor + command records)
 
-Goal: agent turns include the recent `main` PTY output as a leading
-context block.
+Goal: agent turns carry the main shell's activity **incrementally** — only
+what the model has not seen — and the agent can look back at commands on
+demand.
 
 Covers decision: 4.6 (injection).
 
 Plugins touched:
 
-- `dshell-mode` (host face) — when the composer submits in `agent`
-  mode, inject the truncated recent-output block before the user
-  message.
-- `dshell-mode` (browser face) — none; the cap and the prompt-anchor
-  detection are host-side.
+- `dshell-terminal-bridge` (host face) — the bridge now owns a per-shell
+  **absolute cursor** on top of the PtyBuffer window:
+  - `absOffset` counts every appended byte and survives window trims, so
+    an offset means the same thing after retention slides;
+  - a pure splitter (`commands.ts`) joins the two streams the bridge
+    already sees — the input it forwards to the PTY and the raw output —
+    into `{command, exitCode, output}` records. Bash's own
+    `OSC 133;D;<code>` prompt marker (already installed by the init PS1)
+    closes each record; input is assembled through backspace / Ctrl+C /
+    Ctrl+U / CSI handling. Untracked commands (history recall, an
+    external writer) still yield a record with empty `command` and real
+    output;
+  - `since(sessionId, cursor?)` returns the delta: sanitized text,
+    commands closed since the cursor, `dropped` when retention slid past
+    the request, `cleared` when the cursor belonged to an earlier
+    **generation** (a respawn takes a fresh generation);
+  - `history(sessionId, limit)` returns the latest retained commands;
+  - both never spawn a shell, so subagent and never-opened sessions stay
+    context-free.
+- `dshell-mode` (host face) — keeps a per-Agent **watermark**. On
+  `agent/pre-step`, a step carrying a genuine `source.kind === 'user'`
+  message injects one plugin-sourced (`form: 'notice'`, summary
+  "主终端增量") message with the command summary and the sanitized new
+  output, then advances the watermark. A first read (no watermark)
+  delivers the retained window once; a stale cursor (`cleared`) advances
+  and injects nothing, so a respawn never replays the seeded scrollback.
+  Output is capped at 8 KiB, kept from the newest end.
+- `dshell-commands` (host face) — `dshell_terminal_read({cursor?, limit?,
+  includeOutput?})`: without a cursor, the latest commands; with one, only
+  what happened since. The tool result ends with the new cursor so the
+  model can continue from it.
+- `dshell-mode` (browser face) — filters `user/message` events whose
+  source is not `user` out of the canvas row extractor, so injected
+  context and guard notices never paint as fake `你` rows.
 
-Acceptance check:
+The old whole-tail snapshot (re-sent every turn, escaping control codes
+and prompt markers into the prompt) is gone. The Phase 7 client-side
+deviation (a fence prepended to the user's own message) stays gone:
+injection is host-side at the step, where the message source is durable.
 
-- Run `ls /tmp` in shell mode, switch to agent mode, ask "what was the
-  last command output?".
-- The model's reply references the captured output verbatim.
-- The injection respects the 100-line / 4 KiB cap; a runaway command's
-  output is truncated at a UTF-8 boundary.
+Acceptance check (verified end-to-end with a live model):
+
+- `echo ctx-one` then `pwd` in shell mode, then an agent turn: the
+  durable log shows one injected block listing exactly those two
+  commands with exit codes and sanitized output (no `\u001b]133;D`
+  markers, no `\r`).
+- A second command + turn injects only the new command — no repetition
+  of the first block.
+- `dshell_terminal_read` called by the model returns the command records
+  plus a `g<generation>:<offset>:<seq>` cursor.
+- The injected block does not appear as a user row in the canvas.
+- 12 pure-function checks cover the splitter and window math:
+  `pnpm tsx packages/dshell/terminal-bridge/scripts/check-commands.ts`.
 
 ## Phase 8 — `dshell_get_main_terminal` tool
 
 Goal: the agent has a reliable way to learn the `main` PTY session id.
+
+Superseded by Phase 9.11: pointing the agent at the user's own shell is
+the arrangement that could not work (one PTY has one foreground), so the
+tool is now `dshell_get_agent_terminal` and returns the id of a shell the
+agent owns. Everything below describes the shell the agent used to share.
 
 Covers decision: 4.6 (agent access to `main`).
 
@@ -293,6 +662,650 @@ Acceptance check:
 - Closing a session in the sidebar: bridge closes ws and calls
   `ctx.terminals.kill(agent, mainId)` cleanly.
 
+## Phase 9.5 — Session panel (archive + purge)
+
+Goal: the sidebar can put a session away and remove one.
+
+Shipped:
+
+- Archive is a dshell-owned durable tag (`$DSH_HOME/dshell/tags.json`),
+  rendered as the collapsible `已归档` group; dsh's own archive lives on
+  the disabled workspace registry, so it is unusable here.
+- Purge removes the session directory, its projection-cache entry and
+  the dshell PTY log plus sidecars (`dshell-workspace/src/purge.ts`),
+  and frees the session's shell via
+  `DshellTerminalBridge.releaseSession`.
+- Both travel over one exact `/api/dshell/sessions` route behind dsh's
+  own trust fence, not the Typert Remote table (whose client artifacts
+  are generated from dsh's packages).
+
+Hard-won constraint — a *loaded* session cannot be deleted immediately:
+dsh discards the only teardown capability at
+`packages/api/session-controller/src/agent.ts` (`(await
+ctx.agents.resume(...)).agent` throws the `AgentHandle` away), and
+`SessionStore` exposes no per-session detach. So while a session is in
+`ctx.sessions`, its log writer stays open and would recreate a deleted
+directory on the next event. The delete branch therefore has three
+outcomes: running → refused; loaded-and-idle → terminal released now,
+log removal scheduled and executed at the next start (before any client
+can resume); cold → purged immediately.
+
+## Phase 9.6 — SSH device sessions
+
+Goal: a session can run on a remote device instead of this machine.
+
+Shipped:
+
+- `dshell-ssh` (new host+client package): a durable device registry
+  (name, host, port, user, remote directory, login method) whose secrets
+  are separate 0600 files under `$DSH_HOME/dshell/ssh/keys/`, a card in
+  the Plugins settings section to add/edit/test/delete them, and a durable
+  session→device assignment chosen in the new-session dialog (the row then
+  wears an `SSH` badge ahead of its title). The badge is the whole marking:
+  no device name and no remote path, because the row's job is to identify the
+  session and say which kind it is, and a host plus a path is a fact about the
+  device — the SSH settings card and the connection screen already own those,
+  and printing them squeezed the session's own title down to `pipe-…`. The
+  badge is the theme's info colour rather than the row's inherited text colour,
+  so a glance down the list separates local shells from ssh ones. The dialog
+  asks for the run target first —
+  a 本机 / SSH 设备 slider — and only shows the device list once SSH is
+  chosen, with a 远端目录 field beside it (it follows the device until the
+  user types their own). An SSH session's local directory is not the user's
+  to choose: it is the mount directory described below.
+- Login method is per device: `key` (stored private key, or the harness
+  user's own agent/config when none is stored) or `password` (stored
+  0600, handed to ssh through OpenSSH's askpass hook — ssh has no password
+  flag, and the secret never appears in a command line).
+- Routing: `ctx.shell.resolve` is wrapped, so a bound session's shell
+  commands are rewritten to `ssh … 'cd <dir> && exec bash -lc <command>'`
+  and the stock executor keeps owning timeouts, caps, streaming,
+  background handles and cancellation. The target is resolved per call
+  from `ctx.agents.currentInitiator()`, so nothing about tool signatures
+  or registrations changes.
+- The local hop runs unconfined (`danger-full-access`): the session's
+  access mode describes THIS machine, and confining the `ssh` client
+  would deny it the network while the command that matters executes
+  under the device's own policy.
+
+Verified live against a private sshd on 127.0.0.1:2222 with its own host
+and client keys: a bound session's `echo $SSH_CONNECTION` returns the
+tunnel's addresses, an unbound session returns nothing.
+
+Shipped since (the session now works in ONE place):
+
+- The **mount directory**: a bound session's own directory is a local,
+  empty directory standing in for the device tree
+  (`$DSH_HOME/dshell/mnt/<device>/<remote path>`), and `remoteRoot` +
+  `mount` travel together in the binding. The harness owns the session
+  directory — it creates it at session creation and reads it later for
+  instruction files, project discovery and sandbox roots, all locally — so
+  a remote path fails those reads (EACCES on `/root/.git`) and a
+  coincidentally existing local path would silently be the wrong tree. An
+  empty local directory satisfies every one of those readers while
+  claiming nothing: the `.git` walk finds no marker and stops at the
+  session directory instead of reaching upward. This is why no preset has
+  to be forked.
+- **`ctx.fs` is dshell's provider**: loaded in place of the stock
+  `fs-sandbox` row and extending it, so an unbound session's calls are the
+  stock implementation verbatim while a bound session's
+  resolve/stat/read/list/write/edit run on the device over ssh
+  (`RemoteFileSystem`). Dispatch is by `ctx.agents.currentInitiator()`,
+  the same ambient signal the shell seam uses, because a filesystem call
+  carries no session field. The literal-edit and line-ending rules are
+  mirrored in `literal-edit.ts` (the local backend exposes them only
+  through its source subpath, which an emitting build cannot import) and
+  the per-call sandbox mode is enforced against the device's own tree.
+- **`ctx.subprocess.spawn`** is wrapped for the search tools: `glob`/`grep`
+  spawn ripgrep directly rather than through `ctx.fs`, so a bound session's
+  `rg` run is rewritten into `ssh … 'cd <dir> && exec rg …'`. Paths need no
+  translation — ripgrep prints them relative to the directory it ran in,
+  and a relative path means the same place to the session's file
+  operations. The shell path is deliberately not re-routed here (it is
+  already an `ssh` line). **The device needs `rg` on PATH**; a missing one
+  fails with a message that says so (install ripgrep on the device, or the
+  search tools have nothing to run).
+- **Connections are multiplexed** (`ControlMaster`, one socket per *device*
+  under `$DSH_HOME/dshell/ssh/ctl/`, named by a digest of the destination and the
+  device id — Phase 10.10): one file read is a
+  resolve, a stat and a cat, and a fresh connection each time costs a full
+  handshake and authentication.
+- The new-session dialog keeps the run target visible when no device is
+  registered (hiding it made SSH undiscoverable exactly when it was
+  needed) and links to Settings → 插件, scrolled to the device card. That
+  jump is best-effort — the settings panel keeps its open state and
+  selected section in component state, so its own controls are the only
+  way in — and falls back to naming the path.
+
+Verified live against the same private sshd: a bound session's relative
+`read` resolves to the device's file while the local mount directory stays
+empty, a relative `write` lands in the device's tree, and `grep` over `.`
+returns the device's files (the mount is empty, so those results could only
+come from the device). An unbound session's `read` and `glob` are unchanged.
+
+The visible terminal, too:
+
+- The main PTY now runs the **device's** shell when the session is bound:
+  `DshellPtyBackend` asks for a spawn plan per session, and dshell-ssh hands
+  it `ssh … -t 'cd <dir> 2>/dev/null || echo …; exec bash -l'` (with the
+  askpass environment for password logins). The local pty is unchanged — the
+  harness spawns `ssh` inside it, so line discipline, resize and Ctrl+C stay
+  local while the remote shell gets a tty of its own. Interactive commands
+  verified on the device (`pwd`, `hostname` → `VM-0-6-ubuntu`, `whoami` →
+  `root`), and an unbound session's terminal is still the local shell.
+- The plan is resolved by **session identity** (`spec.owner.id`), not by
+  directory: one device tree's mount directory is shared by every session
+  bound to that device and root, so a directory match cannot tell a bound
+  session from an unbound one whose cwd merely looks like a mount — and the
+  latter would get a device shell it has no binding for. The resolver may also
+  *wait* briefly (≤1s) when the session's cwd is already a mount path but its
+  assignment has not landed yet, because creating a session and recording its
+  binding are two round trips and the terminal can attach in between.
+- The `cd` is tolerant and the remote root is created **before** the binding
+  is recorded: the assignment is what makes a session routable, so a binding
+  that exists must imply the directory exists. Without that ordering the shell
+  spawned in the window between the two, failed to `cd`, and silently landed
+  in the login directory.
+- Consequences worth knowing: PS1 and PROMPT_COMMAND are still rewritten by
+  the bridge right after startup, so a remote prompt looks identical to a local
+  one (that rewrite is also what drives the send settle); an unreachable device
+  fails the terminal spawn instead of quietly falling back to a local shell;
+  and a terminal's first prompt is pushed as a snapshot when it opens a block,
+  so a brand-new session renders immediately instead of staying blank until
+  the next reload.
+
+Not routed yet:
+
+- The persona's prompt variable `{{cwd}}` still renders the session's own
+  directory, which for a bound session is the mount path. Overriding it
+  needs a per-agent registration (`ctx.agents.get` returns a bare agent and
+  the variable is registered per agent by the agent loop), so the honest
+  fix is a dshell-owned preset row — the one place a preset fork would pay
+  for itself.
+- Remote instruction files and project skills are not loaded: the mount
+  directory is empty by design, so `agent-instructions` and
+  `skill-filesystem` find nothing there. The model can read them with the
+  file tools, which now work on the device.
+- `@`-file references index the empty mount directory, so a bound session
+  gets no candidates until file-reference search has its own seam.
+- Remote commands assume a POSIX/GNU userland (`stat`, `realpath`, `find`,
+  `mktemp`, `chmod --reference`).
+
+## Phase 9.7 — Connection failures and reconnection
+
+Goal: a device session that cannot connect says so, in the right place, and
+offers the one action that can fix it.
+
+Before this phase the failure was silent in three separate ways: a failed
+`bind` was published on the snapshot and never thrown, so the new-session
+dialog closed over a session that had no assignment and whose directory was a
+device mount (its shell — and the agent's `bash` — then ran on the local
+machine inside an empty stand-in directory); a shell that died during startup
+lost ssh's own stderr with the discarded session and reported only "the shell
+exited"; and the browser retried the socket every two seconds forever, which
+is indistinguishable from a hang.
+
+Decisions:
+
+- **The connection is proved before the session exists.** The dialog runs one
+  real ssh round trip (`test`) *plus* the session's remote directory
+  (`ensureRemoteRoot`) before `createSession`. A device that answers but
+  cannot host the directory is therefore a refusal in the dialog, not a broken
+  session later. `SshClientService.send` gained a `strict` mode so
+  `test`/`mountFor`/`bind` throw while the settings card keeps rendering the
+  published `error` (its Test button catches, since the refusal is already on
+  screen).
+- **The host classifies the death, because only the host can.** A device
+  session's "cannot connect" is an `ssh` process that printed a line and
+  exited; node-pty reports an exit code only. So `markDead` ships
+  `{reason, detail, ready}`: the reason from the exit (signal first, since
+  node-pty calls a SIGHUP `exitCode: 0`), the last ssh diagnostic found in the
+  output (`diagnosticTail`, patterns only — a line that is not a diagnostic is
+  never presented as the cause), and `ready`, whether that shell ever reached
+  a prompt (the init send settles only once the shell answers).
+- **`ready` decides which of two presentations a failure gets.** A shell that
+  *had* reached a prompt gets a marker appended after the output the reader was
+  looking at; one that never did has nothing to append to, so it gets the
+  intermediate screen. `connectionView` in the mode client is the single place
+  that turns `{status, ready, attempt, bound}` into one of `none | panel |
+  notice`.
+- **`bound` is what separates remote from local, and it is read from the
+  session, not the wire.** A bound session's terminal is an `ssh` process: a
+  handshake that takes seconds, can stall, and has a host worth naming, so its
+  startup is an event the user gets a screen for. A local shell is a fork of
+  this very process — up in milliseconds — so it never gets the panel, and its
+  first bind is not narrated either; only a *retry* is, because that only
+  follows a real failure. The binding comes from `ssh.bindingOf(sessionId)`
+  without the "is the PTY on this session yet" gate the wire facts carry: which
+  connection UI a session is even eligible for must not depend on the PTY
+  having caught up. A rebind of a shell that had already answered reports
+  `connecting`, not `exited` — a live shell being re-attached is not a death.
+- **A bind can arrive before its session's agent exists.** The browser opens a
+  session and binds its shell in the same tick, while the host is still
+  composing the agent, and a session *switch* publishes the new current session
+  one tick before anything is built for it. The bridge waits (50ms poll, 4s
+  budget) for the agent instead of throwing: erroring turned that ordinary race
+  into a reported connection failure, which cost the client a retry attempt and
+  a 1s backoff before opening the shell it was always going to get — and drew a
+  "正在自动重连（第 1/3 次）" line on plain local session switches.
+- **Reconnection is bounded and visible.** The client spends at most three
+  automatic attempts (1s / 2s / 4s) on whichever layer is broken — a live
+  socket means the shell died, so the host is asked for a new one with a new
+  `reconnect` frame; a dead socket is reopened — and then stops and says so
+  ("自动重连已停止（3 次均失败）"). The button (`PtyStreamService.reconnect`)
+  clears the budget and tries immediately, which is also the only way out of
+  the exhausted state.
+- **A spawn failure no longer closes the socket.** `bindClient` keeps the
+  client bound and answers with an `error` frame instead of `close(1008)`;
+  closing threw away the connection the retry needs and made the client
+  reconnect into the same wall.
+- **No silent local fallback.** `interactiveShellPlan` and the shell seam's
+  `resolve` now refuse a session whose directory is under the mount base but
+  which has no assignment, naming the reason. That state is reachable by
+  deleting a device, and previously produced a local shell (or local `bash`
+  tool calls) inside an empty directory that looks like a working terminal.
+- **The dialog stops inheriting a mount.** Clearing the directory field was
+  not enough: dsh then inherits the *current* session's cwd, which can be the
+  mount the dialog just refused to prefill. The list now offers the most recent
+  non-mount directory, and a local session with an empty directory that would
+  inherit a mount is refused with the reason.
+
+Acceptance check (driven from the browser):
+
+- A device pointed at a closed port: the dialog reports
+  `ssh: connect to host 127.0.0.1 port 9: Connection refused`, stays open, and
+  no session is created.
+- A session that never connected (page reloaded while the device is down) shows
+  the centred screen — `⚠ 无法连接到 <device>`, the ssh diagnostic,
+  `已自动重试 3 次均未成功。`, 重试连接 / 去设置 — and nothing behind it.
+- A session that *had* a working terminal and lost it gets the red marker at
+  the end of its output (`连接已断开 · <reason>`, the diagnostic, the retry
+  count, then the exhausted line), with the scrollback intact above it.
+- Restarting the device and clicking 重试连接 brings the terminal back at the
+  same place in the history; a local session shows neither treatment.
+
+## Phase 9.8 — Cross-session pipe
+
+Goal: one session's agent can hand a task to another session's agent, wait
+without blocking, and get an outcome back — with the files it opens to the
+other side scoped and automatically reclaimed.
+
+Shipped:
+
+- `dshell-buffer` (new host+client package): a durable link between two
+  sessions that **only the user** can create (there is no agent-facing
+  linking action at all), a deferred-request queue with claim / progress /
+  finish / fail, and scoped revocable folder grants.
+- The pipe panel enters the frame-wide `shell.overlay` seat, opened from the
+  sidebar header — the duplicated `＋ 新会话` button there becomes `管道`
+  (the stock shell already offers session creation). A composition without
+  `dshell-buffer` keeps the original button.
+- The wait semantics follow the one constraint dsh imposes: **a turn cannot
+  be suspended and resumed**. So `delegate` returns a ticket id immediately
+  and the requester's turn ends naturally; when the ticket settles, the
+  buffer delivers a new message that reopens the turn — the same
+  completion-delivery policy dsh's own job registry uses (idle → `followup`,
+  busy → `inject`).
+- Reachability is checked, never guessed: `ctx.sessionController.resolveAgent`
+  is dsh's own resume path, and a device-bound target is probed over its SSH
+  connection before admission, so an unreachable target is refused with the
+  real reason instead of timing out later.
+- Nothing can wait forever: a ticket past its deadline is settled `timeout`
+  by the host watchdog, a disposed worker session settles its live tickets
+  `failed`, and every settlement path wakes the requester.
+- Grants are directories in the **granter's** namespace, resolved as the
+  granter (so a device session's tree is read over its own route), with
+  containment checked on the canonical target keys — `..` and symlinks in a
+  request cannot escape the granted area. A write is fenced by the granter's
+  own sandbox policy, so a grant can never widen it.
+- Grants are reference-counted by unsettled tickets: count 0 revokes
+  immediately, and the panel's 回收 button is the manual escape hatch.
+- **Transfer** moves one file, bytes intact, between the granted area's
+  execution world and the caller's own. `ctx.fs` has no byte write (both
+  its mutations take text), so the bytes ride base64 on the `ctx.shell`
+  seam's stdin and the destination world's own `base64 -d` decodes them.
+  That seam rather than a new filesystem method because it already routes
+  per initiator — a device session decodes on the device with no new
+  transport — and it already fences the run by the session's resolved
+  policy, so a transfer is bounded exactly where `writeText` is. With no
+  `dest` the file lands at the same relative path, i.e. the corresponding
+  location in the other world; binary files travel, which read/write
+  cannot carry. `side="from"` needs read, `side="to"` needs write, and
+  one call is capped at 8 MiB by default (32 MiB hard cap).
+
+Model experience: one `dshell_buffer` tool with five families of action
+(links, ticket lifecycle, the grant view, granted file access, transfer)
+plus one system-prompt section stating the protocol — delegate
+asynchronously, never wait, and always settle a request you received.
+
+Acceptance check (driven from the browser, two local sessions):
+
+- The `管道` button opens the panel; two sessions are connected there and the
+  connection survives a reload.
+- A `delegate` in one session wakes the other with a framed request; `tickets
+  direction="in"` shows it, `claim` / `progress` / `finish` advance it, and
+  the requester receives the result as a new message.
+- A request nobody answers, with a short `deadline_ms`, is settled `timeout`
+  and the requester is still woken.
+- A grant is visible to the grantee with the granter's description, areas and
+  remaining count; `read` returns the granter's file text, `write` writes
+  back, and a path outside the granted area is refused.
+- `transfer` pulls the granter's file to the grantee's machine and pushes it
+  back, byte-for-byte including a binary file, with no `dest` landing on the
+  same relative path; a source over `max_bytes` is refused, and `side="to"`
+  without a write right is refused.
+- Settling the ticket removes the grant from `grants` and from the panel.
+
+## Phase 9.9 — Unbounded file navigator
+
+Goal: the right sidebar's file pane moves like a file browser — up with
+`..`, sideways through clickable path segments, back and forward through
+visited directories, and on a device session through the **device's**
+tree, all the way to `/`.
+
+Shipped:
+
+- `dshell-files` (new host+client package). The host face adds one
+  connection route, `/api/dshell/files`, action `list`: it resolves the
+  session's agent, then inside `withInitiator` — so a device session
+  lists over its own SSH route with no new transport — resolves the
+  target, requires it to be a directory, and answers with the canonical
+  absolute path in that world plus the entries and a `truncated` flag.
+- Why a dshell route rather than dsh's `workspaceFiles.list`: that
+  endpoint is deliberately fenced to the session's workspace root
+  (`workspace-file/outside-workspace`), and the request was to walk to
+  `/`. `ctx.fs` is the same seam underneath without the fence, the
+  sandbox fences only writes, and `toRemotePath` passes an absolute path
+  outside the mount through unchanged, so `..` out of the mount on a
+  device means the device's own `/`. Listing is therefore at the same
+  trust level as the `read` tool, which already reaches outside the
+  workspace.
+- The browser face registers its own `SidebarRightTabDefinition` for the
+  `files` kind at `priority: 'extension'`. dsh is built for this: an
+  extension-band definition shadows the builtin of the same kind, the
+  pane's keyed seat switches to the extension's id, and removing the row
+  restores the stock body. The definition also contributes the required
+  guide entry, which is what keeps the pane's default page — the seed
+  takes the sole guide entry's kind.
+- Interaction: a `..` row drawn like a folder (hidden at `/`), single
+  click on a folder still expands or collapses it, double click on a
+  folder makes it the new root, double click on `..` goes to the parent
+  as an ordinary navigation (so back returns), a file click still opens
+  the preview, clickable path crumbs jump anywhere on the path, and
+  `←` / `→` / `⟳` drive history and reload. Two clicks on a folder
+  cancel out, so no double-click delay is imposed on expand.
+- Navigation state (root, history stack and index, per-path level cache,
+  expanded set) lives in a declared per-session store bucketed by tab
+  id, because the pane mounts only the active tab's body while the store
+  outlives tab switches. Forward history is truncated on a new
+  navigation, browser-style; a revisited level draws from the cache.
+- Listings are generation-guarded per (tab, path) so the latest request
+  wins, and the tab record's abort signal ends a bucket: no request is
+  made for a dead tab and no late settlement writes to one.
+- One listing is capped at 1000 entries with a `truncated` notice, and
+  failures are graded by cause (missing / not a directory / permission /
+  other). Read-only: no delete, rename, or create.
+- A jump button left of the reload button sends the session's shell into the
+  directory on screen, so browsing to a place and working there are one
+  gesture. It has to be input, not a command: a shell's working directory is
+  process state, so a command run through the shell seam would not move the
+  interactive shell. The line goes to the terminal bridge's own input path —
+  the same one a keystroke takes — so it is tracked and rendered like any
+  command the user types, and it is the canonical path of the session's own
+  world, so on a device session the device's shell cds on the device. The
+  listing carries `canCd` so a composition without the bridge draws no button
+  rather than a dead one, and a refused jump says why in the pane, because the
+  shell moves off-pane and would otherwise look like a dead click.
+- Directory rows and the `..` row are also drag sources: dropping one on the
+  terminal runs the same jump. It is **pointer events, not HTML5 drag and
+  drop**. A native drag session is a black box — when the drop is refused there
+  is no event to observe and no handler to correct, only the "no drop" cursor,
+  which is exactly what a real mouse hit here (the drag started, carried the
+  right payload and reached the terminal, and the browser still refused the
+  drop; nothing in the page or in dsh could account for it). Pointer events
+  carry the same gesture with nothing to arbitrate: the press, the move and the
+  release are the pane's own, the target is decided by where the pointer is,
+  and touch and pen work by the same code. The gesture stays a click until it
+  moves past a threshold, so one click still expands a folder and two still
+  open it. The pane installs the listeners while it draws a tree whose host can
+  drive a shell; the terminal view gets an outline and the page cursor says a
+  drop is possible, and both are put back when the gesture ends. File rows are
+  not drag sources — there is no directory to jump to.
+
+Acceptance check (driven from the browser):
+
+- The right sidebar's file tab draws the new pane with its chip and its
+  guide capsule, and the stock file tree is not reachable.
+- `..` walks from the session's working directory to `/`; the row is
+  absent at `/`; a path crumb jumps to that ancestor; double-clicking a
+  folder inside current root makes it the root, and `←` returns.
+- Single click still expands a folder, a file click still opens the
+  preview, `⟳` re-lists the current root, and switching to another tab
+  and back keeps the current directory.
+- In a device session the same pane lists the device's tree — entering
+  `/etc` proves the listing was inherited from the session's routing.
+- The jump button sits between the path and the reload button; on the local
+  session it moves that session's shell to the directory on screen, and on the
+  device session the device's shell — the prompt's own `cwd` report moves with
+  it — while the command shows up in the session's terminal record like a typed
+  one.
+- Dragging a directory row onto the terminal moves the shell there too, with
+  the drop area outlined while the pointer is over it and the cursor changed
+  until the release; releasing the same row over the sidebar does nothing at
+  all, and file rows cannot be dragged. The folder still expands on one click
+  and still opens on two — the drag is the only thing the pointer tracking
+  adds.
+
+## Phase 9.10 — Two-pane file transfer
+
+Goal: in a device session's sidebar, move files between this machine and
+the device by dragging them — SFTP's job, done with the seams dshell
+already has, and offered only in the UI (no model-facing tool).
+
+Shipped:
+
+- `dshell-files` grows a second sidebar type (`kind: 'transfer'`, a page
+  type) and a second route, `/api/dshell/transfer` (`state`, `list`,
+  `copy`, `job`, `cancel`). It is the same package rather than a new one
+  because it is the same subject seen twice: the two panes draw the
+  navigator's own rows and levels, and the two types share one store
+  instance, so neither view can hold a stale idea of which session it
+  belongs to.
+- **The two worlds are reached by the seams that already exist**, so the
+  transfer adds no transport. The device side is the session's own world:
+  `ctx.fs` reads and lists inside `withInitiator`, exactly as the
+  navigator does. This machine is the **explicit absence** of an initiator
+  (`ctx.agents.withoutInitiator`), stated rather than assumed, because a
+  request that happened to inherit a session would otherwise read the
+  device behind the local pane's back. Writes go through `ctx.shell` with
+  the payload on stdin as base64, because `ctx.fs` has no byte write —
+  both of its mutations take text — which is the same byte transport
+  `dshell-buffer` settled on for its cross-session copies.
+- **A local destination is written in process** (`node:fs`), and the
+  reason is measured rather than aesthetic: each harness-born process
+  costs roughly 0.4 s in this deployment, so the shell seam charges that
+  for every file, and the local side is not a place that needs a process
+  at all — it IS this process's filesystem, the same assumption the local
+  pane's root already makes by asking `os.homedir()`. A device
+  destination still gets one `ssh`-borne command per file, and that
+  command creates the parent, decides whether the target may be replaced,
+  decodes the payload and publishes it, because asking `ctx.fs` for a
+  resolve and a stat first would be two more round trips for answers the
+  command already has.
+- Bytes are published through a temporary file in the destination
+  directory and a rename, so a transfer that dies halfway cannot destroy
+  the file it was replacing; an overwrite keeps the target's mode and a
+  new file gets 0644 (a `mktemp` file's own 0600 would make every transfer
+  arrive private). The local world passes `danger-full-access` explicitly:
+  the actor here is the user — the route sits behind dsh's authenticated
+  fence, no tool reaches it — and the alternative, the session's own mode,
+  describes what the MODEL may do on this machine and defaults to the
+  session's mount directory.
+- A copy is a **job**, because a directory copy is a walk plus one write
+  per file and can outlast any sensible request. `copy` answers with the
+  job immediately, the view polls it every 400 ms, and the walk's entry and
+  byte totals are known before the first byte moves — so the line reads
+  `xfer-src → 传输中 16 KB 1/400 项` with a bar and a cancel. Cancel
+  aborts the run (the signal reaches the seam calls); a cancelled or failed
+  copy leaves whatever it had already written, which is why the conflict
+  question exists rather than a silent overwrite. A settled job stays
+  readable for five minutes, then the registry drops it: this state belongs
+  to the boot that started it.
+- Semantics worth stating: a dragged folder is copied **as itself** into
+  the destination directory (the reader sees the folder appear by name), a
+  drop lands in the directory row under the pointer or in the receiving
+  pane's own directory when there is none, files are capped at 32 MB
+  (the base64-stdin payload, the same ceiling as the buffer's copy), a
+  plan is capped at 20 000 entries and 2 GiB, and anything that is neither
+  a file nor a directory (a symlink, a socket) is skipped and counted.
+- The way in is a button in the navigator's header, drawn only when the
+  transfer type is registered AND the session is device-bound with a mount
+  directory — a binding without one routes only the shell, so its file
+  operations stay local and a transfer would silently mix the two
+  machines. A local session therefore shows no button at all. The transfer
+  type contributes **no guide entry** on purpose: the pane seeds its
+  default page from the sole guide entry's kind, so a second entry would
+  move every session's default page onto the guide itself.
+- The drag is the navigator's technique again — pointer events, not HTML5
+  drag and drop — extended for two panes: any row (files included) is a
+  drag source, the receiving pane is outlined and the directory row under
+  the pointer is washed while the pointer is over it, and the target pane
+  is told from the source pane by the two panes' own data attributes. The
+  gesture stays a click until it moves past a threshold, so a folder still
+  expands on one click and opens on two.
+- Two things were corrected after watching it in the browser. A folder
+  copied into the drop directory used to spread its *contents* there; it is
+  now copied as itself, one level below. And the view must **fill** the
+  pane it is mounted in: the docking kit puts a tab body in a BLOCK pane
+  body that scrolls, so `flex: 1` alone left the view at its content
+  height and pushed the progress strip below the fold — `height: 100%`
+  makes each tree scroll inside its own column and keeps the strip in
+  view. The panes have no separate "up" button either: the crumb line is
+  clickable, so an up control next to it was one control too many.
+
+Acceptance check (driven from the browser, against the throwaway local
+`sshd` rig as the device):
+
+- A device session's file pane shows the transfer button; a local
+  session's does not.
+- Opening it draws two trees — 本机 on the left at the harness user's
+  home, the device on the right at the session's directory on that device
+  — each with its own crumbs and reload, scrolling inside its own column.
+- Dragging a local folder onto the device pane creates that folder (with
+  its subdirectories) in the drop directory, byte-identical (`diff -r`);
+  dragging a device file onto the local pane lands it in the local
+  directory with a matching `md5sum`.
+- Dropping onto a directory row puts the entry **inside** that
+  directory; dropping on the pane's own area puts it in the pane's
+  current directory. Clicking an ancestor crumb moves that pane up.
+- A 400-file folder reports its totals and progress, and 取消 stops it
+  (state `cancelled`).
+- Copying a name that already exists fails with the overwrite question;
+  覆盖 replaces it and keeps the file's previous mode.
+- Files above 32 MB are refused by name; a symlink is skipped and counted.
+
+## Phase 9.11 — The agent's own terminal, and the status card
+
+Goal: make "the terminal stays usable while the agent works" actually
+true, and give the session one place where its state is visible. The
+first half is what makes the second possible: once the agent prints into
+a shell of its own, the user's timeline is the user's again — and the
+agent's shell becomes something worth watching.
+
+Shipped:
+
+- **Two shells per session** (`dshell-terminal-bridge` host). The
+  bridge already owned `main`; it now also owns `agent`, the same
+  session Agent's second PTY under a different owner-local name,
+  spawned **lazily** on the agent's first need for a terminal (a
+  session whose agent never runs a shell pays nothing, and a device
+  session does not open a second ssh connection for a panel nobody
+  opened). It gets its own persisted log
+  (`<dsh-session-id>.agent.log`), the same prompt/PS1 init and the same
+  settle marker — `runInit` was generalized so both shells share one
+  implementation, differing only in who hears about the frames and what
+  the owner fixes up after the seeded scrollback is restored.
+- **The agent's shell forks the user's**: it opens in the directory the
+  user's shell is sitting in, read from the user's own prompt line
+  (`user@host:dir$`, `~` rebuilt as `"$HOME"` so it still expands),
+  because nothing on this wire reports a PTY's working directory. Best
+  effort by design: a shell in the middle of a command ends in output,
+  not in a prompt, and the fork then stays in the session's own
+  directory.
+- **The sync stays one-way and read-only.** The user's activity keeps
+  reaching the agent's context through Phase 7's `主终端增量`
+  injection, and `dshell_terminal_read` keeps reading the user's shell.
+  The agent does not type into it: that is the same foreground contest,
+  in the other direction.
+- **The agent's stream is a second, read-only stream** on the same
+  `/dshell/pty` route (`bind` with `stream: 'agent'`; `agent-open` to
+  spawn it, `cols`-only `resize`, `agent-info`/`output`/`ready`/`closed`
+  back). The panel drives the shell's width so it wraps where the reader
+  sees it, and never its rows — a full-screen program needs a full
+  terminal's rows, and the panel scrolls.
+- **`dshell_get_agent_terminal`** (`dshell-commands`) replaces
+  `dshell_get_main_terminal` and waits for the init handshake to settle
+  before returning the id, because the agent's very next act is a send
+  and the backend rejects one that overlaps another.
+- **The task card became the status card** (`dshell-mode` browser): an
+  integrated status list rather than a terminal window. It is
+  permanent — idle says so and stays openable — one narrow line while
+  collapsed (the phase of the running plan, else the parked/pipe/shell/
+  link state, else `空闲`), and rows when expanded: 计划, AI 终端 (its
+  detail is the live read-only terminal), 智能体 (dsh's subagent
+  catalog, fetched when the row opens), 中断点 and 管道任务 (the
+  cross-session pipe's effect on this session) and 连接. A row opens
+  its detail; nothing opens by itself. The column reserves the
+  collapsed card's height, so a floating pill never sits on the
+  terminal's first line, and a `StatusCardBoundary` contains any fault
+  to the card instead of the view.
+- **中断点 is the pipe's parked state, made visible.** A ticket this
+  session asked for and did not get an answer to is a breakpoint: the
+  agent delegated, ended its turn on purpose and waits for the reply
+  that reopens it — without this row the session looks idle while it is
+  in fact suspended. The row's detail lists each outstanding ticket with
+  its peer, state, remaining deadline, progress count and a 撤回; 管道任务
+  is the other direction, the work another session handed to this one,
+  and its detail opens the pipe panel. Both read the same pipe snapshot
+  the panel does, polled by the card only while this session actually
+  has a pipe.
+- **The fake agent block is gone.** A turn whose rows are all command
+  echoes — what `/permission <preset>` produces, since it submits a real
+  turn with no model work in it — renders as one quiet line
+  (`▸ /permission … · preset …`); a closed turn with no rows, steps or
+  tokens renders nothing at all.
+
+Covers decision: 4.10 (two shells per session, agent-owned terminal).
+
+Plugins touched:
+
+- `dshell-terminal-bridge` (both faces) — the agent shell, its record,
+  teardown paths, the agent stream and its frames; the client service
+  gains `.agent`, `.agentText()`, `.watchAgent()`, `.openAgentTerminal()`,
+  `.resizeAgent()`.
+- `dshell-commands` (host face) — the renamed tool and its description.
+- `dshell-mode` (browser face) — `status-card.ts` (rows, details, the
+  card's own terminal view), `agent-terminal.ts` (the read-only xterm),
+  the block model's command-only line, the view's reserved top space.
+
+Acceptance check:
+
+- While an agent turn runs, `Enter` in shell mode executes in the user's
+  shell immediately (measured 34 ms from keypress to echoed output) and
+  the agent's own command still completes; the two shells have separate
+  foregrounds and separate Ctrl+C.
+- `dshell_get_agent_terminal()` returns a PTY id whose prompt is the
+  directory the user's shell was in; commands sent there appear in the
+  status card's AI 终端 row within a frame.
+- `/permission <preset>` adds one line to the timeline and no task card.
+- The status card is present on every session (collapsed ~35 px tall,
+  ≤330 px wide), and expanding it lists the rows without opening any
+  detail.
+- With a delegate outstanding and the worker still busy, the requester's
+  card reads `⏸ 等待 <peer> 回信` (row detail: peers, state, remaining
+  deadline, progress, 撤回) and the worker's reads `⇄ N 个管道任务待处理`;
+  once the worker finishes, both rows are gone.
+
 ## Phase 10 — Packaging
 
 Goal: `dshell-*` packages install with `pnpm add` and dsh loads them
@@ -316,3 +1329,733 @@ Acceptance check:
 - `pnpm run doc-sync` generates catalog entries without warnings.
 - A clean dsh install with only `@deepseek-ai/dsh-shell-suite` added
   loads dshell with no manual config.
+
+## Phase 10.1 — Desktop transport (P0)
+
+Goal: the terminal survives a composition without `webServer`, so the page can
+run inside the desktop shell.
+
+Deliverables:
+
+- `dshell-terminal-bridge` host: the frame protocol served on
+  `ctx.connection.fetch` routes — `GET /api/dshell/stream` (long-lived
+  newline-delimited body) and `POST /api/dshell/stream/send` (one client frame
+  per request, correlated by the client's own `clientId`) — registered in a
+  `ctx.inject(['connection'])` scope rather than inside the `webServer` scope.
+  The `/dshell/pty` upgrade stays for the browser.
+- The subscriber is a carrier, not a socket: one interface (`open` / `send` /
+  `close`) implemented by a ws wrapper and by a Response-body writer, so
+  spawning, buffering, block order and reconnect logic are untouched.
+- Browser face: a channel abstraction over the two carriers, chosen by what the
+  page can reach (ws only from an http(s) page), with
+  `localStorage['dshell.transport']` and `__DSHELL_PTY__.useTransport()` as the
+  override that makes the stream path testable from a browser.
+- Wire contracts for the two paths live in `@nexus-aethra/dshell-std`.
+
+Acceptance check:
+
+- Browser: `__DSHELL_PTY__.carrier()` reports `ws` by default; a command runs
+  and its output returns.
+- `useTransport('stream')` rebinds both the main and agent streams to the
+  stream carrier with the identical replay, `status: open`, `ready: true` and
+  no retry; `echo …` returns over it; `openAgent()` spawns the agent shell on
+  the agent stream; `reconnect()` answers with a fresh snapshot. Switching back
+  to `auto` returns to ws with no retry.
+- Route-level: the GET streams NDJSON behind dsh's own auth gate (401 without a
+  cookie), and the POST answers 400 for a malformed or `clientId`-less frame
+  and 204 for a `clientId` with no live stream.
+- The desktop shell is verified in P2, once a Linux target exists to launch.
+
+## Phase 10.2 — Publishable packages (P1)
+
+Goal: the dshell packages are installable from a registry by the desktop plugin
+window, not only linkable into a dev profile.
+
+Deliverables:
+
+- Manifests rewritten for publication: `private` dropped, `publishConfig.access`
+  public, `files: ["lib"]` (the old list shipped only the two entry bundles and
+  omitted every host module the entry imports), first-party dsh packages as
+  exact-pinned peers with a matching `devDependencies` list, cordis as a peer,
+  dshell edges as `workspace:^`.
+- Root `pnpm.overrides` mapping every first-party name to the local `dsh/`
+  checkout, so development keeps linking while the manifests carry what a
+  consumer resolves.
+- `scripts/local-registry.mjs`: a registry-protocol server over packed
+  tarballs, with upstream passthrough for third-party dependencies.
+
+Acceptance check:
+
+- `pnpm typecheck` and `pnpm build` pass with the rewritten manifests.
+- `pnpm pack` output installs from the local registry into a profile whose core
+  packages are linked to the checkout (`+ @nexus-aethra/dshell-bundle 0.1.0`,
+  `dsh.profile.bundles` gains the bundle).
+- That profile boots and serves the dshell host routes
+  (`/api/dshell/buffer` 200, `/api/dshell/files` 200, `/api/dshell/stream` 200
+  holding open, `/api/dshell/stream/send` 400 for a body without `clientId`)
+  and a combined client bundle containing the dshell faces.
+- Known limit: the desktop plugin window hardcodes the npmjs registry, so a
+  private registry needs an upstream change to be usable from the app UI.
+
+## Phase 10.3 — Linux packaging (P2)
+
+Goal: produce a Linux artifact from this checkout; dsh ships mac and win targets
+only, and `dsh/` is a read-only reference, so the work lives here.
+
+Measured blockers — every stage of dsh's desktop pipeline resolves its target
+through a closed registry, and all three close over mac/win:
+
+| where | what it gates | observed failure on Linux |
+|---|---|---|
+| `apps/desktop/scripts/package-target.ts` (`TARGETS`, `hostTargetName`) | the packaging command itself | `pnpm package:dir` → `desktop package: unsupported build host linux-x64`; the delivered shape drives the stages itself, so this registry is never loaded |
+| `apps/desktop/scripts/desktop-build-paths.mjs` (`SUPPORTED_TARGETS`) | every artifact, runtime and download path | `pnpm prepare:runtime` → `desktop build paths: unsupported target linux-x64` |
+| `apps/desktop/scripts/desktop-auto-update-environment.mjs` (`UPDATE_TARGETS`) | `createElectronBuilderConfig` and the release record | `resolveDesktopAutoUpdateTarget` throws for anything but `darwin`/`win32`; the config module also demands a full release environment (app id, update origin, signing) just to be imported |
+
+What is already platform-general, and therefore worth reusing rather than
+rewriting:
+
+- `prepare-runtime.ts` handles `linux` (downloads `node-v24.17.0-linux-x64`,
+  verifies it against `SHASUMS256.txt`, copies the pinned pnpm).
+- `electron-builder.config.mjs` already declares `linux: { target:
+  ['AppImage'] }`.
+- `prepare-package-set.ts` and `prepare-seed.ts` do not branch on platform —
+  they inherit the paths registry and nothing else.
+
+Download path notes for this network: `prepare-runtime` hardcodes
+`https://nodejs.org/download/release/...` (reachable here, HTTP 200); Electron's
+binary is not in the local store yet (`electron@44.0.0`/`44.3.0` are installed
+without a `dist/`), and electron-builder fetches its AppImage tooling from
+GitHub releases, which this network resets — both are mirrored by npmmirror
+(`/mirrors/electron/`, `/mirrors/electron-builder-binaries/`, both reachable) and
+are honored through `ELECTRON_MIRROR` and
+`ELECTRON_BUILDER_BINARIES_MIRROR`.
+
+Chosen shape: `scripts/package-linux.mjs` in this repo, with a Node module
+loader that widens the two reachable registries (`desktop-build-paths`,
+`desktop-auto-update-environment`) with a synthetic `linux-x64` target, so dsh's
+own prepare scripts and its electron-builder config run unmodified. The
+alternative — duplicating the path/seed logic here — is ~400 lines of upstream
+logic to keep in sync. mac artifacts stay on a Mac/CI host.
+
+Delivered as planned, with the wrapping-config addition the AppImage forced:
+
+- `scripts/linux-target-hooks.mjs` — a `load` hook that widens `SUPPORTED_TARGETS`
+  and `UPDATE_TARGETS` as their source passes through; `scripts/linux-target-patch.mjs`
+  registers it for `--import`. Each widening is announced on stderr, so a build log
+  states which registry accepted linux.
+- `scripts/package-linux.mjs` — resolves the pinned Node version out of
+  `prepare-runtime.ts`, presees the tarball from npmmirror, asks upstream (under
+  the hook) for the linux-x64 build paths as a first-step assertion, then runs
+  upstream's stages in upstream's order: `build:official` → `release:pack`
+  {dsh,vendor} → pack `desktop-host` → landlock → `prepare:runtime` →
+  `prepare:packages` → `prepare:seed` → electron-builder. `--dir` stops at an
+  unpacked directory, `--prepare-only` at the seed, `--from=<step>` resumes.
+  Exposed as `pnpm package:linux`, `package:linux:dir`, `package:linux:prepare`.
+- `scripts/electron-builder.linux.config.mjs` — upstream's config factory plus one
+  field. Upstream's package name `@deepseek-ai/dsh-desktop` makes electron-builder
+  derive `executableName` `@deepseek-aidsh-desktop`, which the **AppImage target
+  rejects** (`executableName contains characters that cannot be safely used in
+  file paths`) even though `--dir` tolerates it; the wrapper names the executable
+  `deepseek-harness`, matching the `artifactName` upstream already sets.
+
+Traps worth knowing for any future cross-target work here:
+
+- **The hook must not travel in `NODE_OPTIONS`.** With `--import <hooks>` in the
+  environment, pnpm 11 — which re-executes itself for nested `pnpm run` calls —
+  fails at the first nesting with `Error during pnpmfile execution … Cannot find
+  module '<dsh>/.pnpmfile.mjs'`. The file does not exist and nothing references
+  it; an innocuous `NODE_OPTIONS="--no-warnings"` builds fine. Command-line
+  `--import` on the four target-resolving leaf processes avoids it entirely, which
+  is why this script orchestrates those steps instead of calling `package:dir`.
+- **`tsx` as a CLI forks a child that a command-line `--import` does not follow**,
+  so the prepare scripts get `--import tsx` (the loader module) instead. They need
+  real transpilation: the desktop sources use parameter properties, which Node's
+  strip-only TypeScript mode rejects (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` in
+  `apps/desktop/src/project-manager.ts`).
+- Node's tarball and electron-builder's AppImage tooling both come from npmmirror
+  here; electron-builder re-downloads Electron even though `electron` is installed
+  without a `dist/`.
+
+Acceptance check:
+
+- `pnpm package:linux:dir` → `.desktop-build/targets/linux-x64/artifacts/linux-unpacked`
+  (672 MB) with `resources/runtime` (Node 24.17.0 + pnpm 11.7.0),
+  `resources/seed` (503 packages, `store-archives`, `integrity.json`) and
+  `resources/app.asar`; the bundled `runtime/node/node --version` answers
+  `v24.17.0`.
+- `pnpm package:linux` → `deepseek-harness-0.1.5-rc.1-linux-x86_64.AppImage`
+  (245 MB) plus `rc-linux.yml`; the AppImage's sha512 matches the value in that
+  metadata, and `--appimage-extract` yields `AppRun`, the `deepseek-harness`
+  binary, a `.desktop` entry and the same `resources/` payload. (Verified again at
+  `rc.2` in Phase 10.4.)
+- Not yet done, and blocked on something else: launching the desktop shell and
+  exercising the dshell terminal inside it. The app installs plugins from
+  npmjs.org only (the registry is hardcoded), so that check needs the published
+  `@nexus-aethra/dshell-*` packages — see Phase 10.1's last acceptance item.
+- Cosmetic and left as upstream has it: no application icon is set (the default
+  Electron icon is used, as on mac and win) and the executable-only `@`-mangling
+  warning about `desktopName`/`syncDesktopName` remains.
+- The update feed in the AppImage points at upstream's production origin
+  (`https://download.deepseek.com/_/harness/desktop/stable/linux-x64/`); override
+  `DSH_DESKTOP_APP_ID` and `DSH_DESKTOP_AUTO_UPDATE_ENV` for a real release.
+
+## Phase 10.4 — Following dsh to 0.1.5-rc.2
+
+Goal: move the dsh baseline off `0.1.5-rc.1` and find what that breaks, before
+publishing dshell against it.
+
+Where we started: the checkout was 134 commits behind `master`, upstream had
+tagged `dsh-v0.1.5-rc.2` (2026-09-10, 272 manifests bumped rc.1 → rc.2), and
+master was a further 139 commits past that tag. **The target is the rc.2 tag, not
+master**: between the two, the desktop pipeline renames `prepare-seed.ts` to
+`prepare-dsh.ts` and the `seed`/`seedPnpm` build paths to `dsh`/`dshPnpm`, and adds
+`package-macos.ts`, `runtime-file-policy.ts`, `smoke-runtime.ts`, `installer.nsh`
+and a Windows-only `DSH_DESKTOP_UNSIGNED` — all of which would invalidate
+`scripts/package-linux.mjs`. rc.2 keeps the layout that script was written for.
+
+What the follow-up consisted of:
+
+- `dsh/` checked out at the tag: detached HEAD, working tree clean, version
+  `0.1.5-rc.2`. Only `git fetch --tags` had touched the checkout before that.
+- The ten `dshell-*` manifests move their exact dsh pins rc.1 → rc.2 (190 pins).
+  `dshell-std` carries none — it is the pure contract layer.
+- rc.2 changes no dependency edge: `pnpm-lock.yaml` and `pnpm-workspace.yaml` are
+  byte-identical between the two tags, so nothing needed reinstalling. Trap worth
+  knowing: `pnpm install --frozen-lockfile` in `dsh/` fails under the ambient pnpm
+  9.15.0 with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`, because pnpm 9 strips the
+  `overrides`/`patchedDependencies` blocks pnpm 11 wrote. The declared pnpm
+  (11.7.0, at `dsh/node_modules/.pnpm/pnpm@11.7.0`) validates the same lockfile
+  fine, and `pnpm run` is unaffected either way.
+- All 46 `link:` overrides still resolve, including the
+  `node-pty@1.2.0-beta.15` store path pin.
+
+The one real incompatibility — a latent bug of ours that rc.2 exposed:
+
+`dshell-mode` registers the `single` slot `sidebar.brand.name` (the empty
+placeholder that hides dsh's local-build label) at the default priority 0, where
+dsh's own `ui-brand-official` already has an occupant. `ui-slots` throws when a
+second `single` registration lands on the *same* priority, and only a different
+priority shadows (lowest renders). That rule is identical in rc.1 and rc.2, so
+this was never version drift — rc.1 happened to order our registration first.
+rc.2 ordered it second, so the mode plugin failed to apply and the client showed
+the Failed-to-load-plugins overlay while the other nine plugins loaded. Registering
+at `priority: -1` makes the shadow explicit and order-independent. The audit of our
+other registrations found no further exposure: everything else lands on `list` or
+`keyed` slots (which collide only on `id`+priority), or on the `single`
+`sidebar.workspaces`, which has no stock occupant.
+
+Acceptance check — `pnpm typecheck`, `pnpm build`, browser, `pnpm package:linux`:
+
+- Static: typecheck and build pass; client bundles keep `std` inlined and
+  externalize only `cordis`, `client-store` and `ui-primitives`, all rows of
+  rc.2's platform module table (which also still carries `react*`, `ui-slots`,
+  `ui-dockkit`).
+- Change surfaces checked, no action needed: `ui-primitives` still exports
+  `FileTypeIcon` (the files panel's icons) beside the new code-file artwork;
+  `ui-slots`/`ui-sidebar`/`ui-layout`/`ui-session` changed only their manifests;
+  the `connection` client transport hooks gained an optional `rpc` and made
+  `fetch` optional, but dshell touches neither — the host-side
+  `connection.fetch.register` is unchanged.
+- Browser against rc.2: ten of ten plugins load; the ws carrier reports
+  `open`/`ready` with `attempt: 0`; `useTransport('stream')` rebinds to the stream
+  carrier with `attempt: 0` and `echo rc2-stream-ok` returns over it; the files
+  panel lists `/home/wpp/nexus` with a `ui-primitives` icon on every row.
+- Host routes, after the cookie handshake: `/api/dshell/buffer` 200,
+  `/api/dshell/files` 200 for a POST naming a live session (404 on GET is correct —
+  the route registers POST only), `/api/dshell/stream` 200
+  `application/x-ndjson` holding open with 130 KB of replay, and
+  `/api/dshell/stream/send` 400 `clientId is required` without one; 401 without
+  the cookie.
+- Packaging: `pnpm package:linux:dir` succeeds on rc.2 with the same payload
+  (Node 24.17.0 + pnpm 11.7.0), and `pnpm package:linux` →
+  `deepseek-harness-0.1.5-rc.2-linux-x86_64.AppImage`.
+
+Not addressed here: the checkout is pinned at the rc.2 *tag*, not master. Moving
+to master is a separate change that first needs the desktop-pipeline renames above.
+
+## Phase 10.5 — A storage engine for shell history
+
+Goal: replace the per-session `.history.json` array with a dshell-owned store
+that has an index, so history can grow past a cap and be queried — the shell's
+up-arrow prefix search now, an agent-facing query later.
+
+The problem, measured: `history.ts` kept `[{seq, command, exitCode, at}]` as one
+JSON array per session, capped at `MAX_COMMAND_HISTORY = 200`. A read parsed the
+whole array into memory and a write rewrote it in full (debounced), so the cap
+was what kept it bounded — and the cap is what made history **lossy**: the route
+could not answer for anything older than the newest 200 per session. The files
+were also `0644` inside a `0775` directory, while command lines routinely carry
+secrets.
+
+Layering (the std-tier split, so a feature never owns a file format):
+
+| layer | package | owns |
+|---|---|---|
+| contract | `dshell-std` (`src/storage.ts`) | record shape, store surface, file name, layout version, failure vocabulary — isomorphic, no Node builtin |
+| medium | `dshell-storage` (new) | the SQLite engine; host-only, because `node:sqlite` cannot enter a client bundle |
+| caller | `dshell-terminal-bridge` | `CommandHistory` as a facade: a bounded in-memory window for the keystroke path, the store behind it |
+
+Nothing in `dshell-std` or `dshell-storage` names a dsh service: the engine is a
+library, not a plugin, so it has no bundle row and does not appear in
+`cordis.patch.yml`.
+
+Format — `PRAGMA user_version = 1`, WAL, `synchronous = NORMAL` (history is
+best-effort by contract; the session log owns durability), owner-only file:
+
+```
+commands(session_id, seq, command, command_norm, exit_code, at)
+  PRIMARY KEY (session_id, seq)
+commands_session_prefix(session_id, command_norm)
+commands_at(at)
+```
+
+Three facts that shaped it, each verified rather than assumed:
+
+- `LIKE 'x%'` with a bound parameter **never uses the prefix index**: SQLite
+  refuses the LIKE optimization for a bound parameter, so with a session filter
+  the plan is `SEARCH … USING INDEX commands_session_prefix (session_id=?)` — the
+  index serves the session term and every row of that session is tested against
+  the pattern. The range form `command_norm >= ? AND command_norm < ?` turns the
+  prefix itself into an index seek. (The first draft of this note claimed a full
+  table scan; the check caught that the composite index does serve the session
+  term, and the honest statement is the one above.)
+- Prefix matching is **strict** (`startsWith`), and under a strict prefix every
+  match shares the whole draft, so there is nothing to rank — recency is the
+  only meaningful order. The earlier design walked k downward from the draft's
+  length to rank by shared-prefix length, but the weaker k-bands let
+  `grep -r git .` into an answer for the draft `git` (caught by the check).
+  Fuzzy ranking is a different query and belongs with the caller over a bounded
+  candidate set. *(Phase 10.7 replaced the single range query this originally
+  ran with a newest-first scan, keeping the range query as the fallback.)*
+- Answers come back in **timeline order** (oldest first), the same convention as
+  `recent` and the same order the history route already sends, so a caller
+  filters without reordering.
+
+Migration and the deletion contract: a session's legacy file is imported on its
+first open after the upgrade, idempotently by `(session_id, seq)`, and never
+written again — the file stays in place as a rollback. Deleting a session drops
+its rows **and**, synchronously, its legacy file: `releaseSession` runs at
+teardown, where a deferred unlink or a late debounced write would race the
+process exit that is removing the session. Deletion had never dropped either
+copy — the purge's PTY suffixes did not cover `.log.history.json`, and nothing
+dropped store rows — which mattered more once `/clear` stopped being the manual
+purge (Phase 10.6). A store that cannot be opened at all (read-only home,
+foreign layout) degrades to the file path rather than losing history.
+
+Acceptance check:
+
+- 30 behavioural checks pass against the built libs: append/recent/count,
+  idempotent re-append, strict-prefix matching (only the draft's prefix, no
+  substring hits, case-insensitive, `limit`-bounded), timeline order,
+  `clearSession` scoped to one session, the composite index in the plan for the
+  range form and not for `LIKE`, the database file at `0600`, migration from a
+  legacy file (blank commands dropped, idempotent on reload), the 200-entry
+  window still capping memory while the store keeps everything, a foreign
+  `user_version` rejected as `version-mismatch`, and the JSON fallback when the
+  store path is unusable.
+- In the running harness: `history.sqlite` is created `0600` in WAL mode with
+  `user_version = 1` and the three declared indexes; the resumed session's legacy
+  file had already been imported (9 rows, including a command from the earlier
+  transport test); a command sent through the real PTY landed as row 10; a
+  prefix range query answered exactly `echo history-store-ok`; the legacy file
+  was not rewritten (no marker in it); and the history route still returns the
+  newest commands, so the up-arrow gesture is unaffected.
+
+Not addressed here, deliberately, and in this order:
+
+1. ~~The protocol~~ — **done in Phase 10.7**: the request carries `draft` and
+   `limit`, and the route answers from the store, so the response is bounded by
+   `limit` rather than by the window.
+2. Uncapping and a retention window (the store already keeps everything; the
+   in-memory window still trims at 200 as a cache, not as the answer).
+3. The query surface for agents (FTS5 is available on both runtimes for
+   full-text, `commands_at` for cross-session time queries). The
+   `commonPrefix > 0` vs strict-prefix question is **decided in Phase 10.7**:
+   strict prefix, in the store and in the client's fallback window.
+   A token prefix tree is **not** on that list: for the up-arrow path the
+   B-tree range seek above is already the optimal structure for a strict
+   prefix, and a trie would be a second in-memory format to rebuild, not a
+   faster query. A trie only pays for *fuzzy* prefix ranking or word/token
+   search — and for the token half FTS5 (present on both runtimes, persistent,
+   ACID) already provides the inverted index, with usage-count/recency ranking
+   as a scoring layer over either structure. If an in-memory index is ever
+   added it should be a bounded cache over the store, never a second source of
+   truth.
+
+## Phase 10.6 — Retiring `/clear`
+
+Goal: stop exposing a dshell `/clear` command. The in-terminal `clear` already
+clears the canvas natively, so the slash command's only distinct effect was
+dropping the persisted scrollback and resetting the shell epoch — an operation
+the terminal no longer needs, and one that cost a whole set of clear-only code
+paths in the bridge.
+
+Plugins touched:
+
+- `dshell-commands` (host face) — the `clear` registration is removed; `/new`
+  and the two model tools remain.
+- `dshell-terminal-bridge` — `clearSession()` and `performClear()` are deleted.
+  `CommandHistory.clear()` survives with a new caller: `releaseSession()`, so
+  deleting a session drops its store rows and its legacy file (see the deletion
+  contract in Phase 10.5). `BlockSplitter.clear()` — dead already, since
+  `performClear` recreated the splitter instead — is deleted with it.
+- `dshell-workspace` — `purgeSessionArtifacts` also drops
+  `<session>.log.history.json`, the legacy file the PTY suffix list never
+  covered.
+
+What changes for the user: no `/clear` in the slash menu; `clear` (bash's own,
+which the canvas honours) is unaffected; up-arrow history keeps working because
+it never depended on the command.
+
+Acceptance check:
+
+- `pnpm typecheck` and `pnpm build` clean; the emitted `commands/lib/index.js`
+  no longer contains the registration and `terminal-bridge/lib/index.js` no
+  longer contains `clearSession`.
+- In the running harness, the slash menu (composer, leading `/`) lists
+  `new` plus dsh's stock commands and **no** `clear` — read from the page's
+  `[role="listbox"]` after typing `/`, nothing submitted.
+- The history route still answers for a resumed session, so the up-arrow path
+  is unaffected.
+
+Still open from this: rows left in `history.sqlite` by a session that was
+already cold at delete time (no bridge record, so no `releaseSession`) belong to
+the retention pass in "Not addressed here" item 2.
+
+## Phase 10.7 — History retrieval goes to the index
+
+Goal: the up-arrow gesture searches the whole history, under one clear rule, at
+a cost that does not grow with how much history exists. Phase 10.5 built the
+index; this phase is the wiring, because the index had **no caller**: the route
+read `bridge.history()` — the live 200-row window — so nothing older than the
+window was reachable, and the browser filtered what it was sent with
+`commonPrefix(command, query) > 0`, i.e. **first character equal**. A draft of
+`git` listed `grep -r git .`, and a command older than the newest 200 could not
+be found at all. The client's `requestHistory` even took a `draft` parameter and
+dropped it from the request body.
+
+The three seams, and what each became:
+
+| seam | was | is |
+|---|---|---|
+| wire | `{action:'history', sessionId}` | `{action:'history', sessionId, draft, limit}` |
+| route | `bridge.history()` — the window | `bridge.matchHistory()` — the store, window as fallback |
+| rule | first character equal (`commonPrefix > 0`) | strict prefix, case-insensitive, in the store and in the fallback |
+
+`CommandHistory.match()` is the facade that keeps the store knowledge out of the
+route: it asks `store.matchPrefix` whenever the store is open and filters the
+in-memory window only when it is not, under the same strict rule. The window is
+now a cache for the empty-draft path, not the ceiling on what is findable.
+
+The query itself had to change, and this is the fourth measured fact from
+Phase 10.5 — measured at 200k commands in one session:
+
+| draft | matching rows | range seek + `ORDER BY seq DESC LIMIT` | newest-first scan, early exit |
+|---|---|---|---|
+| `g` | 20,000 | 9.09 ms | 0.11 ms |
+| `git` | 10,000 | 4.72 ms | 0.23 ms |
+| `git --flag 19` | 555 | 0.16 ms | 0.21 ms |
+| `zzzz` | 0 | 0.005 ms | 0.68 ms |
+
+The range seek is an index seek, but the index is ordered by `command_norm`
+while "the newest matches" is ordered by `seq`, so the plan adds
+`USE TEMP B-TREE FOR ORDER BY` and sorts every match — hence the linear growth,
+and hence 9 ms of **blocking** work on the event loop (`node:sqlite` is
+synchronous). Scanning newest-first through the primary key `(session_id, seq)`
+makes `ORDER BY seq DESC LIMIT` free and lets the scan stop as soon as enough
+matches are seen; it is bounded by `PREFIX_SCAN_BUDGET = 5000` rows and falls
+back to the range seek, which is the cheap path precisely when the prefix is
+sparse. `limit` matches inside the newest budget *are* the newest `limit`
+matches, so the two paths cannot disagree.
+
+No pagination, deliberately: the gesture wants the newest K matches, which is a
+top-K query, and a page of a prefix would put the *older* matches first —
+paging the gesture would make it wrong, not faster. A browsing UI (or the
+agent-facing query of item 3) is where paging belongs. And still no trie: for a
+strict prefix the B-tree is the same structure a trie would be, without a second
+in-memory copy to rebuild (see the note in Phase 10.5).
+
+Acceptance check:
+
+- 24 behavioural checks against the built libs: every draft agrees with a
+  brute-force computation over the raw rows (dense, sparse, deep, absent,
+  case-folded, empty), strict prefix never returns `grep` for `git`, timeline
+  order, `limit`, the fallback reaching rows older than the scan budget, the
+  newest-first statement's plan on the primary key with no temp B-tree, the
+  facade finding commands older than the 200-row window, and the JSON fallback
+  window keeping the same strict rule.
+- The fixture checks report, over 8k stored rows: dense prefix 171 µs, sparse
+  fallback 507 µs, empty draft 41 µs.
+- In the running harness, the route answers `draft: "npm l"` with only the
+  `npm login …` rows (the old rule would also have listed
+  `npm config set registry …`), `draft: "npm c"` with only the config row, and
+  an unknown prefix with none.
+- In the browser, the real gesture: `npm c` + ↑ left
+  `npm config set registry https://registry.npmjs.org/` in the composer with a
+  one-row list, and an empty draft + ↑ left `echo history-store-ok` (the newest
+  command) with the full ten-row list.
+
+## Phase 10.8 — History maintenance: budget, layout 2, deletion
+
+Four follow-ups from Phase 10.7's measurements and review.
+
+**The scan budget is derived, not fixed.** 10.7 shipped
+`PREFIX_SCAN_BUDGET = 5000`, which the calibration showed is only right at one
+size: a draft whose matches have density `d` makes the scan read `limit / d`
+rows while the range seek reads and sorts `d * N`, so equality gives
+`budget = sqrt(limit * N * b/a)`. With the measured `b/a ≈ 2.5` (sorting a
+match costs about 2.5 row reads) that is `sqrt(limit * N * 2.5)`. `N` comes from
+`max(seq)`, which the query already reads — and it over-counts after a deletion,
+which only widens the budget, and a budget wider than the session is harmless
+because the scan is bounded by the table. Measured (µs, limit 60, one session):
+
+| N | density | matches | adaptive | range only | old fixed 5000 |
+|---|---|---|---|---|---|
+| 8k | 1/10 | 800 | 153 | 245 | 128 |
+| 8k | 1/20 | 400 | 274 | 89 | 142 |
+| 8k | 1/100 | 80 | 166 | 38 | 533 |
+| 8k | 0 | 0 | 119 | 4 | 482 |
+| 50k | 1/20 | 2 500 | 184 | 753 | 194 |
+| 50k | 1/100 | 500 | 673 | 285 | 959 |
+| 50k | 0 | 0 | 336 | 4 | 597 |
+| 200k | 1/2 | 100 000 | 74 | 19 017 | 38 |
+| 200k | 1/20 | 10 000 | 186 | 3 392 | 178 |
+| 200k | 1/100 | 2 000 | 2 061 | 1 185 | 1 812 |
+| 200k | 0 | 0 | 670 | 4 | 621 |
+
+All 18 measured shapes (three sizes × six densities) return the right rows. The
+honest reading: adaptive beats the old constant by up to ~4× in the *sparse*
+band, which is the band a user reaches by typing more characters, and loses to
+it by ≤1.3× in the mid-density band, where the probe is paid and then discarded
+in favour of the range seek. Its worst case is 2.06 ms, the old constant's is
+1.81 ms, and range-only's is 19 ms at the same size — so the ordering that
+matters is intact, and the residual is the price of "probe, then decide". A
+two-stage probe (estimate the density from a small probe, then either continue
+scanning or take the range seek) would roughly halve that worst case; it is not
+worth the extra statement at sub-millisecond typical costs.
+
+**Layout 2 drops an index nothing read.** `commands_at(at)` was created for a
+cross-session time query that was never built: no query in the engine touches
+`at`. It cost disk and write amplification on every insert, so layout 2 removes
+it. The engine now *migrates* a layout-1 database in place instead of rejecting
+it — the `DROP INDEX` is the whole migration — which also establishes that
+future layout changes need not be a hard failure.
+
+**Deleting a session drops its history even with no shell record.**
+`releaseSession` could only clear what it had a record for, so a session
+deleted before its terminal was ever opened kept its rows forever, and the
+route only called it in the loaded branch. Now the route calls `release` in both
+branches, `releaseSession` additionally reaches the store by path through
+`forgetSessionHistory` (which leaves an absent store uncreated rather than
+creating one to delete nothing from it), and the purge stays synchronous.
+
+**Teardown folds the log.** `close()` now runs `PRAGMA optimize` (so the
+planner keeps the statistics it gathered) and `PRAGMA wal_checkpoint(TRUNCATE)`
+(so no sidecar is left beside the log directory). Both best-effort.
+
+Measured and **not** adopted: a covering index `(session_id, seq, command_norm)`
+makes the scan's per-row prefix test index-only, which speeds the probe up
+2.4–3× (194→80 µs at density 1/20, 756→250 at 1/100, 754→222 at 1/500, 200k
+rows, forced-index comparison) and shortened the whole `matchPrefix` call to
+525 µs from 2473 µs in the mid-density case. It costs +31% disk (24.4 → 31.9 MB
+for 200k rows, ~37 B/row) on a store that is deliberately unbounded. Deferred:
+the same win is available from the two-stage probe without the disk, and the
+current absolute costs do not justify either yet.
+
+Acceptance check:
+
+- 15 migration and purge checks: on a **copy of the real v1 store** (10 rows,
+  `commands_at` present), opening it stamps layout 2, drops only that index,
+  leaves every row byte-identical, keeps the prefix index, and still answers
+  `count` / `recent` / `matchPrefix`; a fresh database is created at layout 2
+  without the index; an unknown layout is still refused with
+  `version-mismatch`; `forgetSessionHistory` removes one named session's rows
+  and leaves another's, and does not create a store that was never there.
+- The live store migrated on boot (layout 2, 10 rows intact) and the history
+  route still answers `npm l` with 5 rows and `npm c` with 1.
+- The deletion wiring was exercised end to end against the live store without
+  touching a real session: two rows were injected for a probe session, the
+  probe was deleted through `/api/dshell/sessions`, and its rows went to zero
+  while the real session's ten stayed; this is the cold case (no bridge record),
+  which is exactly what used to leak.
+- The 30 storage checks and the 24 retrieval checks still pass; the 8k-row
+  sparse fallback dropped from 507 µs to 136 µs.
+
+
+
+## Phase 10.9 — Per-command output, addressable by offset
+
+Goal: an injected terminal block must never carry a long command's output whole,
+and the model must be able to read the rest on demand — `(seq, offset, limit)`
+into one command's output, across boots. This is the first change that makes the
+store hold output rather than only the line.
+
+**Why new storage was needed even though three artifacts are already persisted.**
+None of them can answer that question:
+
+| artifact | holds | why it cannot be sliced per command |
+|---|---|---|
+| dsh session log (`sessions/<shard>/<id>/session.v3.jsonl.zstd`) | the conversation's events | the terminal stream is not in it; a zstd JSONL per turn, not a byte range per command |
+| PTY log (`dshell-pty/<id>.log`) | the raw byte stream | bytes are there, but raw ANSI, every command concatenated, prompts and echoes included, and **no seq anywhere** — locating command 57 means re-running the splitter over the whole file |
+| block log (`<id>.log.blocks.json`) | sanitized text | granularity is a *block* (a stretch between turns), and it is capped (400 blocks / 512 KiB) |
+| `commands` table (layout 2) | line, exit, time, indexed by `(session_id, seq)` | indexable, but deliberately without output |
+
+`seq` exists only in the splitter's own semantics, so no raw log has it. The fix
+is one more table in the same database — not a new engine, file or format:
+
+```
+command_output(session_id, seq, output, bytes, dropped)  PRIMARY KEY (session_id, seq)
+```
+
+`output` is the retained **tail** with `bytes` (what the command produced) and
+`dropped` (what is missing from the front), so offset 0 is honestly the start of
+*the retained text* and a reader is told when it is not the start of the output.
+It sits beside the narrow `commands` table rather than in it: the prefix probe
+reads those rows, and kilobytes of output on them would slow every search.
+
+Two caps, deliberately different, which is what makes the tool safe to use:
+
+| layer | cap | why that number |
+|---|---|---|
+| store | 64 KiB per command | equal to the splitter's own pending bound, so storing this much costs no extra memory; raising it is a memory decision |
+| window/preview | 16 KiB per command in memory, 2 KiB in the injected block | 200 × 64 KiB in memory is the one thing the cache must not become |
+
+Outputs are retained for the newest 1000 commands per session; eviction loses
+the text, never the metadata. `clearSession` drops both tables, so deleting a
+session still takes everything with it.
+
+**The tool.** `dshell_terminal_output` takes `{cursor, seq, offset, limit}`
+(default slice 2 KiB, never more than 8 KiB — the tool exists to keep reads
+bounded, so it cannot be asked for a whole output), and answers with the slice
+plus `[保留 N 字节, 原输出 M 字节; 本次 offset A -> B]` and a `next offset`.
+The cursor pins the shell generation: after a respawn the same `seq` names a
+different command, and the answer is `stale` rather than a wrong slice. With no
+store the in-memory window's display text answers instead, so a fallback
+deployment still reads the recent past.
+
+**The injected block is now a window.** On each user-driven step the newest
+three commands ride in with their output previews (2 KiB each, tail-first),
+the session cursor, each command's `seq` (the tool's key — without it the model
+could not ask for anything), a count of commands finished since the previous
+step, and — only when something was cut — a pointer at the tool. A shell that
+closes no command records at all (one without markers) falls back to a capped
+slice of its raw output. The watermark survives for the count line only; the
+block itself always shows the recent state, which is smaller than the old
+first-turn block (20 command lines + an 8 KiB raw tail).
+
+Acceptance check:
+
+- 20 output checks against the built libs: whole outputs, byte-window slicing
+  that snaps to UTF-8 boundaries (CJK), paging from the returned offset, an
+  offset past the end, negative offsets, non-positive limits, missing rows,
+  eviction past the retention window with metadata surviving, `clearSession`
+  dropping both tables, and the layout 2 → 3 and 1 → 3 migrations (the 2 → 3
+  case against a copy of the real store: 10 rows intact, pre-existing commands
+  reporting no output rather than empty output).
+- 13 splitter checks, including the two-tier truncation: a 20 KiB body keeps a
+  full stored tail while the preview carries its marker, and an 80 KiB body
+  stores only the last 64 KiB and reports the dropped front.
+- In the running harness: the live store migrated to layout 3 on boot (10 rows,
+  `command_output` created); a scratch session ran `seq 1 300` and `seq 1 800`,
+  both persisted with their outputs (1092 B and 3092 B, `dropped` 0); the agent
+  turn then quoted the injected block verbatim —
+  `[dshell 主终端 · 最近 2 条] cursor: g2:5460:2`, both commands with `exit` and
+  `seq=`, full output for the small one, `…(仅显示尾部)` for the other, and the
+  tool hint — and its two tool calls returned, verbatim:
+  `[保留 3092 字节, 原输出 3092 字节; 本次 offset 0 -> 512]` … `(next offset: 512)`
+  and then `本次 offset 512 -> 1024` … `(next offset: 1024)`, with the cursors
+  advancing `g2:5482:2` → `g2:5504:2`.
+- Deleting the scratch session through the route removed its 2 commands **and**
+  its 2 outputs while the real session's 10 rows stayed, so the output table
+  rides the existing deletion contract.
+
+## Phase 10.10 — SSH credentials and host trust
+
+A standard-and-safety review of the whole `dshell-ssh` chain (runner, device
+registry, router, remote filesystem, spawn routing, the HTTP route and the
+device card), then the fixes that needed no decision. The verdict was that the
+OpenSSH usage is correct and in places more careful than usual — askpass instead
+of argv passwords, password devices pinned to `PreferredAuthentications=password`
++ `PubkeyAuthentication=no` + one prompt, two-level POSIX quoting with the
+assignment-word subtlety handled, `-T`/`-t` chosen per path, remote writes staged
+by `mktemp` on the destination filesystem and renamed into place, the sandbox
+fence applied in trusted code to the device path — with two verified credential
+defects and two permission/leak surfaces.
+
+**Fixed:**
+
+- **`IdentitiesOnly=yes` whenever a device has a stored key.** Without it the
+  harness user's ssh agent is still consulted: `ssh -vv` shows the agent's
+  identity being *offered before* the explicit `-i` one, so a host that also
+  authorises a personal key authenticates as that identity, and a device whose
+  key was rotated or revoked keeps looking like it works. Only the devices that
+  actually carry a key get the option — a key device with no stored secret is
+  documented as using the ambient agent, and that path is unchanged.
+- **`ControlPath` is per device.** `%C` hashes only local host, remote host,
+  port and remote user, so two device records reaching the same account shared
+  one master connection and whichever authenticated first served the other;
+  changing a password or key did not invalidate that master for
+  `ControlPersist=120s`. The path is now a 16-hex digest of the destination
+  *and* the device id, with the destination included so that editing a device's
+  host cannot leave a master authenticated to the old one in place. Not `%C`:
+  its 40 characters leave too little of the ~108 byte unix socket path for
+  `ssh`'s own listener name once `$DSH_HOME` is deep, and an over-long path does
+  not merely disable sharing — ssh fails the connection — so when the path would
+  not fit, the control options are dropped and the connection is made without
+  reuse.
+- **Host trust stays the plugin's own.** `StrictHostKeyChecking=accept-new`
+  with no `UserKnownHostsFile` was writing dshell's first-contact decisions into
+  the user's personal `~/.ssh/known_hosts` — hash-aware `ssh-keygen -F` found
+  the rig and the remote server there — and reading it back. The option now
+  points at `$DSH_HOME/dshell/ssh/known_hosts`, beside the keys, so dshell's
+  trust and the user's ssh client's trust are separate stores.
+- **The trusted host key is shown.** `accept-new` records an unknown host's key
+  without asking, so the one decision the user could verify was also the one
+  they never saw: a successful Test reported only `已连接 user@host（system）· Nms`,
+  and the `Permanently added …` line ssh prints went to a stderr that is only
+  read on failure. `router.test` now reads this plugin's own `known_hosts` with
+  `ssh-keygen -F` (which resolves hashed entries) before and after connecting and
+  appends `主机密钥 SHA256:…（首次信任，请与服务器管理员核对）` or `（已信任）` — so
+  first contact is announced by name, and the fingerprint is there to compare
+  against an out-of-band value. It is read back from the local store on purpose:
+  a fingerprint the device reports would travel over the very connection whose
+  identity is in question. `host-key.ts` computes OpenSSH's `SHA256:` spelling
+  from the key blob in JS, cross-checked against `ssh-keygen -l`.
+- **Terminal transcripts are owner-only.** `$DSH_HOME/dshell-pty/` was `0775`
+  with `0664` files while `history.sqlite` was already `0600`; a transcript holds
+  everything the shell printed and (see the splitter) every line the user typed,
+  so any other account on the machine could read it. The directory is now `0700`
+  and every artifact `0600` (`<id>.log`, `.timeline.json`, `.blocks.json`,
+  `.history.json`), written through `private-file.ts`, which also tightens a file
+  an earlier build left loose — creation mode alone would only have fixed future
+  sessions. The 102 existing files were tightened in place.
+
+**Verified with the built code, not by reading it.** A script called the real
+`sshArgv`/`interactiveShellArgv` from `lib/` and fed the result to `ssh -G`: key
+devices report `identitiesonly yes` with the device key as the only
+`identityfile` and `userknownhostsfile …/dshell/ssh/known_hosts`; a key device
+with no stored secret still reports `identitiesonly no`; password devices keep
+their pins; the two devices hash to different socket paths, each short enough to
+leave room for ssh's listener name. A live handshake against the local rig showed
+a fresh connection offering exactly one key — the device key — with no agent
+identity offered, and a second connection riding the master with zero offers. A
+`PtyBuffer` opened over a fixture that started `0775`/`0664` came back
+`0700`/`0600`, as did a log created from scratch, its timeline sidecar and a
+blocks json.
+
+The host-key line was verified by driving the real `router.test` against the rig
+with a stand-in subprocess service: against the real store it reports
+`已信任` with the same fingerprint `ssh-keygen -lF` reports, and
+`trustedHostKey` returns `undefined` for a device that is not trusted yet. Run
+against an isolated `DSH_HOME` with an empty store, the same call reports
+`首次信任，请与服务器管理员核对` and leaves the rig's key in *that* store while the
+personal one is untouched. A third run under a `DSH_HOME` too deep for any
+socket confirmed the fallback: the control options disappear and the connection
+still succeeds.
+
+**Still open (needs a decision, not a patch):** whether the newest-command window
+should skip lines typed at a prompt that is not a shell prompt, since a secret
+typed at a remote `sudo`/`psql`/passphrase prompt is currently recorded as a
+"command" and injected; and that a live master means a connection *test* cannot
+prove a just-rotated credential within `ControlPersist`.
+

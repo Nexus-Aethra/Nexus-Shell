@@ -147,12 +147,15 @@ Prefix interception happens at composer submit, not via
   `agent.inject`.
 - `/shell <cmd>` in `agent` mode: switch mode to `shell`, drop the
   `/shell` token, run the rest as one `startSend` against `main`.
-- `/clear`, `/new`, `/compact` are real `ctx.commands` registrations;
-  they never reach the agent turn (verified in
+- `/new` is a real `ctx.commands` registration; it never reaches the
+  agent turn (verified in
   `packages/interaction/commands/README.md` § "Dispatching from an
-  adapter"). `/clear` clears the xterm buffer and the bridge's per-session
-  PTY scrollback; `/new` opens a new session through dsh's standard
-  creation path; `/compact` triggers dsh's compaction service.
+  adapter") — it opens a new session through dsh's standard creation
+  path, with the invoking session's cwd. `/compact` stays dsh's own
+  registration and triggers dsh's compaction service. A dshell `/clear`
+  existed until the storage phase and was removed: the in-terminal
+  `clear` already clears the canvas, and dropping a session drops its
+  history.
 
 Composer Enter submit is rewritten by patching the `inputActions` flow
 exposed through `ctx.uiSession.provide()` (dsh
@@ -180,12 +183,11 @@ PTY context block immediately before the user message:
 - The wrapped block uses triple-backtick fencing so the model can
   distinguish context from user message.
 
-The agent's `terminal_open` calls carry `name: 'main'` semantics by
-default through a new model-facing tool `dshell_get_main_terminal`,
-which returns the `TerminalSessionId` of the bridge-owned main shell.
-The agent uses this id when interacting with the user's shell. Without
-this tool, the agent has no reliable way to refer to `main` — `name`
-is owner-local display metadata only, not an addressable handle.
+The agent reaches a shell through a model-facing tool that returns a
+`TerminalSessionId`, because `name` is owner-local display metadata
+and not an addressable handle. Phase 8 first pointed that tool at the
+bridge's `main` shell; Phase 9.11 moved it to a shell the agent owns
+(§ 4.10), so the two never contend for one foreground.
 
 ### 4.7 Workspace removal
 
@@ -265,18 +267,100 @@ The sidebar keeps dsh's shell chrome with the flat session list from
 4.7. The scaffold replacement lands with the Phase 4 canvas; the dock
 with Phase 5. Until then the stock scaffold remains the interim shell.
 
+### 4.9 PTY scrollback persistence
+
+The main shell's output history is persisted to disk, not held
+unbounded in memory. `dshell-terminal-bridge` appends every output
+delta to an append-only log per dsh session —
+`$DSH_HOME/dshell-pty/<dsh-session-id>.log` — and keeps only a fixed
+in-memory window (default 256 KiB / 2000 lines, whichever binds first)
+for live rendering and context injection:
+
+- The file is the source of truth; the window is a cache. Writes are
+  batched (default 150 ms) and flushed on close; trimming the window's
+  oldest lines never touches the file.
+- A fresh main shell bound to the same dsh session — including the
+  fresh PTY a harness restart must spawn — seeds its window from the
+  file tail (default 64 KiB), so the canvas restores recent scrollback
+  without unbounded memory.
+- The 4.6 context-injection snapshot (100 lines / 4 KiB) reads from
+  the window.
+- The spawn reset truncates both the window and the file: the init echo
+  is discarded and the seeded scrollback is re-appended, which is why
+  the persisted log survives a respawn while it never keeps the echo.
+- The log and its sidecars are owner-only (`0600` in a `0700` directory,
+  Phase 10.10). This is a privacy boundary, not tidiness: the splitter
+  records the input side as well as the output, so the transcript holds
+  every line typed at the shell — including anything typed at an
+  interactive prompt that is not a shell prompt.
+- The PTY *process* itself stays process-local (§ 2): a restart
+  spawns a fresh shell; only the scrollback history survives. This
+  decision narrows the § 2 non-goal — process durability stays out of
+  scope; scrollback history persistence is in scope.
+
+### 4.10 Two shells per session (agent-owned terminal)
+
+dsh's terminal service allows exactly ONE active send per PTY, and a
+PTY's foreground is single-owner by nature. Phase 8 therefore made the
+agent a second writer into the user's own shell, which is precisely the
+arrangement that cannot work: the two take turns at the foreground, a
+send waits on the other's output to settle, and Ctrl+C in the user's
+shell cannot reach the agent's command (the bridge's own send record
+does not cover it).
+
+Phase 9.11 gives the agent its own PTY instead, under the same session
+Agent but with a distinct owner-local name (`agent` next to `main`):
+
+- **Spawned lazily**, on the agent's first need for a terminal. A
+  session whose agent never runs a shell pays nothing, and a device
+  session does not open a second ssh connection for a panel nobody
+  opened.
+- **Forked, not shared**: the agent's shell opens in the directory the
+  user's shell is sitting in, read from the user's own prompt (nothing
+  on this wire reports a PTY's working directory), and falls back to
+  the session directory when that shell is busy.
+- **The sync direction stays one-way**: the user's activity reaches the
+  agent's context through 4.6, and the agent reads the user's shell
+  with `dshell_terminal_read` — read-only. The agent does not type into
+  the user's terminal, because that is the same foreground contest.
+- **The user can watch it**: a second, read-only stream on the same ws
+  route (`bind` with `stream: 'agent'`) feeds the status card's
+  terminal row. The panel negotiates the shell's WIDTH only — rows stay
+  a full terminal's, since a full-screen program needs them and the
+  panel scrolls.
+- The shell's bytes never enter the main block log: the user's timeline
+  carries the user's shell and the agent's turns, and the agent's
+  command output arrives where it was always visible — in its own tool
+  results and in the panel.
+
+The model-facing tool is `dshell_get_agent_terminal`; it returns the id
+of this shell, and only after the init handshake settled, because the
+agent's next act is a send and the backend rejects one that overlaps
+another.
+
 ## 5. Wire protocol
 
 `dshell-terminal-bridge` exposes a single ws upgrade route at
 `/dshell/pty`. The protocol is JSON framed; messages are:
 
 - Client → server:
-  - `{ kind: 'bind', sessionId: string }` — associate this ws with the
-    dsh session id. Required as the first message after upgrade.
-  - `{ kind: 'input', sessionId: string, text: string }` — `startSend`
-    against the `main` PTY session.
+  - `{ kind: 'bind', sessionId: string, stream?: 'main' | 'agent' }` —
+    associate this ws with the dsh session id. Required as the first
+    message after upgrade; the server answers with a replay
+    `{ kind: 'output', ..., replay: true }` carrying the persisted
+    scrollback tail (4.9) before any live frame. Omitting `stream`
+    binds the user's `main` shell; `'agent'` subscribes to the
+    agent-owned shell's read-only stream (4.10) and is the only reason
+    a second ws exists — it accepts `agent-open` (spawn it now) and a
+    `cols`-only `resize`, and answers with `agent-info`, `output`,
+    `ready` and `closed` frames tagged `stream: 'agent'`.
+  - `{ kind: 'input', sessionId: string, text: string }` — forwarded to
+    the `main` PTY through `startSend`. Raw control keys ride the text
+    (`\u03` = Ctrl+C cancels the active send with SIGINT).
   - `{ kind: 'resize', sessionId: string, cols: number, rows: number }`
-    — resize the PTY.
+    — accepted but currently a no-op: dsh's PTY backends fix rows/cols
+    at spawn (terminal-bash config; no resize API). Reserved for a
+    future backend capability.
   - `{ kind: 'signal', sessionId: string, signal: 'SIGINT' | 'SIGTERM'
     | 'SIGTSTP' }` — signal the foreground process group.
 - Server → client:

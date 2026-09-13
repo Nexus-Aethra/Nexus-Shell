@@ -15,7 +15,7 @@ when it contributes to model-visible state.
 
 - Host-side packages: `@deepseek-ai/dsh-*` names follow the dsh
   convention. The dshell packages live in the `dshell` group and use
-  `@deepseek-ai/dsh-dshell-*` to match the existing `@deepseek-ai/dsh-*`
+  `@nexus-aethra/dshell-*` to match the existing `@deepseek-ai/dsh-*`
   pattern.
 
   Pragmatic note: until a dsh contribution slot is open, the dshell
@@ -24,10 +24,93 @@ when it contributes to model-visible state.
   set.
 
 - Each package name uses one dash-separated role token after `dshell`:
-  `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`,
-  `workspace`.
+  `std`, `bundle`, `conversation`, `terminal-bridge`, `mode`, `commands`,
+  `workspace`, `ssh`, `buffer`.
 
-## The six packages
+## The packages
+
+### `dshell-std`
+
+- Role: **the standard layer**. It owns what every other package would
+  otherwise re-implement: the `/api/dshell/*` paths and the wire shapes
+  that cross them (`src/contracts.ts`), and — as the refactor continues —
+  the dsh seam adapters (route definition, session/world addressing,
+  capability probing).
+- Why it exists: a dsh interface change used to land N times, once per
+  package that had grown its own copy of the seam. Measured before the
+  split: six `respond()` helpers, five per-package protocol modules and
+  six path constants, two independent session/world resolvers, 61
+  type-only merge imports with no registry, and two styling systems on
+  the browser side. The browser faces even restated host contracts by
+  hand because there was nowhere shared to put them — drift there is a
+  404 at runtime, not a compile error.
+- The rule that keeps it useful: it declares FACTS (paths, shapes,
+  adapters), never feature behaviour, and it is the only dshell package
+  allowed to care how dsh spells things.
+- dsh services depended on: none. This is deliberate — it is the layer
+  that absorbs dsh changes, so it must not be spread across the graph.
+- Introduced in: the standard-layer refactor (contracts extraction,
+  2026-09-12). Feature packages keep their own `protocol.ts` as a
+  re-export shim, so the single declaration lives here while existing
+  import sites stay unchanged.
+- Touches decisions: for the browser bundle, `dshell-std` is always
+  inlined (see `tsdown.dshell.preset.ts`) because dsh's client module
+  table only serves its own PLATFORM_MODULES plus registered client
+  plugins; a `require` of a support package fails the plugin load.
+
+### `dshell-storage`
+
+- Role: **the storage engines.** It owns the medium behind the storage
+  contract that `dshell-std` declares (`src/storage.ts`): today one SQLite
+  database per harness home holding every session's command history.
+- Why it exists: the per-session `.history.json` array had no index — a read
+  parsed the whole list into memory, a write rewrote it in full, and staying
+  bounded meant dropping the oldest commands at a fixed 200-entry cap, which is
+  lossy exactly where a query would want them. A table answers the two shapes
+  the feature needs — the newest N of one session, and prefix matching for the
+  shell's up-arrow gesture — with a working set bounded by the query's `limit`
+  instead of by everything ever stored.
+- The engine is Node's built-in `node:sqlite`: no native dependency and no
+  install script, and FTS5 is present on both the host runtime and the packaged
+  desktop runtime (v24.17.0), which is what a later full-text search over
+  history would use.
+- The rule that keeps it useful: the contract (record shape, store surface, file
+  naming, layout version, failure vocabulary) lives in `dshell-std`; a feature
+  package imports only `openHistoryStore` / `closeHistoryStore` and never names
+  a file, a pragma or a schema.
+- dsh services depended on: none — it is a library, not a plugin, so it has no
+  bundle row. It is host-only by construction (`node:sqlite` cannot appear in a
+  client bundle), which is the second reason the contract lives separately.
+- Introduced in: the shell-history storage work (2026-09-13). Before the store,
+  `terminal-bridge` wrote `${logPath}.history.json`; those files are now read
+  once per session on first open (idempotent by `(session_id, seq)`) and never
+  written again.
+- Format: `PRAGMA user_version = 3`; `commands(session_id, seq, command,
+  command_norm, exit_code, at)` keyed by `(session_id, seq)` plus
+  `commands_session_prefix(session_id, command_norm)`, and
+  `command_output(session_id, seq, output, bytes, dropped)` holding each
+  command's retained output tail. Layout 1 also had `commands_at(at)` for a
+  cross-session time query that was never built and that nothing read; layout 2
+  dropped it, and layout 3 added the output table. Older layouts are migrated in
+  place, one step at a time; an unknown layout is refused.
+- Output retention: the newest 1000 outputs per session, 64 KiB each (the store
+  cap equals the splitter's pending bound, so storing it costs no extra memory).
+  Eviction loses the text, never the fact that a command ran. The injected
+  preview and the in-memory window use a smaller cap (16 KiB, and 2 KiB in the
+  block) — the same output, deliberately read at three sizes.
+- Trap worth remembering: prefix matching is a **range predicate**
+  (`command_norm >= ? AND command_norm < ?`), not `LIKE 'x%'`. SQLite refuses
+  the LIKE optimization for a bound parameter, so with a session filter the
+  index serves only the session term and every row of that session is tested
+  against the pattern — cost that grows with history size, which is the thing
+  the store exists to avoid. The range seek alone is still not the whole
+  answer: the index is ordered by `command_norm`, so "the newest matches" needs
+  a sort of every match (`USE TEMP B-TREE FOR ORDER BY`). `matchPrefix` scans
+  newest-first through the primary key with an early exit, and falls back to the
+  range seek for a sparse prefix — Phase 10.7, measured there. Its budget is
+  derived rather than fixed (`sqrt(limit * N * b/a)`, `N` from `max(seq)`),
+  because a constant is only right at one size; Phase 10.8 has the calibration
+  and the honest trade it makes in the mid-density band.
 
 ### `dshell-bundle`
 
@@ -59,17 +142,35 @@ when it contributes to model-visible state.
 
 ### `dshell-terminal-bridge`
 
-- Role: host-side bridge between browser ws and `ctx.terminals`. Owns
-  `mainPtyByAgent`. Exposes the ws upgrade route at `/dshell/pty`.
-  Implements the wire protocol in `dshell-design.md` § 5.
-- dsh services depended on: `ctx.webServer` (upgrade route),
-  `ctx.terminals` (PTY lifecycle), `ctx.agents` (resolve agent by
+- Role: host-side bridge between the browser and `ctx.terminals`. Owns
+  one `main` PTY per session (the user's shell) and, spawned lazily,
+  one `agent` PTY (the agent's own shell, Phase 9.11), each with its
+  own persisted buffer and block log. Serves the frame protocol on two
+  carriers: the ws upgrade route at `/dshell/pty` (where a `bind` frame
+  names the stream, `main` or `agent`) and the `ctx.connection.fetch`
+  routes `/api/dshell/stream` + `/api/dshell/stream/send`, whose GET
+  carries the bind as query parameters. The browser face keeps ws where
+  the page can reach it and falls back to the stream everywhere else —
+  in particular the desktop shell, which composes `connection` but not
+  `webServer`. Implements the wire protocol in `dshell-architecture.md`
+  § 4.
+- dsh services depended on: `ctx.connection` (frame stream + history
+  read, the composition-independent path), `ctx.webServer` (the ws fast
+  path), `ctx.terminals` (PTY lifecycle), `ctx.agents` (resolve agent by
   sessionId), browser-side `dshell-conversation` (channel for byte
   push).
 - Introduced in: Phase 2 (host only); expanded in Phase 3 (browser
-  ws).
+  ws), Phase 9.11 (agent shell + agent stream).
 - Touches decisions: 4.2 (main shell ownership), 4.3 (secondary pass-
-  through), 4.4 (host half of byte stream).
+  through), 4.4 (host half of byte stream), 4.10 (two shells per
+  session).
+- Everything it persists is owner-only (Phase 10.10): the
+  `$DSH_HOME/dshell-pty/` directory is `0700` and `<id>.log` plus its
+  `.timeline.json` / `.blocks.json` / `.history.json` sidecars are `0600`,
+  written through `src/private-file.ts` — which tightens a file an earlier
+  build left at `0664` rather than only fixing new ones. The transcript is
+  the most sensitive artifact here: the splitter records the input side, so
+  it holds every line the user typed.
 
 ### `dshell-mode`
 
@@ -77,25 +178,38 @@ when it contributes to model-visible state.
   dispatch. Patches the `inputActions` exposed by
   `ctx.uiSession.provide()` to route Enter according to mode. Handles
   `/agent` and `/shell` prefix parsing. On agent-mode submit, injects
-  the truncated PTY context block before the user message.
+  the truncated PTY context block before the user message. Its view
+  also carries the status card (Phase 9.11): a permanent one-line head,
+  with plan / AI terminal / subagents / breakpoint / pipe-task / link
+  rows whose details open on click.
 - dsh services depended on: `ctx.uiSession`, `ctx.agents.inject`,
-  `dshell-terminal-bridge` (for main PTY id and context buffer
-  read).
+  `dshell-terminal-bridge` (for main PTY id, the agent stream and
+  context buffer read), `ctx.sessions` (the status card's session
+  titles, running bit and subagent catalog), `dshell-buffer` (its pipe
+  rows; optional, reached through a late-binding seat).
 - Introduced in: Phase 5 (state and dispatch); expanded in Phase 7
-  (injection).
+  (injection), Phase 9.11 (status card).
 - Touches decisions: 4.5 (mode state and prefix handling), 4.6
-  (injection).
+  (injection), 4.10 (status surface).
 
 ### `dshell-commands`
 
-- Role: registers `/clear`, `/new`, `/compact` on `ctx.commands`, and
-  one model-facing tool `dshell_get_main_terminal` on `ctx.tools`.
+- Role: registers `/new` on `ctx.commands` (`/compact` is dsh's own
+  command and is not re-registered), and three model-facing tools on
+  `ctx.tools`: `dshell_get_agent_terminal` (Phase 9.11; it was
+  `dshell_get_main_terminal` while the agent shared the user's shell),
+  `dshell_terminal_read` (the user's shell: a delta from a cursor, or the latest
+  commands), and `dshell_terminal_output` (Phase 10.9 — `(cursor, seq, offset,
+  limit)` into one command's stored output, so a long command is read in bounded
+  slices instead of injected whole).
 - dsh services depended on: `ctx.commands`, `ctx.tools`,
-  `dshell-terminal-bridge` (for the main PTY id returned by the
-  tool).
-- Introduced in: Phase 6 (commands); expanded in Phase 8 (tool).
-- Touches decisions: 4.5 (real commands), 4.6 (agent access to main
-  PTY id).
+  `dshell-terminal-bridge` (for the agent shell's PTY id returned by
+  the tool, the read-only view of the user's shell, and the stored output
+  slices).
+- Introduced in: Phase 6 (commands); expanded in Phase 8 (tool),
+  Phase 9.11 (own shell), Phase 10.9 (output slices).
+- Touches decisions: 4.5 (real commands), 4.6 (agent access to a PTY
+  id), 4.10 (agent-owned shell).
 
 ### `dshell-workspace`
 
@@ -121,6 +235,216 @@ when it contributes to model-visible state.
   `/new` creates sessions via `sessions.create({ cwd })` with no
   workspace attached.
 
+### `dshell-ssh`
+
+- Role: device sessions. Two-faced Cordis package:
+  - **Host face** owns the durable device registry (name, host, port,
+    user, remote directory, login method; secrets in separate 0600 files
+    under `$DSH_HOME/dshell/ssh/keys/`), the durable session→device
+    assignment, and three seams: a wrapped `ctx.shell.resolve`, a
+    subprocess route for `glob`/`grep`, and a replacement `ctx.fs`
+    provider that resolves a bound session's tree over SSH. It also
+    publishes `dshellSshRouting` for packages that need to know which
+    device a session runs on.
+  - Credential and host-trust posture (Phase 10.10, see `src/runner.ts` and
+    `src/host-key.ts`): a device with a stored key connects with **only** that
+    key (`IdentitiesOnly=yes` — without it the user's ssh agent is offered
+    first and can authenticate as the wrong identity), password devices pin
+    `PreferredAuthentications=password` + `PubkeyAuthentication=no` + one prompt
+    and hand the secret over through the askpass hook, host keys are trusted
+    into `$DSH_HOME/dshell/ssh/known_hosts` rather than the user's personal
+    file, and the connection-sharing socket is named by a digest of the
+    destination and the device id (short enough for a unix socket path; dropped
+    entirely, with the connection made without reuse, where `$DSH_HOME` is too
+    deep for one). A successful connection **test** reports the fingerprint it
+    trusts — `主机密钥 SHA256:…（首次信任…／已信任）` — read back from that store,
+    since `accept-new` otherwise records a first contact silently.
+  - **Browser face** provides the device card in the Plugins settings
+    section and the `dshellSsh` service the session picker and the
+    new-session dialog read.
+- dsh services depended on: `ctx.settings`, `ctx.shell`,
+  `ctx.subprocess`, `ctx.fs`, `ctx.agents`, `ctx.connection.fetch`.
+- Introduced in: Phase 9.6; connection failure handling in Phase 9.7.
+
+### `dshell-buffer`
+
+- Role: the cross-session pipe. Two-faced Cordis package:
+  - **Host face** owns links (created only by the user, never by an
+    agent), deferred requests with a claim/progress/finish/fail
+    lifecycle, scoped revocable grants, and the watchdog that
+    settles anything nobody settled. It contributes one model-facing
+    tool, `dshell_buffer`, as the single door to all of it, plus one
+    system-prompt section stating the protocol. Every granted area is
+    named at creation (`as`, or the path's last segment, suffixed to
+    stay unique on the grantee's side) and that name is the whole
+    contract between the two sessions: the buffer namespace is rooted at
+    `/`, one namespace per session, and grant ids never leave the host.
+  - **Browser face** provides the pipe panel in the frame-wide
+    `shell.overlay` seat and the `dshellBuffer` service the sidebar
+    header button toggles.
+- dsh services depended on: `ctx.tools`, `ctx.systemPrompt`, `ctx.fs`,
+  `ctx.agents`, `ctx.sessionController`, `ctx.sandboxPolicy` (optional),
+  `ctx.shell` (cross-world byte transfer), `ctx.connection.fetch`; the
+  browser face uses `ctx.slots` and `ctx.sessions`.
+- Reads `dshellSshRouting` structurally when present, to probe a
+  device-bound target before admitting a delegation; a composition
+  without dshell-ssh simply has no device to check.
+- Introduced in: Phase 9.8.
+
+### `dshell-files`
+
+- Role: the right sidebar's file navigator, roaming without bound, plus
+  the two-pane file transfer beside it. Two-faced Cordis package:
+  - **Host face** registers two connection routes. `/api/dshell/files`
+    has two actions: `list` resolves the session's agent, then inside
+    `withInitiator` resolves `stat` (must be a directory) and `listDir`
+    and answers with the canonical absolute path in that session's own
+    execution world; `cd` sends the session's main shell into one such
+    directory, through the terminal bridge's own input path — the same
+    one a keystroke takes, so the command is tracked and rendered like
+    any typed command. The route exists because dsh's own
+    `workspaceFiles.list` is fenced to the workspace root; `ctx.fs` is
+    the same seam, just without that fence, and the sandbox only fences
+    writes, so listing is at the same trust level as `read`.
+    `/api/dshell/transfer` serves the transfer view: `state` (both roots,
+    the device, whether a transfer is possible at all), `list` (one side's
+    directory), `copy` (starts a job and answers with it), `job` and
+    `cancel`. Its two worlds are the session's own (a device tree over the
+    same routing, this machine otherwise) and **this machine**, reached
+    through the explicit agentless boundary; reads go through `ctx.fs` as
+    each side, and writes go through `ctx.shell` with the payload riding
+    stdin as base64 (the filesystem seam has no byte write) for a device
+    destination, and through `node:fs` in process for a local one — which
+    is what that world already is, the same assumption the local pane's
+    root makes by asking `os.homedir()`.
+  - **Browser face** registers its own `SidebarRightTabDefinition` for
+    the `files` kind at `priority: 'extension'`, shadowing the stock
+    body (which resumes if this row is removed) and contributing the
+    required guide entry that keeps the pane's default page. The pane
+    draws a `..` row, clickable path crumbs, back/forward history and a
+    reload button, plus a jump button that moves the session's shell
+    into the directory on screen — drawn only when the host reports it
+    can (no terminal bridge, no button) — and, for a device session, the
+    button that opens the transfer tab. Directory rows and the `..` row
+    are drag sources for the same jump, carried by pointer events rather
+    than HTML5 drag and drop (a native drag session cannot be observed or
+    corrected when the browser refuses the drop), released over the
+    terminal view the block view mounts, which is outlined while the
+    pointer is over it. Navigation state lives in a declared
+    per-session store bucketed by tab id, because the pane unmounts the
+    inactive tab's body but the store survives.
+  - The transfer tab is the same package's second `SidebarRightTabDefinition`
+    (`kind: 'transfer'`, a page type, and deliberately **no guide entry**:
+    the pane's default page is the sole guide entry's kind, so a second entry
+    would move every session's default page onto the guide). Its body draws
+    two trees — this machine on the left, the device on the right — over the
+    navigator's own rows and levels, and drags an entry from one to the other
+    with the same pointer-event technique; a drop lands in the directory row
+    under the pointer, or in the receiving pane's own directory. Copies are
+    jobs the view polls, so a long directory copy has a progress line, a
+    cancel and a conflict question ("overwrite?") instead of a request that
+    hangs; the two tab types share one store instance.
+- dsh services depended on: host — `ctx.connection.fetch`,
+  `ctx.agents`, `ctx.sessionController`, `ctx.fs`, `ctx.shell` (the
+  byte-write seam of the transfer), optionally
+  `ctx.dshellTerminalBridge` for the shell jump and `ctx.dshellSshRouting`
+  for the device side of a transfer; browser — `ctx.slots`, `ctx.locale`,
+  `ctx.sidebarRightTabs`, optionally `ctx.dshellSsh` (is this session a
+  device session with a mount?), and the `sidebar.right.pane.tab` standard
+  props (`ctx.sessions` for the session id and cwd).
+- Introduced in: Phase 9.9.
+
+## Publishing, and installing from a registry
+
+The desktop shell installs a plugin through its plugin window, which is a plain
+`pnpm add <spec> --save-exact` in the reserved desktop profile followed by one
+check (`apps/desktop/src/project-manager.ts`):
+
+- the spec must be a registry name (or `name@exact-version`) — `file:`, `://`,
+  whitespace and `-`-prefixed specs are rejected, so a packed tarball path can
+  never be staged this way;
+- after install, `node_modules/<name>/package.json` must declare
+  `dsh.bundle.patch`, and that path must exist **inside** the package directory;
+- the package name is then appended to `dsh.profile.bundles`, which is what
+  makes dsh compose its patch rows.
+
+`dsh plugin --profile <p> add <spec>` runs the same pnpm step and the same
+bundle-promotion rule for a non-desktop profile. Both are why
+`dshell-bundle` — the only package declaring `dsh.bundle.patch` — is the install
+root, and why each manifest now carries:
+
+- no `private` field, and `publishConfig.access: public`;
+- `files: ["lib"]` (plus `cordis.patch.yml` for the bundle). The earlier list
+  named only `lib/index.js` and `lib/client.js`, so **every host module the
+  entry imports** — `route.js`, `stream.js`, `pty.js`, … — was missing from the
+  tarball: it installed, then failed at import time;
+- first-party dsh packages as **peerDependencies pinned to the exact
+  `0.1.5-rc.2`** (plus the same list in `devDependencies`, which is what the
+  local build resolves), never as plain dependencies. A plugin must share the
+  host's single instance of a first-party package: a second copy breaks
+  `instanceof` across `FsError`/`TerminalError`, gives a second `Service` base
+  class, and splits the client module table. Exact rather than `^` because a
+  floating prerelease range let pnpm satisfy the peers from the registry
+  (`0.1.5-rc.2`) instead of the checkout, silently mixing two dsh builds in one
+  tree;
+- `@deepseek-ai/cordis` as a peer (`^4.0.2`), matching how dsh publishes its own
+  packages;
+- dshell-to-dshell edges as `workspace:^`, which pnpm rewrites to `^0.1.0` on
+  pack;
+- third-party libraries that are genuinely the plugin's own (`ws`, `node-pty`,
+  `@xterm/xterm`, `@xyflow/react`, `schemastery`) as dependencies.
+
+Development still runs against the local `dsh/` checkout: the root
+`package.json` maps every first-party name to its checkout path under
+`pnpm.overrides`, so `pnpm install` links instead of fetching while the
+manifests themselves carry what a registry consumer resolves. The same shape is
+what the desktop app writes into its own profile (`desktop-packages/*.tgz` +
+matching overrides), which is also why a desktop install cannot end up with two
+copies of a core package.
+
+### The publishing environment (this deployment)
+
+- The npm CLI here defaults to the **npmmirror** registry: `~/.bashrc` exports
+  `npm_config_registry="https://registry.npmmirror.com/"`. That mirror is
+  read-only, so every publish must pass `--registry=https://registry.npmjs.org/`
+  explicitly (installs may keep using the mirror). Symptom of forgetting: `npm
+  whoami` answers "need auth", because the npmjs-scoped token is not sent there.
+- The account is `nexus-aethra` and its 2FA is `auth-and-writes`, so a publish
+  needs either a one-time code (`--otp=`) or a granular access token with
+  "Bypass 2FA" enabled.
+- The packages publish under that account's own org scope
+  (`@nexus-aethra/dshell-*`). `@deepseek-ai/…` is dsh's own npm org and is not
+  publishable by an outside account.
+- Publish order is dependency order — `dshell-std` first, `dshell-bundle` last —
+  because each package's `workspace:^` edges become `^0.1.0` ranges that must
+  already resolve.
+
+### Verifying a published artifact
+
+`scripts/local-registry.mjs` serves packed tarballs over the npm registry
+protocol (metadata + tarball endpoints, everything else proxied upstream), and
+the check is: pack, install from that registry into a profile whose core
+packages are linked to the checkout, then boot it.
+
+```bash
+for d in packages/dshell/*/; do (cd "$d" && pnpm pack --pack-destination /tmp/dshell-packs); done
+node scripts/local-registry.mjs --port 4873 --dir /tmp/dshell-packs   # another shell
+pnpm add @nexus-aethra/dshell-bundle --save-exact \
+  --config.registry=http://127.0.0.1:4873
+```
+
+A pass looks like: the install succeeds, `dsh.profile.bundles` gains
+`@nexus-aethra/dshell-bundle`, the booted profile answers
+`/api/dshell/buffer`, `/api/dshell/files` and `/api/dshell/stream` (the stream
+one holding the connection open), and the served client bundle
+(`/plugins/??<list>&rev=<rev>`) contains the dshell faces.
+
+The desktop application itself can only talk to `https://registry.npmjs.org/`
+(`DESKTOP_REGISTRY` is a constant in `apps/desktop/src/project-manager.ts`), so
+a private registry is not reachable from its plugin window without an upstream
+change; `dsh plugin` plus `--config.registry` is the equivalent path the recipe
+uses.
+
 ## What is not a dshell package
 
 The following dsh components are reused unchanged. They are listed here
@@ -142,6 +466,10 @@ so the inventory is complete; do not introduce wrappers for them.
 ## Dependency graph
 
 ```
+dshell-std                    (the standard layer: contracts + seam adapters)
+  ▲
+  │ every package below imports its wire contracts from here
+  │
 dshell-bundle
   ├── dshell-conversation
   │     ├── dshell-terminal-bridge (host face)
@@ -151,11 +479,26 @@ dshell-bundle
   │     └── dshell-terminal-bridge
   ├── dshell-commands
   │     └── dshell-terminal-bridge
-  └── dshell-workspace        (replaces the disabled stock rows)
+  ├── dshell-workspace        (replaces the disabled stock rows)
+  │     └── dshell-buffer     (optional: the sidebar `管道` entry)
+  ├── dshell-buffer           (optional: reads dshell-ssh's routing face)
+  │     └── dshell-ssh        (optional: target reachability probe)
+  └── dshell-files            (shadows the stock `files` sidebar tab; also
+        │                       registers the `transfer` page type)
+        ├── dshell-terminal-bridge  (optional: the pane's shell jump)
+        └── dshell-ssh              (optional: the device side of a transfer,
+                                     read as a structural seat)
+  └── dshell-storage          (library, not a row: the SQLite medium behind
+                                dshell-std's storage contract, consumed by
+                                dshell-terminal-bridge)
 ```
 
-There are no cycles. `dshell-bundle` is the install root; the others
-  are leaves or single-level consumers of the bridge.
+There are no cycles. `dshell-std` has no dependency at all: it is the
+  layer that keeps a dsh change from landing once per package.
+  `dshell-bundle` is the install root; the others are leaves or
+  single-level consumers of the bridge. The two optional edges exist only
+  when both rows are composed — each side reads the other through a
+  structural seat, never an import.
 
 ## Cordis `ctx` keys dshell publishes or subscribes to
 
@@ -165,16 +508,48 @@ There are no cycles. `dshell-bundle` is the install root; the others
   NodeDefinitions (in `dshell-conversation`, host face).
 - `ctx.uiConversation.views` — registers the `terminal` ViewDefinition
   (in `dshell-conversation`, host face).
-- `ctx.webServer` — registers `/dshell/pty` upgrade (in
-  `dshell-terminal-bridge`, host face).
+- `ctx.connection` — registers the frame stream and the history read
+  (in `dshell-terminal-bridge`, host face): `/api/dshell/stream`,
+  `/api/dshell/stream/send`, `/api/dshell/pty`.
+- `ctx.webServer` — registers the `/dshell/pty` ws upgrade (in
+  `dshell-terminal-bridge`, host face; the browser's fast path).
 - `ctx.terminals` — `spawn` / `startSend` / `readOutput` /
   `signal` / `kill` / `list` (in `dshell-terminal-bridge`).
 - `ctx.agents` — `inject` (in `dshell-mode`) and session id lookup
   (in `dshell-terminal-bridge`).
 - `ctx.commands` — registers commands (in `dshell-commands`).
-- `ctx.tools` — registers `dshell_get_main_terminal` (in
-  `dshell-commands`).
+- `ctx.tools` — registers `dshell_get_agent_terminal` and
+  `dshell_terminal_read` (in `dshell-commands`).
 - `ctx.uiSession` — patches `inputActions` (in `dshell-mode`).
+- `ctx.systemPrompt` — registers one section stating the pipe protocol
+  (in `dshell-buffer`, host face).
+- `ctx.sessionController` — `resolveAgent` for the target and, at
+  settlement, for the requester (in `dshell-buffer`, host face).
+- `ctx.sandboxPolicy` — resolved against the granter's session to fence a
+  granted write; optional (in `dshell-buffer`, host face).
+- `ctx.sessions` — peer labels in the pipe panel (in `dshell-buffer`,
+  browser face) and the status card's session titles / running bit
+  (in `dshell-mode`, browser face).
+- `ctx.dshellBuffer` — the pipe snapshot, its load poll, ticket cancel
+  and panel toggle, read by the status card's 中断点 / 管道任务 rows (in
+  `dshell-mode`, browser face; absent without `dshell-buffer`).
+- `ctx.connection.fetch` — registers the `/api/dshell/files` listing
+  route and the `/api/dshell/transfer` job route (in `dshell-files`, host
+  face).
+- `ctx.shell` — resolves and runs one base64-payload command per file
+  written into a device world (in `dshell-files`, host face, the
+  transfer's byte-write seam).
+- `ctx.dshellSshRouting` — the device a session runs on, for the transfer's
+  remote side; optional, read structurally (in `dshell-files`, host face).
+- `ctx.sidebarRightTabs` — registers the `files` tab definition that
+  shadows the stock kind, and the `transfer` page type beside it (in
+  `dshell-files`, browser face).
+- `ctx.dshellSsh` — whether a session is a device session with a mount,
+  which is what the transfer button's presence depends on; optional, read
+  structurally (in `dshell-files`, browser face).
+- `ctx.dshellTerminalBridge` — `feed` moves a session's shell into a
+  directory for the pane's jump button; optional, and its absence is
+  what the pane reports as `canCd: false` (in `dshell-files`, host face).
 
 ### Publishes
 
@@ -184,6 +559,11 @@ There are no cycles. `dshell-bundle` is the install root; the others
 - `ctx.dshellPtyBuffer` — per-session rolling buffer of recent
   `main` PTY output (≤ 100 lines / 4 KiB). Read by `dshell-mode`
   when injecting context.
+- `ctx.dshellSshRouting` — dshell-ssh's router, so dshell-buffer can ask
+  which device a session runs on and probe it before admitting a
+  delegation.
+- `ctx.dshellBuffer` (client) — the pipe state and its mutations. Read by
+  dshell-workspace's sidebar `管道` entry.
 
 ### Replaces (same-key providers over disabled stock rows)
 
