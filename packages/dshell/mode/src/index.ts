@@ -17,7 +17,7 @@
  *  - only sessions with a *live* main shell (`since` never spawns one), so
  *    subagents and never-opened sessions stay context-free;
  *  - an empty delta injects nothing at all;
- *  - a stale cursor (the shell was respawned or `/clear`ed) advances the
+ *  - a stale cursor (the shell was respawned) advances the
  *    watermark and injects nothing — the seeded scrollback is history, and
  *    the next turn resumes from the new head.
  *

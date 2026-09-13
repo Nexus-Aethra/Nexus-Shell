@@ -212,7 +212,7 @@ Plugins touched:
   listener routes the composer's Enter (and its primary send button) to
   the bridge PTY and clears the stock draft through
   `inputActions.setDraft`; a leading `/` is always left to the stock
-  trigger pipeline so `/clear`, `/new`, skills, *and* dshell's own
+  trigger pipeline so `/new`, skills, *and* dshell's own
   `/shell` `/agent` keep working. In `agent` mode the stock submit path
   runs untouched.
   - `/shell` and `/agent` are **client-side** commands, not host
@@ -359,8 +359,8 @@ Plugins touched:
   path, 350ms inferred-idle fallback, 15s timeout; Ctrl+C cancels the
   active send). The bridge spawns one `main` shell per dsh session;
   init sets the PS1 + `PROMPT_COMMAND` marker once and replays a
-  clean prompt, and the same truncate + replay is how `/clear` wipes
-  both sides.
+  clean prompt, and the same truncate + replay is the spawn reset that
+  keeps the init echo out of the persisted log.
 - `dshell-mode` (browser face) — the dock's scrollback div becomes a
   full-bleed xterm.js canvas. xterm.js and its CSS are inlined into
   the client bundle (rolldown `noExternal` + CSS-as-string module —
@@ -544,7 +544,9 @@ Plugins touched:
 Acceptance check:
 
 - `/clear` clears the xterm buffer and the main PTY scrollback in one
-  operation.
+  operation. *(Retired in Phase 10.6 — the in-terminal `clear` already
+  clears the canvas, and the command's epoch reset was the only thing
+  that could drop persisted history mid-session.)*
 - `/new` opens a new session through dsh's standard creation path;
   the new session starts in `shell` mode with no PTY until first
   access.
@@ -575,7 +577,7 @@ Plugins touched:
   - `since(sessionId, cursor?)` returns the delta: sanitized text,
     commands closed since the cursor, `dropped` when retention slid past
     the request, `cleared` when the cursor belonged to an earlier
-    **generation** (respawn or `/clear` take a fresh generation);
+    **generation** (a respawn takes a fresh generation);
   - `history(sessionId, limit)` returns the latest retained commands;
   - both never spawn a shell, so subagent and never-opened sessions stay
     context-free.
@@ -1624,15 +1626,16 @@ Three facts that shaped it, each verified rather than assumed:
   `recent` and the same order the history route already sends, so a caller
   filters without reordering.
 
-Migration and the clear contract: a session's legacy file is imported on its
+Migration and the deletion contract: a session's legacy file is imported on its
 first open after the upgrade, idempotently by `(session_id, seq)`, and never
-written again — the file stays in place as a rollback. `/clear` deletes the
-session's rows **and** the legacy file **synchronously**, because the shell's
-`seq` restarts after a clear: a deferred unlink or a late debounced write would
-either resurrect the cleared commands on the next boot or land old numbering on
-the rows new commands are about to occupy. A store that cannot be opened at all
-(read-only home, foreign layout) degrades to the file path rather than losing
-history.
+written again — the file stays in place as a rollback. Deleting a session drops
+its rows **and**, synchronously, its legacy file: `releaseSession` runs at
+teardown, where a deferred unlink or a late debounced write would race the
+process exit that is removing the session. Deletion had never dropped either
+copy — the purge's PTY suffixes did not cover `.log.history.json`, and nothing
+dropped store rows — which mattered more once `/clear` stopped being the manual
+purge (Phase 10.6). A store that cannot be opened at all (read-only home,
+foreign layout) degrades to the file path rather than losing history.
 
 Acceptance check:
 
@@ -1664,5 +1667,54 @@ Not addressed here, deliberately, and in this order:
 3. The query surface for agents (FTS5 is available on both runtimes for
    full-text, `commands_at` for cross-session time queries), and the
    `commonPrefix > 0` vs strict-prefix behaviour decision in `mode`.
+   A token prefix tree is **not** on that list: for the up-arrow path the
+   B-tree range seek above is already the optimal structure for a strict
+   prefix, and a trie would be a second in-memory format to rebuild, not a
+   faster query. A trie only pays for *fuzzy* prefix ranking or word/token
+   search — and for the token half FTS5 (present on both runtimes, persistent,
+   ACID) already provides the inverted index, with usage-count/recency ranking
+   as a scoring layer over either structure. If an in-memory index is ever
+   added it should be a bounded cache over the store, never a second source of
+   truth.
+
+## Phase 10.6 — Retiring `/clear`
+
+Goal: stop exposing a dshell `/clear` command. The in-terminal `clear` already
+clears the canvas natively, so the slash command's only distinct effect was
+dropping the persisted scrollback and resetting the shell epoch — an operation
+the terminal no longer needs, and one that cost a whole set of clear-only code
+paths in the bridge.
+
+Plugins touched:
+
+- `dshell-commands` (host face) — the `clear` registration is removed; `/new`
+  and the two model tools remain.
+- `dshell-terminal-bridge` — `clearSession()` and `performClear()` are deleted.
+  `CommandHistory.clear()` survives with a new caller: `releaseSession()`, so
+  deleting a session drops its store rows and its legacy file (see the deletion
+  contract in Phase 10.5). `BlockSplitter.clear()` — dead already, since
+  `performClear` recreated the splitter instead — is deleted with it.
+- `dshell-workspace` — `purgeSessionArtifacts` also drops
+  `<session>.log.history.json`, the legacy file the PTY suffix list never
+  covered.
+
+What changes for the user: no `/clear` in the slash menu; `clear` (bash's own,
+which the canvas honours) is unaffected; up-arrow history keeps working because
+it never depended on the command.
+
+Acceptance check:
+
+- `pnpm typecheck` and `pnpm build` clean; the emitted `commands/lib/index.js`
+  no longer contains the registration and `terminal-bridge/lib/index.js` no
+  longer contains `clearSession`.
+- In the running harness, the slash menu (composer, leading `/`) lists
+  `new` plus dsh's stock commands and **no** `clear` — read from the page's
+  `[role="listbox"]` after typing `/`, nothing submitted.
+- The history route still answers for a resumed session, so the up-arrow path
+  is unaffected.
+
+Still open from this: rows left in `history.sqlite` by a session that was
+already cold at delete time (no bridge record, so no `releaseSession`) belong to
+the retention pass in "Not addressed here" item 2.
 
 

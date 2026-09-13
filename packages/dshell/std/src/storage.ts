@@ -93,7 +93,7 @@ export interface HistoryStore {
    * query: the caller ranks a bounded candidate set by shared-prefix length.
    */
   matchPrefix(sessionId: string, draft: string, limit: number): HistoryRecord[]
-  /** Drop one session's history — the `/clear` epoch. */
+  /** Drop one session's history — the session itself is gone. */
   clearSession(sessionId: string): void
   /** How many commands one session has stored. */
   count(sessionId: string): number

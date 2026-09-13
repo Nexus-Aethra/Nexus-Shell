@@ -130,13 +130,6 @@ export class BlockLog {
     return this.blocks
   }
 
-  /** Forget everything (the `/clear` path). */
-  clear(): void {
-    this.blocks = []
-    this.nextSeq = 1
-    this.scheduleSave()
-  }
-
   /** Write the log out without waiting for the debounce. */
   async flush(): Promise<void> {
     if (this.saveTimer !== undefined) { clearTimeout(this.saveTimer); this.saveTimer = undefined }

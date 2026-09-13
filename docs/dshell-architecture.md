@@ -100,7 +100,7 @@ form so implementers can match identifiers exactly.
 | `ctx.webServer` | `dshell-terminal-bridge` host | `registerUpgrade('/dshell/pty', ...)` — the browser's ws fast path |
 | `ctx.terminals` | `dshell-terminal-bridge` host | spawn/startSend/readOutput/signal/kill/list |
 | `ctx.agents` | `dshell-terminal-bridge` host, `dshell-mode` host | `inject`, agent lookup by sessionId |
-| `ctx.commands` | `dshell-commands` host | register `/clear`, `/new`, `/compact` |
+| `ctx.commands` | `dshell-commands` host | register `/new` (`/compact` stays dsh's own) |
 | `ctx.tools` | `dshell-commands` host | register `dshell_get_agent_terminal`, `dshell_terminal_read` |
 | `ctx.dshellMainPty` | `dshell-mode`, `dshell-commands` | consume the `Map<Agent, TerminalSessionId>` |
 | `ctx.dshellPtyBuffer` | `dshell-mode` host | consume the per-session rolling buffer |
@@ -326,7 +326,7 @@ with a wrapper that:
    - `/agent <rest>` → switch mode to `agent`, then `agent.inject(rest)`.
    - `/shell <rest>` → switch mode to `shell`, then ws `input` frame
      with `<rest>`.
-   - `/clear`, `/new`, `/compact` → `ctx.commands.execute(...)` via
+   - `/new`, `/compact` → `ctx.commands.execute(...)` via
      the standard command surface; this path **does not** patch
      `inputActions`, it goes through the existing `/`-dispatcher that
      `ui-input-trigger` and `ui-commands` already own.
@@ -361,7 +361,7 @@ locale namespace per dsh convention:
 Three namespaces for now:
 
 - `dshell-conversation` — terminal title, mode toggle labels.
-- `dshell-mode` — `/agent`, `/shell`, `/clear`, `/new`, `/compact`
+- `dshell-mode` — `/agent`, `/shell`, `/new`, `/compact`
   command descriptions and input hints.
 - `dshell-terminal-bridge` — connection status badge strings.
 

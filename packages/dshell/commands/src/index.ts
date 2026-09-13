@@ -1,13 +1,11 @@
 /**
  * dshell-commands host face — Phases 6/8.
  *
- * `/clear` wipes the bridge's main-shell history: dsh's TerminalSanitizer
- * strips the ANSI clear from scrollback, so the visual clear is performed
- * by the bridge. `/new` creates a fresh session with the invoking
- * session's cwd (the dock additionally intercepts `/new` client-side,
- * because the "current session" selection is client-only state no host
- * command can switch). `/compact` is dsh's own `command-compact` — dshell
- * must not re-register it; the dock routes it to the stock executor.
+ * `/new` creates a fresh session with the invoking session's cwd (the dock
+ * additionally intercepts `/new` client-side, because the "current session"
+ * selection is client-only state no host command can switch). `/compact` is
+ * dsh's own `command-compact` — dshell must not re-register it; the dock
+ * routes it to the stock executor.
  * `dshell_get_agent_terminal` hands the agent the addressable
  * `TerminalSessionId` of its OWN shell — the PTY the bridge spawns for it,
  * separate from the one the user types into.
@@ -41,19 +39,6 @@ function formatCommand(record: TerminalCommandRecord, includeOutput: boolean): s
 
 export function apply(ctx: Context): void {
   const bridge: DshellTerminalBridge = ctx.dshellTerminalBridge
-
-  ctx.commands.register({
-    name: 'clear',
-    description: 'Clear the dshell main terminal scrollback.',
-    handler: async (invocation): Promise<CommandResult> => {
-      try {
-        await bridge.clearSession(String(invocation.agent.id))
-        return { kind: 'success', text: '终端已清空。' }
-      } catch (error) {
-        return { kind: 'error', text: `清空失败:${error instanceof Error ? error.message : String(error)}` }
-      }
-    },
-  })
 
   ctx.commands.register({
     name: 'new',
@@ -141,7 +126,7 @@ export function apply(ctx: Context): void {
         if (delta === undefined) return { text: NO_SHELL, cursor: '' }
         const lines: string[] = []
         if (delta.cleared) {
-          lines.push('终端已被清空或重启，游标已失效；下面是新终端的状态。')
+          lines.push('终端已重启，游标已失效；下面是新终端的状态。')
         }
         if (delta.newCommandCount > 0) {
           lines.push(`完成 ${String(delta.newCommandCount)} 条命令：`)

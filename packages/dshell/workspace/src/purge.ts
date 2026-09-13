@@ -70,7 +70,10 @@ export async function purgeSessionArtifacts(
   for (const shard of shards) await drop(join(home, 'sessions', shard, sessionId))
 
   await drop(join(home, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`))
-  for (const suffix of ['.log', '.log.timeline.json', '.log.blocks.json']) {
+  // `.log.history.json` is the pre-store command history; the store's own rows
+  // for a live session are dropped by `releaseSession`, and rows left by a
+  // session that was already cold belong to the retention pass (roadmap 10.5).
+  for (const suffix of ['.log', '.log.history.json', '.log.timeline.json', '.log.blocks.json']) {
     await drop(join(home, 'dshell-pty', `${sessionId}${suffix}`))
   }
   return removed

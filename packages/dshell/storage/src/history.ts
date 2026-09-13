@@ -18,8 +18,8 @@
  *
  *   commands(session_id, seq, command, command_norm, exit_code, at)
  *     PRIMARY KEY (session_id, seq)
- *       the shell's own numbering, continued across restarts and reset by
- *       `/clear` — which is why `clearSession` must delete rows outright
+ *       the shell's own numbering, continued across restarts — `clearSession`
+ *       deletes a whole session's rows when that session is deleted
  *   commands_session_prefix(session_id, command_norm)
  *   commands_at(at)
  *

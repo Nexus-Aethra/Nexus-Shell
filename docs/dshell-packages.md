@@ -171,7 +171,8 @@ when it contributes to model-visible state.
 
 ### `dshell-commands`
 
-- Role: registers `/clear`, `/new`, `/compact` on `ctx.commands`, and
+- Role: registers `/new` on `ctx.commands` (`/compact` is dsh's own
+  command and is not re-registered), and
   one model-facing tool `dshell_get_agent_terminal` on `ctx.tools`
   (Phase 9.11; it was `dshell_get_main_terminal` while the agent shared
   the user's shell).

@@ -80,7 +80,7 @@ Nexus-Shell/
 │   ├── conversation/      # target `terminal`: host stub + browser ViewBuilder
 │   ├── terminal-bridge/   # ws upgrade + PtyBuffer (Phase 2+)
 │   ├── mode/              # composer toggle (Phase 5+)
-│   └── commands/          # /clear /new /compact + model tool (Phase 6/8)
+│   └── commands/          # /new + model tools (Phase 6/8)
 ├── scripts/
 │   ├── install-into-dsh-profile.sh
 │   └── bootstrap-profile-client.sh

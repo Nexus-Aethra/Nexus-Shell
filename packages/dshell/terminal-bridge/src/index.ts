@@ -55,10 +55,10 @@ export { MAX_COMMAND_HISTORY } from './history.js'
 export type { PersistedCommand } from './history.js'
 
 /**
- * Shell generation counter. A new record — spawn or `/clear` — takes the next
- * value, so a cursor minted against an older shell is always detectable as
- * stale (a plain offset cannot be, since a respawn's log seed restarts near
- * zero).
+ * Shell generation counter. A new record — a spawn, including one after the
+ * previous shell died — takes the next value, so a cursor minted against an
+ * older shell is always detectable as stale (a plain offset cannot be, since
+ * a respawn's log seed restarts near zero).
  */
 let nextShellGeneration = 1
 
@@ -96,7 +96,7 @@ export interface TerminalDelta {
   readonly newCommandCount: number
   /** Older output fell out of the retained window before the cursor. */
   readonly dropped: boolean
-  /** The cursor belonged to a previous shell generation (respawn or /clear). */
+  /** The cursor belonged to a previous shell generation (the shell respawned). */
   readonly cleared: boolean
 }
 
@@ -158,7 +158,7 @@ interface ShellRecord {
 interface MainRecord extends ShellRecord {
   /** The host's block model for this session: the render order's source. */
   blocks: BlockLog
-  /** Shell identity; every respawn and `/clear` takes a fresh value. */
+  /** Shell identity; every respawn takes a fresh value. */
   generation: number
   /** Bytes ever appended to the logical stream, independent of window trims. */
   absOffset: number
@@ -889,16 +889,6 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
-   * `/clear` command entry: wipe one session's main-shell history (the
-   * in-terminal `clear` command now clears the canvas natively; /clear
-   * additionally drops the persisted scrollback).
-   */
-  async clearSession(dshSessionId: string): Promise<void> {
-    const record = await this.ensureLiveMain(dshSessionId)
-    this.performClear(record)
-  }
-
-  /**
    * Drop one session's main shell: kill the PTY and release its scrollback
    * window, timeline and block log. Used when the session is deleted while
    * still loaded — dsh keeps the session object alive, but everything dshell
@@ -908,7 +898,13 @@ export class DshellTerminalBridge extends Service {
    */
   releaseSession(dshSessionId: string): void {
     const record = this.recordFor(dshSessionId)
-    if (record !== undefined) this.markDead(record, 'session deleted')
+    if (record !== undefined) {
+      this.markDead(record, 'session deleted')
+      // Deletion is the one event that drops a session's durable command
+      // history: `markDead` frees the shell but deliberately keeps what it
+      // wrote, and nothing else would ever look at these rows again.
+      record.history.clear()
+    }
     const agentRecord = this.agentRecordFor(dshSessionId)
     if (agentRecord !== undefined) this.markAgentDead(agentRecord, 'session deleted')
   }
@@ -996,27 +992,6 @@ export class DshellTerminalBridge extends Service {
       generation: record.generation,
       commands,
     }
-  }
-
-  /**
-   * Reset the buffer and client histories, then queue an empty line so
-   * bash renders a fresh `user@host:path$ ` cue (the `/clear` path).
-   */
-  private performClear(record: MainRecord): void {
-    // A clear is a new shell epoch: old cursors must read as stale, the
-    // splitter and command history restart, and the absolute offset restarts
-    // with the truncated window.
-    record.generation = nextShellGeneration++
-    record.absOffset = 0
-    record.commands = []
-    // The file goes with the array: a clear that left the old commands on disk
-    // would hand them back at the next boot.
-    record.history.clear()
-    record.splitter = createSplitter()
-    void record.buffer.truncate()
-    this.broadcast(record.dshSessionId, { kind: 'output', chunk: '', time: Date.now(), replay: true })
-    record.inputQueue.push('\n')
-    this.pump(record)
   }
 
   /** Deliver a foreground signal to the main PTY. */

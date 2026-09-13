@@ -147,12 +147,15 @@ Prefix interception happens at composer submit, not via
   `agent.inject`.
 - `/shell <cmd>` in `agent` mode: switch mode to `shell`, drop the
   `/shell` token, run the rest as one `startSend` against `main`.
-- `/clear`, `/new`, `/compact` are real `ctx.commands` registrations;
-  they never reach the agent turn (verified in
+- `/new` is a real `ctx.commands` registration; it never reaches the
+  agent turn (verified in
   `packages/interaction/commands/README.md` § "Dispatching from an
-  adapter"). `/clear` clears the xterm buffer and the bridge's per-session
-  PTY scrollback; `/new` opens a new session through dsh's standard
-  creation path; `/compact` triggers dsh's compaction service.
+  adapter") — it opens a new session through dsh's standard creation
+  path, with the invoking session's cwd. `/compact` stays dsh's own
+  registration and triggers dsh's compaction service. A dshell `/clear`
+  existed until the storage phase and was removed: the in-terminal
+  `clear` already clears the canvas, and dropping a session drops its
+  history.
 
 Composer Enter submit is rewritten by patching the `inputActions` flow
 exposed through `ctx.uiSession.provide()` (dsh
@@ -282,7 +285,9 @@ for live rendering and context injection:
   without unbounded memory.
 - The 4.6 context-injection snapshot (100 lines / 4 KiB) reads from
   the window.
-- `/clear` truncates both the window and the file.
+- The spawn reset truncates both the window and the file: the init echo
+  is discarded and the seeded scrollback is re-appended, which is why
+  the persisted log survives a respawn while it never keeps the echo.
 - The PTY *process* itself stays process-local (§ 2): a restart
   spawns a fresh shell; only the scrollback history survives. This
   decision narrows the § 2 non-goal — process durability stays out of

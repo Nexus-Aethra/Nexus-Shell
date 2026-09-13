@@ -127,13 +127,12 @@ export class CommandHistory {
   }
 
   /**
-   * Drop everything — the `/clear` path, which is a new shell epoch: the
-   * scrollback, the block log and the history all restart together, so neither
-   * the store nor the legacy file may resurrect commands the user just cleared.
+   * Drop everything — the session-deletion path: the session is going away for
+   * good, so the store must not keep handing its commands to a later query and
+   * the legacy file must not resurrect them at a boot that follows.
    *
-   * The delete is immediate rather than debounced: the shell's `seq` restarts
-   * after a clear, so a late write carrying the old numbering would land on the
-   * rows a new command is about to occupy.
+   * The delete is immediate rather than debounced: deletion happens at
+   * teardown, where a pending timer would race the process exit it is part of.
    */
   clear(): void {
     this.entries = []

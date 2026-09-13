@@ -43,7 +43,7 @@ export interface DshellInputStandardProps {
  *  - `shell` — Enter (and the stock send button) is captured and the
  *    draft goes to the bridge-owned main PTY instead of the model. A
  *    leading `/` is left to the stock command pipeline in both modes
- *    (`/clear`, `/new`, skills), so the composer's command surface keeps
+ *    (`/new`, `/compact`, skills), so the composer's command surface keeps
  *    working. The stock internals expose no submit hook for plain text
  *    (`matchEnter` is only polled for trigger-prefixed lines), so the
  *    router is a capture-phase listener on the composer card that reads
@@ -104,7 +104,7 @@ export function DshellLeftControls(props: {
       const text = draftRef.current
       if (text.trim().length === 0) return false
       // A leading slash belongs to the stock command/trigger pipeline
-      // (`/clear`, `/new`, skills, …) in both modes — never to bash.
+      // (`/new`, `/compact`, skills, …) in both modes — never to bash.
       if (text.trimStart().startsWith('/')) return false
       sendShell(text)
       // The terminal owns the directory; this is how our mirror of it follows.
@@ -160,7 +160,7 @@ export function DshellLeftControls(props: {
      * Its slash rule is positional, not path-aware: any `/` after punctuation
      * opens a command trigger, so typing `ls ~/` pops the command list with an
      * empty query and Tab would PICK a command, mangling the shell line. Only a
-     * leading slash is a command here (`/clear`); a slash later in the line is
+     * leading slash is a command here (`/new`); a slash later in the line is
      * an argument, which in shell mode is a path.
      */
     const stockCommand = (): boolean => stockMenu() && draftRef.current.trimStart().startsWith('/')

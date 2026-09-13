@@ -210,7 +210,7 @@ export class PtyBuffer {
     return text
   }
 
-  /** Drop the window and truncate the log (the `/clear` path). */
+  /** Drop the window and truncate the log (the spawn reset, before re-seeding). */
   async truncate(): Promise<void> {
     this.window = ''
     this.timeline = []
