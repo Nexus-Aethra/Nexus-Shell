@@ -2088,23 +2088,41 @@ Shipped:
   gesture unarchiving performs). Multi-select stays with `已归档`, where
   恢复/删除 actually apply, so `selectable` keeps one meaning.
   No protocol change: `pendingPurge` was already in the session response.
+  Both the count and the visibility of `已归档` derive from the split list,
+  not from `archive.archived`: a pending session is still in the durable tag
+  set, so a raw count kept the header (and its multi-select controls) alive
+  over zero rows.
 - **`BufferState.departed`** — the ids a deletion has taken away, populated
   only by `detachSession` and never persisted, because after a restart their
   logs are purged during composition and dsh stops listing them, so there is
   nothing left to hide. The pipe panel filters them out of the graph nodes and
   the endpoint pickers. Archiving is deliberately *not* included: an archived
   session is put away, not gone, and may still be a legitimate end of a pipe.
+- **`restoreSession`** undoes the hiding when a pending deletion is
+  cancelled. `SessionTagStore.unarchive` already cancels the scheduled purge
+  (the two are one gesture from the sidebar), which puts the session back in
+  use — dsh never forgot it and its log is intact — so a permanently hidden
+  graph node would be wrong for the rest of the process. The route's
+  `unarchive` branch calls it after the tag write. Its pipes are not
+  resurrected: those were cut when the deletion was requested, and re-linking
+  is a new gesture.
 
 The two pure derivations are the whole client change (the row split and the node
 filter); the panel learns about a deletion on its next read, which is
 immediate when it is opened and at most one 3 s poll otherwise.
 
-Verified against the built buffer service with a seeded pipe: `detachSession`
-reports the id in `snapshot().departed`, drops the pipe, leaves the other peer
-unmarked, writes a state document with no `departed` field, and a freshly
-constructed service does not inherit it — confirming the process-lifetime
-claim rather than asserting it. The client halves are typecheck- and
-build-verified; exercising them needs the harness restarted onto the rebuilt
-client bundle, which was not done here.
+Verified in the running harness on the rebuilt bundle, end to end, with two
+scratch sessions and a real pipe: archiving a row then deleting it moved it to
+`待删除` with `已归档` disappearing entirely (header and multi-select included),
+the confirmation dialog closed instead of sticking, `/api/dshell/buffer`
+listed the session in `departed` with the pipe gone, and the graph went from
+three nodes and one edge to two nodes and no edge — the deleted session's node
+absent, the surviving peer unmarked. `取消` then removed the `待删除` group,
+returned the row to the active list, and brought its graph node back; the
+restored session's shell answered `echo` with the right cwd, so cancelling a
+deletion leaves a usable session rather than a tombstone. The in-memory half
+was also checked directly against a seeded pipe: `detachSession` reports the id
+in `snapshot().departed` and a freshly constructed service does not inherit it,
+confirming the process-lifetime claim rather than asserting it.
 
 

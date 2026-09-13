@@ -42,6 +42,12 @@ export interface SessionPanelDeps {
    * composition without dshell-buffer simply has nothing to detach.
    */
   readonly detach: ((sessionId: string) => Promise<void>) | undefined
+  /**
+   * Undo {@link detach} when a scheduled deletion is cancelled: the session
+   * stays in dsh's list and its log is intact, so the pipe UI must offer it
+   * again. Optional for the same reason as `detach`.
+   */
+  readonly restore: ((sessionId: string) => void) | undefined
 }
 
 /** JSON response in the shape the sidebar parses. */
@@ -72,6 +78,9 @@ export function createSessionsRoute(deps: SessionPanelDeps): ConnectionFetchRout
         return await state()
       case 'unarchive':
         await deps.tags.unarchive(input.sessionId)
+        // Cancelling a scheduled deletion also un-hides the session in the pipe
+        // UI: dsh still lists it and the log survives, so it is live again.
+        deps.restore?.(input.sessionId)
         return await state()
       case 'delete': {
         const { sessionId } = input

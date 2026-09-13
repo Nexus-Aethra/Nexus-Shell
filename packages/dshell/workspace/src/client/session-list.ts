@@ -370,7 +370,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           ),
         )
       }),
-      archive.archived.length === 0 ? null : createElement('div', { key: 'archive-group' },
+      archivedRows.length === 0 ? null : createElement('div', { key: 'archive-group' },
         createElement('div', {
           'data-dshell-row': 'archive-header',
           style: groupHeaderStyle,
@@ -378,7 +378,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         },
           createElement(Chevron, { open: archivedOpen }),
           createElement('span', null, '已归档'),
-          createElement('span', { style: groupCountStyle }, String(archive.archived.length)),
+          createElement('span', { style: groupCountStyle }, String(archivedRows.length)),
           // Multi-select controls live on the header line. The click handlers
           // stop propagation: the header itself folds the group.
           createElement('span', { style: { ...rowActionsStyle, marginLeft: 6 }, onClick: (event: ReactMouseEvent) => { event.stopPropagation() } },

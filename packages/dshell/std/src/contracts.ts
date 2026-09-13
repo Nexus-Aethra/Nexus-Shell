@@ -422,7 +422,9 @@ export interface BufferState {
    *
    * Process-lifetime, never persisted: after a restart these ids are purged
    * during composition and leave dsh's list, so there is nothing left to hide.
-   * Populated only by the deletion path (`detachSession`), never by archiving.
+   * Populated only by the deletion path (`detachSession`), never by archiving —
+   * and released again by `restoreSession`, because cancelling a scheduled
+   * deletion puts the session back in use while dsh still lists it.
    */
   readonly departed: readonly string[]
 }

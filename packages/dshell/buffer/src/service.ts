@@ -416,6 +416,21 @@ export class BufferService {
     if (changed || this.links.length !== linksBefore) await this.save()
   }
 
+  /**
+   * Undo {@link detachSession}'s hiding when the pending deletion is cancelled.
+   *
+   * A session whose log is scheduled for removal can be restored before the
+   * next start (the sidebar's 取消): dsh never forgot it and the log is intact,
+   * so it is a live session again and must be offered — as a graph node and as
+   * a pipe endpoint — exactly as before. Its pipes are not resurrected: those
+   * were cut when the deletion was requested, and re-linking is a new gesture.
+   *
+   * @param sessionId - the session whose scheduled deletion was cancelled.
+   */
+  restoreSession(sessionId: string): void {
+    this.departed.delete(sessionId)
+  }
+
   // -------------------------------------------------------------- delegation
 
   /**

@@ -287,7 +287,10 @@ when it contributes to model-visible state.
     header button toggles. The panel drops any session the host reports
     as `departed` — a session dshell deleted that dsh still lists until
     the next start — from the graph nodes and the endpoint pickers, so a
-    deleted session cannot linger as an edge-less node.
+    deleted session cannot linger as an edge-less node. Cancelling a
+    scheduled deletion calls back into the host (`restoreSession`), which
+    releases the id from that set: the session is live again and returns
+    to the graph.
 - dsh services depended on: `ctx.tools`, `ctx.systemPrompt`, `ctx.fs`,
   `ctx.agents`, `ctx.sessionController`, `ctx.sandboxPolicy` (optional),
   `ctx.shell` (cross-world byte transfer), `ctx.connection.fetch`; the
