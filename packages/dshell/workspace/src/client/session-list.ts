@@ -280,6 +280,10 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
       return
     }
     setChecked([])
+    // Clearing the selection does not close this dialog: it renders while
+    // `batchTarget` is set, and the guard at the top then makes the confirm
+    // button a no-op, so the dialog would sit there with nothing to act on.
+    setBatchTarget(undefined)
     await props.refresh()
   }
 
