@@ -25,6 +25,9 @@ gui-test-screenshots/
 # Agent harness scratch (plan files and other per-session tool state)
 .zcode/
 
+# Linux desktop packaging scratch (upstream-path probe, Electron download cache)
+.linux-pack/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

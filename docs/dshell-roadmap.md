@@ -1402,7 +1402,7 @@ through a closed registry, and all three close over mac/win:
 
 | where | what it gates | observed failure on Linux |
 |---|---|---|
-| `apps/desktop/scripts/package-target.ts` (`TARGETS`, `hostTargetName`) | the packaging command itself | `pnpm package:dir` → `desktop package: unsupported build host linux-x64` |
+| `apps/desktop/scripts/package-target.ts` (`TARGETS`, `hostTargetName`) | the packaging command itself | `pnpm package:dir` → `desktop package: unsupported build host linux-x64`; the delivered shape drives the stages itself, so this registry is never loaded |
 | `apps/desktop/scripts/desktop-build-paths.mjs` (`SUPPORTED_TARGETS`) | every artifact, runtime and download path | `pnpm prepare:runtime` → `desktop build paths: unsupported target linux-x64` |
 | `apps/desktop/scripts/desktop-auto-update-environment.mjs` (`UPDATE_TARGETS`) | `createElectronBuilderConfig` and the release record | `resolveDesktopAutoUpdateTarget` throws for anything but `darwin`/`win32`; the config module also demands a full release environment (app id, update origin, signing) just to be imported |
 
@@ -1425,11 +1425,71 @@ GitHub releases, which this network resets — both are mirrored by npmmirror
 are honored through `ELECTRON_MIRROR` and
 `ELECTRON_BUILDER_BINARIES_MIRROR`.
 
-Plan: `scripts/package-linux.mjs` in this repo. The cheap shape is a Node module
-loader that widens the two registries (`desktop-build-paths`,
+Chosen shape: `scripts/package-linux.mjs` in this repo, with a Node module
+loader that widens the two reachable registries (`desktop-build-paths`,
 `desktop-auto-update-environment`) with a synthetic `linux-x64` target, so dsh's
-own prepare scripts and its electron-builder config run unmodified; the
-alternative is duplicating the path/seed logic here, which is ~400 lines of
-upstream logic to keep in sync. Acceptance: an unpacked `--dir` build launches on
-Linux, then an AppImage; mac artifacts stay on a Mac/CI host.
+own prepare scripts and its electron-builder config run unmodified. The
+alternative — duplicating the path/seed logic here — is ~400 lines of upstream
+logic to keep in sync. mac artifacts stay on a Mac/CI host.
+
+Delivered as planned, with the wrapping-config addition the AppImage forced:
+
+- `scripts/linux-target-hooks.mjs` — a `load` hook that widens `SUPPORTED_TARGETS`
+  and `UPDATE_TARGETS` as their source passes through; `scripts/linux-target-patch.mjs`
+  registers it for `--import`. Each widening is announced on stderr, so a build log
+  states which registry accepted linux.
+- `scripts/package-linux.mjs` — resolves the pinned Node version out of
+  `prepare-runtime.ts`, presees the tarball from npmmirror, asks upstream (under
+  the hook) for the linux-x64 build paths as a first-step assertion, then runs
+  upstream's stages in upstream's order: `build:official` → `release:pack`
+  {dsh,vendor} → pack `desktop-host` → landlock → `prepare:runtime` →
+  `prepare:packages` → `prepare:seed` → electron-builder. `--dir` stops at an
+  unpacked directory, `--prepare-only` at the seed, `--from=<step>` resumes.
+  Exposed as `pnpm package:linux`, `package:linux:dir`, `package:linux:prepare`.
+- `scripts/electron-builder.linux.config.mjs` — upstream's config factory plus one
+  field. Upstream's package name `@deepseek-ai/dsh-desktop` makes electron-builder
+  derive `executableName` `@deepseek-aidsh-desktop`, which the **AppImage target
+  rejects** (`executableName contains characters that cannot be safely used in
+  file paths`) even though `--dir` tolerates it; the wrapper names the executable
+  `deepseek-harness`, matching the `artifactName` upstream already sets.
+
+Traps worth knowing for any future cross-target work here:
+
+- **The hook must not travel in `NODE_OPTIONS`.** With `--import <hooks>` in the
+  environment, pnpm 11 — which re-executes itself for nested `pnpm run` calls —
+  fails at the first nesting with `Error during pnpmfile execution … Cannot find
+  module '<dsh>/.pnpmfile.mjs'`. The file does not exist and nothing references
+  it; an innocuous `NODE_OPTIONS="--no-warnings"` builds fine. Command-line
+  `--import` on the four target-resolving leaf processes avoids it entirely, which
+  is why this script orchestrates those steps instead of calling `package:dir`.
+- **`tsx` as a CLI forks a child that a command-line `--import` does not follow**,
+  so the prepare scripts get `--import tsx` (the loader module) instead. They need
+  real transpilation: the desktop sources use parameter properties, which Node's
+  strip-only TypeScript mode rejects (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` in
+  `apps/desktop/src/project-manager.ts`).
+- Node's tarball and electron-builder's AppImage tooling both come from npmmirror
+  here; electron-builder re-downloads Electron even though `electron` is installed
+  without a `dist/`.
+
+Acceptance check:
+
+- `pnpm package:linux:dir` → `.desktop-build/targets/linux-x64/artifacts/linux-unpacked`
+  (672 MB) with `resources/runtime` (Node 24.17.0 + pnpm 11.7.0),
+  `resources/seed` (503 packages, `store-archives`, `integrity.json`) and
+  `resources/app.asar`; the bundled `runtime/node/node --version` answers
+  `v24.17.0`.
+- `pnpm package:linux` → `deepseek-harness-0.1.5-rc.1-linux-x86_64.AppImage`
+  (245 MB) plus `rc-linux.yml`; the AppImage's sha512 matches the value in that
+  metadata, and `--appimage-extract` yields `AppRun`, the `deepseek-harness`
+  binary, a `.desktop` entry and the same `resources/` payload.
+- Not yet done, and blocked on something else: launching the desktop shell and
+  exercising the dshell terminal inside it. The app installs plugins from
+  npmjs.org only (the registry is hardcoded), so that check needs the published
+  `@nexus-aethra/dshell-*` packages — see Phase 10.1's last acceptance item.
+- Cosmetic and left as upstream has it: no application icon is set (the default
+  Electron icon is used, as on mac and win) and the executable-only `@`-mangling
+  warning about `desktopName`/`syncDesktopName` remains.
+- The update feed in the AppImage points at upstream's production origin
+  (`https://download.deepseek.com/_/harness/desktop/stable/linux-x64/`); override
+  `DSH_DESKTOP_APP_ID` and `DSH_DESKTOP_AUTO_UPDATE_ENV` for a real release.
 
