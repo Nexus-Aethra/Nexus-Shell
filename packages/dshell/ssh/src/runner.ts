@@ -17,10 +17,30 @@
  * the session close (sshd then hangs up the command's process group).
  */
 
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { DeviceConnection } from './devices.js'
 import { sshDeviceRoot } from './paths.js'
+
+/**
+ * The control socket path for one device.
+ *
+ * `%C` is OpenSSH's own hash of the local host, the remote host and port and
+ * the remote user — it says nothing about which device record or which
+ * credential is in play, so two devices reaching the same account would share
+ * one master connection, and whichever authenticated first would serve the
+ * other. The device id is appended as a short digest: that separates them, and
+ * keeps the path well inside the ~108 byte limit a unix socket path has (the
+ * id itself may be up to 64 characters, so it cannot be appended verbatim).
+ *
+ * @param device - device the connection belongs to.
+ * @returns the `ControlPath` value for that device.
+ */
+function controlPath(device: DeviceConnection): string {
+  const tag = createHash('sha256').update(device.id).digest('hex').slice(0, 12)
+  return join(sshDeviceRoot(), 'ctl', `%C-${tag}`)
+}
 
 /**
  * Options every harness-spawned `ssh` carries, apart from authentication.
@@ -30,29 +50,38 @@ import { sshDeviceRoot } from './paths.js'
  * all and fail with a bare "Permission denied". Key devices add it back (they
  * have nothing to be prompted for), and password devices cap the attempts
  * instead, so a refused password fails the command rather than looping.
+ *
+ * @param device - device the connection belongs to.
+ * @returns the `-o` option words, in order.
  */
-const BASE_OPTIONS = [
-  // Trust on first use. The alternative — refusing unknown hosts — would make
-  // a freshly added device unusable without a manual known_hosts edit.
-  '-o', 'StrictHostKeyChecking=accept-new',
-  '-o', 'ConnectTimeout=10',
-  // Connection reuse. One tool call is several `ssh` invocations — a file read
-  // is a resolve, a stat and a cat — and each fresh connection costs a TCP
-  // handshake plus authentication (about a second against a remote host,
-  // against roughly ten milliseconds over a shared master). `%C` lets OpenSSH
-  // derive the socket name from the destination, so no id has to be escaped
-  // into a path here. Failure to create the socket is non-fatal under `auto`.
-  '-o', 'ControlMaster=auto',
-  '-o', `ControlPath=${join(sshDeviceRoot(), 'ctl', '%C')}`,
-  '-o', 'ControlPersist=120s',
-  // Keepalives bound a master whose peer has gone away. Without them a
-  // connection that dies half-open leaves a live control socket in front of a
-  // dead sshd, and every later command and terminal hangs behind it with no
-  // error — the shell simply never starts. Probing means the master notices and
-  // exits, and the next invocation dials a fresh connection.
-  '-o', 'ServerAliveInterval=15',
-  '-o', 'ServerAliveCountMax=3',
-] as const
+function baseOptions(device: DeviceConnection): string[] {
+  return [
+    // Trust on first use. The alternative — refusing unknown hosts — would make
+    // a freshly added device unusable without a manual known_hosts edit.
+    '-o', 'StrictHostKeyChecking=accept-new',
+    // A device's host key is this plugin's own record of trust, not the harness
+    // user's. Without this, `accept-new` writes it into their personal
+    // ~/.ssh/known_hosts, which makes dshell's first-contact decision their own
+    // ssh client's too — and they never saw the fingerprint it trusted.
+    '-o', `UserKnownHostsFile=${join(sshDeviceRoot(), 'known_hosts')}`,
+    '-o', 'ConnectTimeout=10',
+    // Connection reuse. One tool call is several `ssh` invocations — a file read
+    // is a resolve, a stat and a cat — and each fresh connection costs a TCP
+    // handshake plus authentication (about a second against a remote host,
+    // against roughly ten milliseconds over a shared master). Failure to create
+    // the socket is non-fatal under `auto`.
+    '-o', 'ControlMaster=auto',
+    '-o', `ControlPath=${controlPath(device)}`,
+    '-o', 'ControlPersist=120s',
+    // Keepalives bound a master whose peer has gone away. Without them a
+    // connection that dies half-open leaves a live control socket in front of a
+    // dead sshd, and every later command and terminal hangs behind it with no
+    // error — the shell simply never starts. Probing means the master notices and
+    // exits, and the next invocation dials a fresh connection.
+    '-o', 'ServerAliveInterval=15',
+    '-o', 'ServerAliveCountMax=3',
+  ]
+}
 
 /** Quote one word for a POSIX shell. */
 export function quote(text: string): string {
@@ -93,7 +122,15 @@ function authArgs(device: DeviceConnection): string[] {
   return [
     // Nothing to prompt for on a key device: fail instead of waiting.
     '-o', 'BatchMode=yes',
-    ...device.secretFile === undefined ? [] : ['-i', device.secretFile],
+    ...device.secretFile === undefined ? [] : [
+      // With a stored key, use ONLY it. Without this the harness user's ssh
+      // agent is still consulted — `ssh -vv` shows the agent's identity being
+      // offered *before* the explicit one — so a host that also authorises a
+      // personal key authenticates as that identity, and a device whose key was
+      // rotated or revoked keeps looking like it works.
+      '-o', 'IdentitiesOnly=yes',
+      '-i', device.secretFile,
+    ],
   ]
 }
 
@@ -106,7 +143,7 @@ function authArgs(device: DeviceConnection): string[] {
 export function sshArgv(device: DeviceConnection, remoteCommand: string): string[] {
   return [
     'ssh',
-    ...BASE_OPTIONS,
+    ...baseOptions(device),
     // No pseudo-terminal on the piped paths: callers asked for byte streams.
     '-T',
     '-p', String(device.port),
@@ -168,7 +205,7 @@ export function interactiveShellArgv(device: DeviceConnection, remoteCwd: string
     : `cd ${quote(root)} 2>/dev/null || echo ${quote(`dshell: 远端目录 ${root} 不存在，已回到登录目录`)} >&2; `
   return [
     'ssh',
-    ...BASE_OPTIONS,
+    ...baseOptions(device),
     // Force a remote tty: this is the one path that needs one.
     '-t',
     '-p', String(device.port),

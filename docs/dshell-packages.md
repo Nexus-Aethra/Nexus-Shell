@@ -164,6 +164,13 @@ when it contributes to model-visible state.
 - Touches decisions: 4.2 (main shell ownership), 4.3 (secondary pass-
   through), 4.4 (host half of byte stream), 4.10 (two shells per
   session).
+- Everything it persists is owner-only (Phase 10.10): the
+  `$DSH_HOME/dshell-pty/` directory is `0700` and `<id>.log` plus its
+  `.timeline.json` / `.blocks.json` / `.history.json` sidecars are `0600`,
+  written through `src/private-file.ts` — which tightens a file an earlier
+  build left at `0664` rather than only fixing new ones. The transcript is
+  the most sensitive artifact here: the splitter records the input side, so
+  it holds every line the user typed.
 
 ### `dshell-mode`
 
@@ -239,6 +246,16 @@ when it contributes to model-visible state.
     provider that resolves a bound session's tree over SSH. It also
     publishes `dshellSshRouting` for packages that need to know which
     device a session runs on.
+  - Credential and host-trust posture (Phase 10.10, see `src/runner.ts`):
+    a device with a stored key connects with **only** that key
+    (`IdentitiesOnly=yes` — without it the user's ssh agent is offered
+    first and can authenticate as the wrong identity), password devices
+    pin `PreferredAuthentications=password` + `PubkeyAuthentication=no` +
+    one prompt and hand the secret over through the askpass hook, host keys
+    are trusted into `$DSH_HOME/dshell/ssh/known_hosts` rather than the
+    user's personal file, and the connection-sharing socket is keyed by
+    device (`%C` + a digest of the id) so two devices reaching the same
+    account cannot share one authenticated master.
   - **Browser face** provides the device card in the Plugins settings
     section and the `dshellSsh` service the session picker and the
     new-session dialog read.

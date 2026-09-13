@@ -288,6 +288,11 @@ for live rendering and context injection:
 - The spawn reset truncates both the window and the file: the init echo
   is discarded and the seeded scrollback is re-appended, which is why
   the persisted log survives a respawn while it never keeps the echo.
+- The log and its sidecars are owner-only (`0600` in a `0700` directory,
+  Phase 10.10). This is a privacy boundary, not tidiness: the splitter
+  records the input side as well as the output, so the transcript holds
+  every line typed at the shell — including anything typed at an
+  interactive prompt that is not a shell prompt.
 - The PTY *process* itself stays process-local (§ 2): a restart
   spawns a fresh shell; only the scrollback history survives. This
   decision narrows the § 2 non-goal — process durability stays out of

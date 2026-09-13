@@ -143,7 +143,9 @@ Acceptance check:
   separate session; `mainPtyByAgent` is untouched.
 - The bridge's per-session buffer accumulates bytes after `startSend`.
 - The buffer persists to `$DSH_HOME/dshell-pty/<session-id>.log`
-  (design 4.9); memory holds only the fixed window; a fresh main shell
+  (design 4.9; owner-only — `0600` files in a `0700` directory since Phase 10.10,
+  which also tightens files an earlier build left `0664`); memory holds only the
+  fixed window; a fresh main shell
   for the same session seeds from the file tail, and the prompt-rewrite
   init restores that snapshot instead of emptying the log — truncating
   it wholesale (the first cut) erased the previous shell's scrollback on
@@ -763,8 +765,9 @@ Shipped since (the session now works in ONE place):
   already an `ssh` line). **The device needs `rg` on PATH**; a missing one
   fails with a message that says so (install ripgrep on the device, or the
   search tools have nothing to run).
-- **Connections are multiplexed** (`ControlMaster`, one socket per
-  destination under `$DSH_HOME/dshell/ssh/ctl/`): one file read is a
+- **Connections are multiplexed** (`ControlMaster`, one socket per *device*
+  under `$DSH_HOME/dshell/ssh/ctl/` — `%C` plus a digest of the device id, since
+  `%C` alone keys only on the destination; Phase 10.10): one file read is a
   resolve, a stat and a cat, and a fresh connection each time costs a full
   handshake and authentication.
 - The new-session dialog keeps the run target visible when no device is
@@ -1965,3 +1968,68 @@ Acceptance check:
 - Deleting the scratch session through the route removed its 2 commands **and**
   its 2 outputs while the real session's 10 rows stayed, so the output table
   rides the existing deletion contract.
+
+## Phase 10.10 — SSH credentials and host trust
+
+A standard-and-safety review of the whole `dshell-ssh` chain (runner, device
+registry, router, remote filesystem, spawn routing, the HTTP route and the
+device card), then the fixes that needed no decision. The verdict was that the
+OpenSSH usage is correct and in places more careful than usual — askpass instead
+of argv passwords, password devices pinned to `PreferredAuthentications=password`
++ `PubkeyAuthentication=no` + one prompt, two-level POSIX quoting with the
+assignment-word subtlety handled, `-T`/`-t` chosen per path, remote writes staged
+by `mktemp` on the destination filesystem and renamed into place, the sandbox
+fence applied in trusted code to the device path — with two verified credential
+defects and two permission/leak surfaces.
+
+**Fixed:**
+
+- **`IdentitiesOnly=yes` whenever a device has a stored key.** Without it the
+  harness user's ssh agent is still consulted: `ssh -vv` shows the agent's
+  identity being *offered before* the explicit `-i` one, so a host that also
+  authorises a personal key authenticates as that identity, and a device whose
+  key was rotated or revoked keeps looking like it works. Only the devices that
+  actually carry a key get the option — a key device with no stored secret is
+  documented as using the ambient agent, and that path is unchanged.
+- **`ControlPath` is per device.** `%C` hashes only local host, remote host,
+  port and remote user, so two device records reaching the same account shared
+  one master connection and whichever authenticated first served the other;
+  changing a password or key did not invalidate that master for
+  `ControlPersist=120s`. The path is now `%C` plus a 12-hex digest of the device
+  id (a digest rather than the id itself because an id may be 64 characters and
+  a unix socket path is limited to about 108).
+- **Host trust stays the plugin's own.** `StrictHostKeyChecking=accept-new`
+  with no `UserKnownHostsFile` was writing dshell's first-contact decisions into
+  the user's personal `~/.ssh/known_hosts` — hash-aware `ssh-keygen -F` found
+  the rig and the remote server there — and reading it back. The option now
+  points at `$DSH_HOME/dshell/ssh/known_hosts`, beside the keys, so dshell's
+  trust and the user's ssh client's trust are separate stores.
+- **Terminal transcripts are owner-only.** `$DSH_HOME/dshell-pty/` was `0775`
+  with `0664` files while `history.sqlite` was already `0600`; a transcript holds
+  everything the shell printed and (see the splitter) every line the user typed,
+  so any other account on the machine could read it. The directory is now `0700`
+  and every artifact `0600` (`<id>.log`, `.timeline.json`, `.blocks.json`,
+  `.history.json`), written through `private-file.ts`, which also tightens a file
+  an earlier build left loose — creation mode alone would only have fixed future
+  sessions. The 102 existing files were tightened in place.
+
+**Verified with the built code, not by reading it.** A script called the real
+`sshArgv`/`interactiveShellArgv` from `lib/` and fed the result to `ssh -G`: key
+devices report `identitiesonly yes` with the device key as the only
+`identityfile` and `userknownhostsfile …/dshell/ssh/known_hosts`; a key device
+with no stored secret still reports `identitiesonly no`; password devices keep
+their pins; the two devices now hash to different socket paths and the whole path
+is 83 bytes. A live handshake against the local rig showed a fresh connection
+offering exactly one key — the device key — with no agent identity offered, and a
+second connection riding the master with zero offers. A `PtyBuffer` opened over a
+fixture that started `0775`/`0664` came back `0700`/`0600`, as did a log created
+from scratch, its timeline sidecar and a blocks json.
+
+**Still open (needs a decision, not a patch):** whether a first contact should
+show a host-key fingerprint before it is trusted (the Test action reports
+hostname/user/uname but no fingerprint); whether the newest-command window
+should skip lines typed at a prompt that is not a shell prompt, since a secret
+typed at a remote `sudo`/`psql`/passphrase prompt is currently recorded as a
+"command" and injected; and that a live master means a connection *test* cannot
+prove a just-rotated credential within `ControlPersist`.
+

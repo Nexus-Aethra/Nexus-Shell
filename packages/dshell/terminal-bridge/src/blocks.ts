@@ -13,7 +13,8 @@
  * can page it and can apply live deltas without re-reading history.
  */
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
+import { writePrivate } from './private-file.js'
 
 /** One stretch of the session: a shell run between turns, or one turn. */
 export interface PtyBlock {
@@ -166,7 +167,7 @@ export class BlockLog {
     if (this.path === undefined) return
     // An open block's text is worth persisting too: a restart should resume
     // the block the terminal was in the middle of, not lose it.
-    await writeFile(this.path, JSON.stringify(this.blocks), 'utf8').catch(() => { /* best effort */ })
+    await writePrivate(this.path, JSON.stringify(this.blocks)).catch(() => { /* best effort */ })
   }
 }
 

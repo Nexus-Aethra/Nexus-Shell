@@ -20,8 +20,11 @@
  * host was there for all of it, so the times travel with the text.
  */
 
-import { mkdir, open, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import {
+  hardenDir, hardenFile, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, writePrivate,
+} from './private-file.js'
 
 /** Window and flush knobs for one PtyBuffer. */
 export interface PtyBufferOptions {
@@ -129,7 +132,9 @@ export class PtyBuffer {
    * @param options - window and flush knobs; defaults apply per key.
    */
   static async open(logPath: string, options: PtyBufferOptions = DEFAULT_PTY_BUFFER_OPTIONS): Promise<PtyBuffer> {
-    await mkdir(dirname(logPath), { recursive: true })
+    const dir = dirname(logPath)
+    await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE })
+    await hardenDir(dir)
     let seed = ''
     try {
       const info = await stat(logPath)
@@ -152,7 +157,8 @@ export class PtyBuffer {
     const buffer = new PtyBuffer(logPath, options, seed)
     if (seed.length > 0) buffer.timeline = await seedTimeline(logPath, seed.length)
     buffer.trim()
-    buffer.handle = await open(logPath, 'a')
+    buffer.handle = await open(logPath, 'a', PRIVATE_FILE_MODE)
+    await hardenFile(logPath)
     return buffer
   }
 
@@ -217,7 +223,7 @@ export class PtyBuffer {
     if (this.timelineTimer !== undefined) { clearTimeout(this.timelineTimer); this.timelineTimer = undefined }
     await this.flush()
     await this.handle?.truncate(0)
-    await writeFile(timelinePath(this.logPath), '[]', 'utf8').catch(() => { /* best effort */ })
+    await writePrivate(timelinePath(this.logPath), '[]').catch(() => { /* best effort */ })
   }
 
   /**
@@ -277,7 +283,7 @@ export class PtyBuffer {
   /** Persist the window's arrival timeline beside the log. */
   private async saveTimeline(): Promise<void> {
     const pairs = this.timeline.map(entry => [entry.t, entry.n])
-    await writeFile(timelinePath(this.logPath), JSON.stringify(pairs), 'utf8')
+    await writePrivate(timelinePath(this.logPath), JSON.stringify(pairs))
       .catch(() => { /* best effort: a missing sidecar only costs placement */ })
   }
 

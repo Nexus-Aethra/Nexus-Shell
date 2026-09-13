@@ -19,10 +19,11 @@
  */
 
 import { existsSync, rmSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { openHistoryStore } from '@nexus-aethra/dshell-storage'
 import { HISTORY_STORE_FILENAME, type HistoryOutputRecord, type HistoryOutputSlice, type HistoryRecord, type HistoryStore } from '@nexus-aethra/dshell-std'
+import { writePrivate } from './private-file.js'
 
 /** Completed commands retained per session; the live array's cap too. */
 export const MAX_COMMAND_HISTORY = 200
@@ -290,7 +291,7 @@ export class CommandHistory {
 
   private async save(): Promise<void> {
     if (this.path === undefined) return
-    await writeFile(this.path, JSON.stringify(this.entries), 'utf8')
+    await writePrivate(this.path, JSON.stringify(this.entries))
       .catch(() => { /* best effort: history outlives nothing if the write fails */ })
   }
 }
