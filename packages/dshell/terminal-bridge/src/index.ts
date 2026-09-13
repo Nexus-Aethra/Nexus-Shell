@@ -37,7 +37,7 @@ import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { closeHistoryStore } from '@nexus-aethra/dshell-storage'
 import { HISTORY_STORE_FILENAME } from '@nexus-aethra/dshell-std'
-import { CommandHistory, commandHistoryPath, MAX_COMMAND_HISTORY, type PersistedCommand } from './history.js'
+import { CommandHistory, commandHistoryPath, forgetSessionHistory, MAX_COMMAND_HISTORY, type PersistedCommand } from './history.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
 import { createStreamRoutes } from './stream.js'
@@ -889,22 +889,28 @@ export class DshellTerminalBridge extends Service {
   }
 
   /**
-   * Drop one session's main shell: kill the PTY and release its scrollback
-   * window, timeline and block log. Used when the session is deleted while
-   * still loaded — dsh keeps the session object alive, but everything dshell
-   * allocated for it can go now instead of at the next start.
+   * Drop one session's main shell and everything dshell stored for it: kill the
+   * PTY and release its scrollback window, timeline and block log, and drop its
+   * command history. Used when the session is deleted while still loaded — dsh
+   * keeps the session object alive, but everything dshell allocated for it can
+   * go now instead of at the next start.
    *
-   * Never spawns: a session without a shell is already in the requested state.
+   * Also called for a session with no record at all, so it must not assume one:
+   * a session deleted before its terminal was ever opened still has stored
+   * history, and the store is reachable by path. Never spawns.
    */
   releaseSession(dshSessionId: string): void {
     const record = this.recordFor(dshSessionId)
     if (record !== undefined) {
       this.markDead(record, 'session deleted')
-      // Deletion is the one event that drops a session's durable command
-      // history: `markDead` frees the shell but deliberately keeps what it
-      // wrote, and nothing else would ever look at these rows again.
+      // Drop the in-memory window and the legacy file synchronously: teardown
+      // is the one place a deferred write would race the process exit.
       record.history.clear()
     }
+    // Ask the store by path as well. With no record the call above never ran,
+    // and a store this session's facade could not open must still not keep rows
+    // nobody will ever look at again.
+    forgetSessionHistory(join(ptyLogDir(), `${dshSessionId}.log`), dshSessionId)
     const agentRecord = this.agentRecordFor(dshSessionId)
     if (agentRecord !== undefined) this.markAgentDead(agentRecord, 'session deleted')
   }

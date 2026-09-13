@@ -23,11 +23,13 @@ export const HISTORY_STORE_FILENAME = 'history.sqlite'
  * Physical layout version of the history database, stamped in
  * `PRAGMA user_version`.
  *
- * A database stamped with anything else is rejected rather than migrated: this
- * code is the only producer, and history is a convenience the user may lose
- * without losing a session.
+ * The engine migrates the layouts it knows: 1 dropped `commands_at(at)`, an
+ * index for a cross-session time query that was never built and that nothing
+ * read. A database stamped with anything else is rejected: this code is the
+ * only producer, and history is a convenience the user may lose without losing
+ * a session.
  */
-export const HISTORY_STORE_SCHEMA_VERSION = 1
+export const HISTORY_STORE_SCHEMA_VERSION = 2
 
 /** Why a store could not be used; the caller decides whether to fall back. */
 export type HistoryStoreErrorCode = 'open-failed' | 'version-mismatch'

@@ -30,8 +30,10 @@ export interface SessionPanelDeps {
   readonly running: (sessionId: string) => boolean
   /**
    * Free everything dshell holds for one session — its shell process, its
-   * scrollback window and its block log. Called before a scheduled purge so
-   * the memory goes now, while the log goes at the next start.
+   * scrollback window, its block log and its stored command history. Called for
+   * every deletion, in both branches: the loaded one frees its memory now while
+   * the log goes at the next start, and a session deleted before its terminal
+   * was ever opened still has stored history to drop.
    */
   readonly release: (sessionId: string) => Promise<void>
   /**
@@ -80,11 +82,14 @@ export function createSessionsRoute(deps: SessionPanelDeps): ConnectionFetchRout
         // still resolvable until restart, so detaching first also stops it
         // receiving delegations in its pending-purge window.
         await deps.detach?.(sessionId)
+        // Then dshell's own memory, in both branches — and deliberately before
+        // the branch, because the history purge must not depend on the bridge
+        // having a record for this session.
+        await deps.release(sessionId)
         if (deps.live(sessionId)) {
           // The log writer is live, so removing the directory now would only
-          // have it recreated by the next event. Free what dshell owns, hide
-          // the session, and let the next start remove the log.
-          await deps.release(sessionId)
+          // have it recreated by the next event. Hide the session and let the
+          // next start remove the log.
           await deps.tags.markPending(sessionId)
           return await state()
         }

@@ -85,10 +85,13 @@ when it contributes to model-visible state.
   `terminal-bridge` wrote `${logPath}.history.json`; those files are now read
   once per session on first open (idempotent by `(session_id, seq)`) and never
   written again.
-- Format: `PRAGMA user_version = 1`; `commands(session_id, seq, command,
-  command_norm, exit_code, at)` keyed by `(session_id, seq)`, plus
-  `commands_session_prefix(session_id, command_norm)` and `commands_at(at)`. A
-  database stamped with any other version is rejected rather than migrated.
+- Format: `PRAGMA user_version = 2`; `commands(session_id, seq, command,
+  command_norm, exit_code, at)` keyed by `(session_id, seq)` plus
+  `commands_session_prefix(session_id, command_norm)`. Layout 1 also had
+  `commands_at(at)` for a cross-session time query that was never built and
+  that nothing read; layout 2 drops it, and a layout-1 database is migrated in
+  place rather than rejected (the `DROP INDEX` is the migration). An unknown
+  layout is still refused.
 - Trap worth remembering: prefix matching is a **range predicate**
   (`command_norm >= ? AND command_norm < ?`), not `LIKE 'x%'`. SQLite refuses
   the LIKE optimization for a bound parameter, so with a session filter the
@@ -97,9 +100,11 @@ when it contributes to model-visible state.
   the store exists to avoid. The range seek alone is still not the whole
   answer: the index is ordered by `command_norm`, so "the newest matches" needs
   a sort of every match (`USE TEMP B-TREE FOR ORDER BY`). `matchPrefix` scans
-  newest-first through the primary key with a bounded budget and early exit,
-  and falls back to the range seek for a sparse prefix — Phase 10.7, measured
-  there.
+  newest-first through the primary key with an early exit, and falls back to the
+  range seek for a sparse prefix — Phase 10.7, measured there. Its budget is
+  derived rather than fixed (`sqrt(limit * N * b/a)`, `N` from `max(seq)`),
+  because a constant is only right at one size; Phase 10.8 has the calibration
+  and the honest trade it makes in the mid-density band.
 
 ### `dshell-bundle`
 

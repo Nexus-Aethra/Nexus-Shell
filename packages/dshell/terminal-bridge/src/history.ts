@@ -18,7 +18,7 @@
  * History is a convenience; losing it must never cost the session anything.
  */
 
-import { rmSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { openHistoryStore } from '@nexus-aethra/dshell-storage'
@@ -45,6 +45,26 @@ export function commandHistoryPath(logPath: string): string {
  */
 export function historyStorePath(logPath: string): string {
   return join(dirname(logPath), HISTORY_STORE_FILENAME)
+}
+
+/**
+ * Drop one session's stored history without needing a live shell record.
+ *
+ * `CommandHistory.clear` is the in-record path; this is the one a session
+ * deletion uses when there is no record to ask — a session deleted before its
+ * terminal was ever opened. A store that was never created is left uncreated
+ * rather than opened only to delete nothing from it, and a store that cannot be
+ * opened keeps whatever it holds: the session is going away regardless.
+ */
+export function forgetSessionHistory(logPath: string, sessionId: string): void {
+  const path = historyStorePath(logPath)
+  if (!existsSync(path)) return
+  try {
+    openHistoryStore(path).clearSession(sessionId)
+  }
+  catch {
+    // Best effort, like an append: history must never cost the session.
+  }
 }
 
 /** One entry as written; anything malformed is dropped rather than trusted. */

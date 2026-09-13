@@ -95,7 +95,9 @@ export function apply(ctx: Context): void {
       live: sessionId => hostSessions.get(sessionId as SessionId) !== undefined,
       running: sessionId => agents.get(sessionId as SessionId)?.status === 'running',
       // Optional: the PTY bridge is a sibling row, so a deployment without it
-      // simply has no shell memory to free.
+      // simply has no shell memory to free — including the stored history,
+      // which the bridge owns and drops even when it has no record for the
+      // session being deleted.
       release: async (sessionId) => {
         panelCtx.get('dshellTerminalBridge')?.releaseSession(sessionId)
       },

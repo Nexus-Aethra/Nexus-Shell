@@ -1792,4 +1792,90 @@ Acceptance check:
   one-row list, and an empty draft + ↑ left `echo history-store-ok` (the newest
   command) with the full ten-row list.
 
+## Phase 10.8 — History maintenance: budget, layout 2, deletion
+
+Four follow-ups from Phase 10.7's measurements and review.
+
+**The scan budget is derived, not fixed.** 10.7 shipped
+`PREFIX_SCAN_BUDGET = 5000`, which the calibration showed is only right at one
+size: a draft whose matches have density `d` makes the scan read `limit / d`
+rows while the range seek reads and sorts `d * N`, so equality gives
+`budget = sqrt(limit * N * b/a)`. With the measured `b/a ≈ 2.5` (sorting a
+match costs about 2.5 row reads) that is `sqrt(limit * N * 2.5)`. `N` comes from
+`max(seq)`, which the query already reads — and it over-counts after a deletion,
+which only widens the budget, and a budget wider than the session is harmless
+because the scan is bounded by the table. Measured (µs, limit 60, one session):
+
+| N | density | matches | adaptive | range only | old fixed 5000 |
+|---|---|---|---|---|---|
+| 8k | 1/10 | 800 | 153 | 245 | 128 |
+| 8k | 1/20 | 400 | 274 | 89 | 142 |
+| 8k | 1/100 | 80 | 166 | 38 | 533 |
+| 8k | 0 | 0 | 119 | 4 | 482 |
+| 50k | 1/20 | 2 500 | 184 | 753 | 194 |
+| 50k | 1/100 | 500 | 673 | 285 | 959 |
+| 50k | 0 | 0 | 336 | 4 | 597 |
+| 200k | 1/2 | 100 000 | 74 | 19 017 | 38 |
+| 200k | 1/20 | 10 000 | 186 | 3 392 | 178 |
+| 200k | 1/100 | 2 000 | 2 061 | 1 185 | 1 812 |
+| 200k | 0 | 0 | 670 | 4 | 621 |
+
+All 18 measured shapes (three sizes × six densities) return the right rows. The
+honest reading: adaptive beats the old constant by up to ~4× in the *sparse*
+band, which is the band a user reaches by typing more characters, and loses to
+it by ≤1.3× in the mid-density band, where the probe is paid and then discarded
+in favour of the range seek. Its worst case is 2.06 ms, the old constant's is
+1.81 ms, and range-only's is 19 ms at the same size — so the ordering that
+matters is intact, and the residual is the price of "probe, then decide". A
+two-stage probe (estimate the density from a small probe, then either continue
+scanning or take the range seek) would roughly halve that worst case; it is not
+worth the extra statement at sub-millisecond typical costs.
+
+**Layout 2 drops an index nothing read.** `commands_at(at)` was created for a
+cross-session time query that was never built: no query in the engine touches
+`at`. It cost disk and write amplification on every insert, so layout 2 removes
+it. The engine now *migrates* a layout-1 database in place instead of rejecting
+it — the `DROP INDEX` is the whole migration — which also establishes that
+future layout changes need not be a hard failure.
+
+**Deleting a session drops its history even with no shell record.**
+`releaseSession` could only clear what it had a record for, so a session
+deleted before its terminal was ever opened kept its rows forever, and the
+route only called it in the loaded branch. Now the route calls `release` in both
+branches, `releaseSession` additionally reaches the store by path through
+`forgetSessionHistory` (which leaves an absent store uncreated rather than
+creating one to delete nothing from it), and the purge stays synchronous.
+
+**Teardown folds the log.** `close()` now runs `PRAGMA optimize` (so the
+planner keeps the statistics it gathered) and `PRAGMA wal_checkpoint(TRUNCATE)`
+(so no sidecar is left beside the log directory). Both best-effort.
+
+Measured and **not** adopted: a covering index `(session_id, seq, command_norm)`
+makes the scan's per-row prefix test index-only, which speeds the probe up
+2.4–3× (194→80 µs at density 1/20, 756→250 at 1/100, 754→222 at 1/500, 200k
+rows, forced-index comparison) and shortened the whole `matchPrefix` call to
+525 µs from 2473 µs in the mid-density case. It costs +31% disk (24.4 → 31.9 MB
+for 200k rows, ~37 B/row) on a store that is deliberately unbounded. Deferred:
+the same win is available from the two-stage probe without the disk, and the
+current absolute costs do not justify either yet.
+
+Acceptance check:
+
+- 15 migration and purge checks: on a **copy of the real v1 store** (10 rows,
+  `commands_at` present), opening it stamps layout 2, drops only that index,
+  leaves every row byte-identical, keeps the prefix index, and still answers
+  `count` / `recent` / `matchPrefix`; a fresh database is created at layout 2
+  without the index; an unknown layout is still refused with
+  `version-mismatch`; `forgetSessionHistory` removes one named session's rows
+  and leaves another's, and does not create a store that was never there.
+- The live store migrated on boot (layout 2, 10 rows intact) and the history
+  route still answers `npm l` with 5 rows and `npm c` with 1.
+- The deletion wiring was exercised end to end against the live store without
+  touching a real session: two rows were injected for a probe session, the
+  probe was deleted through `/api/dshell/sessions`, and its rows went to zero
+  while the real session's ten stayed; this is the cold case (no bridge record),
+  which is exactly what used to leak.
+- The 30 storage checks and the 24 retrieval checks still pass; the 8k-row
+  sparse fallback dropped from 507 µs to 136 µs.
+
 

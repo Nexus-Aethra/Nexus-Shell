@@ -13,15 +13,17 @@
  * write rewrote it in full, and the only way to keep it bounded was to drop the
  * oldest commands at a fixed cap — lossy exactly where a query would want them.
  *
- * Format — `PRAGMA user_version = 1` as the contract declares; a database
- * stamped with anything else rejects rather than migrating.
+ * Format — `PRAGMA user_version = 2` as the contract declares. Layout 1 carried
+ * a third index, `commands_at(at)`, for a cross-session time query that was
+ * never built and that nothing read; it only cost disk and write amplification,
+ * so layout 2 drops it. A store stamped 1 is migrated in place (the DROP *is*
+ * the migration); anything else is rejected.
  *
  *   commands(session_id, seq, command, command_norm, exit_code, at)
  *     PRIMARY KEY (session_id, seq)
  *       the shell's own numbering, continued across restarts — `clearSession`
  *       deletes a whole session's rows when that session is deleted
  *   commands_session_prefix(session_id, command_norm)
- *   commands_at(at)
  *
  * `command_norm` is the lower-cased command and exists for the prefix index:
  * prefix matching is case-insensitive by design, the way a shell's own history
@@ -45,9 +47,9 @@
  *   20k-match prefix cost 9.1 ms and a 10k-match one 4.7 ms. Scanning newest
  *   first instead — the primary key's `(session_id, seq)` order plus
  *   `ORDER BY seq DESC LIMIT` — lets SQLite stop as soon as enough matches are
- *   seen and cost 0.11 ms / 0.23 ms for the same answers. It is bounded by
- *   {@link PREFIX_SCAN_BUDGET} rows and falls back to the range seek, which is
- *   the cheap one for a sparse prefix (0.005 ms with no match).
+ *   seen and cost 0.11 ms / 0.23 ms for the same answers. Its budget comes from
+ *   {@link prefixScanBudget} and it falls back to the range seek, which is the
+ *   cheap one for a sparse prefix (0.005 ms with no match).
  * - `PRAGMA synchronous = NORMAL` under WAL: history is best-effort by an
  *   existing contract ("losing a line of history must never cost the session
  *   anything"), and the session event log owns real durability.
@@ -78,17 +80,39 @@ interface CommandRow {
 }
 
 /**
- * How many of a session's newest commands a prefix search scans before it gives
- * up on the newest-first path and lets the range seek answer.
+ * How many of a session's newest commands a prefix search scans before it hands
+ * over to the range seek.
  *
- * The scan wants the newest matches, and matches are usually dense near the
- * draft (a shell repeats what it has run), so a few thousand rows cover the
- * normal case at a bounded cost. A sparse prefix is the case the range seek
- * exists for, and it is the *cheap* path there. Measured at 200k rows in one
- * session: 5000 keeps every dense draft under 0.25 ms, and the miss case (scan
- * 5000, find nothing, fall back) at 0.68 ms.
+ * The budget is the point where the two paths cost the same, and that is
+ * solvable: a draft whose matches have density `d` makes the scan read
+ * `limit / d` rows while the range seek reads — and sorts — `d * N`. Setting
+ * them equal gives `budget = sqrt(limit * N * b/a)`, where `b/a` is the measured
+ * cost ratio between sorting one match and reading one row
+ * ({@link PREFIX_SCAN_BIAS}).
+ *
+ * A constant cannot do that job. 5000 is the measured optimum at 200k rows in
+ * one session (the formula gives ~5.4k there), but at 8k rows it scans 4.3k
+ * rows the range seek would never have needed, and at 2M rows it is too small
+ * to keep a mid-density prefix off the sort.
+ *
+ * `newestSeq` is the session's own command counter, which continues across
+ * restarts, so it stands in for N without another query — and it over-counts
+ * after a deletion, which only widens the budget. Widening is harmless: the
+ * scan is bounded by the table, not by the budget, so a budget larger than the
+ * session simply reads the whole session.
  */
-const PREFIX_SCAN_BUDGET = 5_000
+function prefixScanBudget(limit: number, newestSeq: number): number {
+  // `max(newestSeq, limit)` keeps a brand-new shell's first search honest: a
+  // budget below `limit` could never satisfy the scan's early exit.
+  const atCrossing = Math.sqrt(limit * Math.max(newestSeq, limit) * PREFIX_SCAN_BIAS)
+  return Math.max(Math.ceil(atCrossing), MIN_PREFIX_SCAN_BUDGET)
+}
+
+/** Measured `b/a`: sorting one match costs about as much as 2.5 row reads. */
+const PREFIX_SCAN_BIAS = 2.5
+
+/** Floor for a tiny session, where the formula would drop below useful. */
+const MIN_PREFIX_SCAN_BUDGET = 200
 
 /**
  * The exclusive upper bound of every string starting with `prefix`.
@@ -117,7 +141,7 @@ function createFilePrivate(path: string): void {
   }
 }
 
-/** Apply pragmas and the schema, rejecting a foreign layout version. */
+/** Apply pragmas and the schema, migrating a known older layout. */
 function initSchema(db: DatabaseSync, path: string): void {
   db.exec('PRAGMA busy_timeout = 5000')
   db.exec('PRAGMA journal_mode = WAL')
@@ -125,6 +149,16 @@ function initSchema(db: DatabaseSync, path: string): void {
   const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined
   const version = Number(row?.user_version ?? 0)
   if (version === HISTORY_STORE_SCHEMA_VERSION) return
+  if (version === 1) {
+    // Layout 1 carried `commands_at(at)` for a cross-session time query that was
+    // never built: nothing selected by it, so dropping it is the whole
+    // migration, and the rows are untouched.
+    db.exec(`
+      DROP INDEX IF EXISTS commands_at;
+      PRAGMA user_version = ${String(HISTORY_STORE_SCHEMA_VERSION)};
+    `)
+    return
+  }
   if (version !== 0) {
     throw new HistoryStoreError('version-mismatch', `${path} carries history layout ${String(version)}, expected ${String(HISTORY_STORE_SCHEMA_VERSION)}`)
   }
@@ -139,7 +173,6 @@ function initSchema(db: DatabaseSync, path: string): void {
       PRIMARY KEY (session_id, seq)
     );
     CREATE INDEX commands_session_prefix ON commands (session_id, command_norm);
-    CREATE INDEX commands_at ON commands (at);
     PRAGMA user_version = ${String(HISTORY_STORE_SCHEMA_VERSION)};
   `)
 }
@@ -258,7 +291,7 @@ function openStore(path: string): HistoryStore {
       // tie-break with the range query below.
       const newestSeq = (head.get(sessionId) as { s?: number | null } | undefined)?.s ?? null
       if (newestSeq !== null) {
-        const floor = newestSeq - Math.max(PREFIX_SCAN_BUDGET, limit * 4)
+        const floor = newestSeq - prefixScanBudget(limit, newestSeq)
         const scanned = asRows(upper === undefined
           ? boundedOpen.all(sessionId, floor, norm, limit)
           : bounded.all(sessionId, floor, norm, upper, limit))
@@ -286,6 +319,17 @@ function openStore(path: string): HistoryStore {
       if (closed) return
       closed = true
       stores.delete(path)
+      try {
+        // Standard practice before closing: let the planner keep statistics it
+        // has gathered (and gather them now if the shapes changed), then fold
+        // the write-ahead log back so teardown leaves no sidecar beside the
+        // log directory. Both are best-effort — closing is the job.
+        db.exec('PRAGMA optimize')
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+      }
+      catch {
+        // An unavailable optimization is not a failed close.
+      }
       try {
         db.close()
       }
