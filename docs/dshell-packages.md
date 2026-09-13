@@ -300,7 +300,7 @@ root, and why each manifest now carries:
   entry imports** — `route.js`, `stream.js`, `pty.js`, … — was missing from the
   tarball: it installed, then failed at import time;
 - first-party dsh packages as **peerDependencies pinned to the exact
-  `0.1.5-rc.1`** (plus the same list in `devDependencies`, which is what the
+  `0.1.5-rc.2`** (plus the same list in `devDependencies`, which is what the
   local build resolves), never as plain dependencies. A plugin must share the
   host's single instance of a first-party package: a second copy breaks
   `instanceof` across `FsError`/`TerminalError`, gives a second `Service` base

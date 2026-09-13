@@ -401,8 +401,15 @@ export function apply(ctx: Context): void {
   ))
   // Hide the dsh local-build product label + version pill that sit to the
   // right of the logo in the expanded brand row. The slot is `kind: 'single'`,
-  // and any registration shadows the shell's fallback (which would otherwise
-  // render `DSH 本地构建` + `0.1.5-rc.1-<sha>-dirty`). Rendering an empty
+  // and the official brand plugin (`ui-brand-official`) registers its own
+  // occupant for it, so this must shadow that entry rather than merely add one:
+  // a `single` slot throws when a second registration lands on the *same*
+  // priority, and only a different priority shadows it (lowest renders). Our
+  // `-1` therefore wins over the stock `0`, and the priority is what makes the
+  // shadow deterministic — without it we were relying on registration order,
+  // which rc.2 was free to change (and did: the plugin then failed to apply
+  // with "single slot sidebar.brand.name already has a registration").
+  // Rendering an empty
   // fragment leaves just the mark, since `.brandIdentity` is `inline-flex` and
   // collapses cleanly when the name child is empty. We do not migrate the
   // metadata into Settings: the product name and the build SHA live in the
@@ -410,7 +417,7 @@ export function apply(ctx: Context): void {
   // package version), and the user only asked to remove them from the
   // sidebar's most prominent row.
   ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register(
-    { name: 'sidebar.brand.name' },
+    { name: 'sidebar.brand.name', priority: -1 },
     function DshellBrandNamePlaceholder() { return null },
   ))
 }
