@@ -1,412 +1,448 @@
-# dshell — 终端优先的 AI 工作台
+**English** · [简体中文](./README.zh-CN.md)
 
-一个会话就是一条**终端时间线**：你在真正的 shell 里敲命令，AI 在同一个屏幕上接着干活。
-AI 的每一轮工作、你敲的每一条命令，按发生的先后排成一列，没有聊天气泡。
+# dshell — a terminal-first AI workbench
 
-![dshell 主界面](docs/images/main-view.png)
+One session is one **terminal timeline**: you type in a real shell, and the AI keeps working on the
+same screen. Every command you run and every turn the AI takes land in one column, in the order they
+happened. No chat bubbles.
 
-dshell 是 **dsh**（DeepSeek Harness）的一组插件。它不修改 dsh 的源码，全部通过 dsh 公开的扩展点接入，
-所以 dsh 随时可以跟着上游升级。
+![dshell, the main view](docs/images/main-view.png)
 
----
+> The screenshots show the Chinese interface — dshell currently ships Chinese text only.
 
-## 目录
-
-- [它是什么](#它是什么)
-- [快速开始](#快速开始)
-- [界面速览](#界面速览)
-- [两种模式：`$ shell` 与 `✦ agent`](#两种模式-shell-与-agent)
-- [AI 有自己的终端](#ai-有自己的终端)
-- [输入辅助：Tab、↑、→](#输入辅助tab--)
-- [**多会话协作：管道与缓冲区**](#多会话协作管道与缓冲区)
-- [SSH 设备会话](#ssh-设备会话)
-- [设置](#设置)
-- [状态卡](#状态卡)
-- [手势速查](#手势速查)
-- [三个例子](#三个例子)
-- [边界与注意](#边界与注意)
-- [面向开发者的文档](#面向开发者的文档)
+dshell is a set of plugins for **dsh** (DeepSeek Harness). It does not modify dsh's source: it plugs
+into dsh's documented extension points, so dsh stays upgradeable with upstream.
 
 ---
 
-## 它是什么
+## Contents
 
-| 你会得到 | 说明 |
+- [What it is](#what-it-is)
+- [Getting started](#getting-started)
+- [A tour of the screen](#a-tour-of-the-screen)
+- [Two modes: `$ shell` and `✦ agent`](#two-modes-shell-and-agent)
+- [The AI has a terminal of its own](#the-ai-has-a-terminal-of-its-own)
+- [Input assists: Tab, ↑, →](#input-assists-tab--)
+- [**Cross-session collaboration: pipes and the buffer**](#cross-session-collaboration-pipes-and-the-buffer)
+- [SSH device sessions](#ssh-device-sessions)
+- [Settings](#settings)
+- [The status card](#the-status-card)
+- [Gesture cheat sheet](#gesture-cheat-sheet)
+- [Three examples](#three-examples)
+- [Limits worth knowing](#limits-worth-knowing)
+- [Docs for developers](#docs-for-developers)
+
+---
+
+## What it is
+
+| What you get | Details |
 |---|---|
-| 一个全幅终端 | 每个会话一个主 shell，直接跑真正的命令，全屏、有颜色、有光标 |
-| 一条合并时间线 | shell 的输出和 AI 的工作按时间穿插；AI 的每一轮是一个可折叠的「任务块」 |
-| 两个模式 | `$ shell` 让 Enter 执行命令，`✦ agent` 让 Enter 交给 AI，点一下输入框左侧的胶囊即可切换 |
-| AI 自己的 shell | AI 有独立的 PTY，不会被你的前台程序挡住，也不会抢你的终端 |
-| 跨会话协作 | 会话之间可以建立**管道**，互相委派任务、按名字共享文件（**缓冲区**），包括隔着 SSH 设备 |
-| 设备会话 | 直接把一个会话开到远程机器上；命令、文件、终端都在设备上执行 |
-| 本地可读的上下文 | 切到 `✦ agent` 时，AI 自动带上你终端里最近几条命令及输出，不用你复述 |
+| A full-bleed terminal | One main shell per session, running real commands — full screen, colours, cursor |
+| One merged timeline | Shell output and AI work interleave by time; each AI turn is a collapsible **task block** |
+| Two modes | `$ shell` makes Enter run a command, `✦ agent` makes Enter send to the AI — click the pill at the left of the input line to switch |
+| The AI's own shell | The AI gets a separate PTY, so it never blocks your foreground program and never steals your terminal |
+| Cross-session work | Sessions form **pipes** to delegate tasks to each other and share files by name (the **buffer**) — including across SSH devices |
+| Device sessions | Open a session directly on a remote machine: commands, files and the visible terminal all run there |
+| Context without retelling | Switching to `✦ agent` automatically carries your last few commands and their output to the AI |
 
 ---
 
-## 快速开始
+## Getting started
 
-前置：**Node 24.21.0**、**pnpm 9.15.0**，以及一份 `dsh/` 上游检出（放在本仓库旁即可，`.gitignore` 已忽略它）。
+Prerequisites: **Node 24.21.0**, **pnpm 9.15.0**, and an upstream `dsh/` checkout next to this
+repository (it is git-ignored here).
 
 ```sh
-# 1) dsh 上游（一次性）
+# 1) dsh upstream (once)
 cd dsh
 pnpm install --no-frozen-lockfile
 pnpm run build:lib && pnpm run build:web
 
-# 2) dshell 插件
+# 2) the dshell plugins
 cd ..
 pnpm install
 pnpm --filter "@nexus-aethra/dshell-*" run build
 
-# 3) 装进 dsh 的 web profile（一次性；重复执行是安全的）
+# 3) install into dsh's web profile (once; re-running is safe)
 ./scripts/install-into-dsh-profile.sh
 ./scripts/bootstrap-profile-client.sh
 
-# 4) 每次启动
+# 4) every time
 cd dsh && pnpm dsh web
 ```
 
-dsh 启动后会打印一个带 token 的地址（例如 `http://127.0.0.1:3080/?token=…`），用浏览器打开即可。
+dsh prints a tokenized URL (for example `http://127.0.0.1:3080/?token=…`). Open it in a browser.
 
-验收：`curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/` 应当返回 **401**
-（那是 dsh 的 cookie 鉴权门，不是错误）。
+Check: `curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3080/` should answer **401** —
+that is dsh's cookie auth gate, not a failure.
 
-> 细节和排错（版本为何这样钉、profile 是怎么被填充的、客户端 bundle 的加载约定）都在
-> [`docs/dshell-setup.md`](docs/dshell-setup.md)。
+> The details and the troubleshooting (why the versions are pinned, how the profile gets filled in,
+> the module-loader contract for client bundles) live in [`docs/dshell-setup.md`](docs/dshell-setup.md).
 
 ---
 
-## 界面速览
+## A tour of the screen
 
-**主视图**：左侧是会话列表，中间是终端时间线，右上角是状态卡，底部是输入行。
+The left sidebar holds your sessions, the middle is the terminal timeline, the status card floats in
+the top right, and the input line sits at the bottom.
 
-| 区域 | 你能做什么 |
+| Area | What you can do |
 |---|---|
-| **左侧边栏** | 新建会话、在会话间切换；`归档` 收起到「已归档」分组；`多选` 后可批量 `恢复` / `删除`；删除的会话先进入「待删除 · 重启后清除」 |
-| **右侧文件浏览器** | 「文件」页签列出会话工作目录，可前进后退；双击目录把它设为根；把目录**拖到终端上**就等于在这个终端里 `cd` 过去；设备会话还有「打开文件传输」 |
-| **状态卡** | 常驻右上角，折叠成一行；展开可见 AI 终端、子智能体、后台任务、缓冲区传输、委派回信等 |
-| **输入行** | 左侧胶囊切换 `$ shell` / `✦ agent`，右侧实时提示当前可用的手势 |
+| **Left sidebar** | Create and switch sessions; `归档` files one away into the `已归档` group; `多选` then batches `恢复` / `删除`; a deleted session first moves to `待删除 · 重启后清除` |
+| **Right sidebar: files** | The `文件` tab browses the session's working directory with back/forward; double-clicking a directory makes it the root; **drag a directory onto the terminal** to `cd` there; device sessions also get `打开文件传输` |
+| **Status card** | Always in the top right, collapsed to one line; expand it for the AI terminal, subagents, background jobs, buffer transfers and delegation replies |
+| **Input line** | The pill on the left switches `$ shell` / `✦ agent`; the text on the right tells you which gestures are live |
 
-**时间线**：shell 的输出占一段（一个真正的小终端，可横向滚动），AI 的一轮占一个任务块。
-任务块的头部一行告诉你它现在在干什么、干了多久、花了多少 token；点一下可折叠成两行摘要。
+The **timeline** is the point: a stretch of shell output occupies one region (a real mini terminal
+that scrolls horizontally), and one AI turn occupies one task block. The block's header line says what
+it is doing, for how long, and what it has spent; clicking it folds the block into a two-line summary.
 
-![任务块](docs/images/task-block.png)
+![A task block](docs/images/task-block.png)
 
 ---
 
-## 两种模式：`$ shell` 与 `✦ agent`
+## Two modes: `$ shell` and `✦ agent`
 
-输入行左侧的胶囊显示当前模式，**点它即可切换**，也可以直接在输入框里打斜杠命令：
+The pill at the left of the input line shows the current mode. **Click it to switch**, or type a slash
+command right in the input box:
 
-| 输入 | 效果 |
+| Input | Effect |
 |---|---|
-| `/shell <命令>` | 切到 shell 模式并把命令立刻执行（`/terminal` 是它的别名） |
-| `/agent <话>` | 切到 agent 模式并把这句话发给 AI |
-| `/new` | 新建会话，沿用当前会话的工作目录 |
+| `/shell <command>` | Switch to shell mode and run the command immediately (`/terminal` is an alias) |
+| `/agent <text>` | Switch to agent mode and send the text to the AI |
+| `/new` | Create a session that inherits the current session's working directory |
 
-在 `$ shell` 模式下：
+In `$ shell` mode:
 
-- `Enter` 执行这一行（进入主 shell 的前台进程）
-- `Ctrl+C` 放弃这一行并向终端发中断
-- `Ctrl+Shift+V` 把剪贴板内容交给终端
-- 以 `/` 开头的内容仍然走 dsh 的命令通道（`/compact` 等原样保留）
+- `Enter` runs the line, into the foreground process of the main shell
+- `Ctrl+C` abandons the line and interrupts the terminal
+- `Ctrl+Shift+V` hands the clipboard to the terminal
+- Anything starting with `/` still goes down dsh's command channel (`/compact` and friends are untouched)
 
-在 `✦ agent` 模式下 Enter 就是「发消息」，和普通对话一样。**切到 agent 模式时，dshell 会自动附带
-你终端里最近三条命令及输出**（每条最多 2 KiB，超长可让 AI 用工具按需翻页），所以你不必解释
-「我刚才跑的那条为什么失败了」。
-
----
-
-## AI 有自己的终端
-
-每个会话里有两个 shell：
-
-- **你的主 shell** —— 你敲，你看见，全幅渲染。
-- **AI 的 shell** —— 第一次需要时才启动，启动目录跟着你的 shell 走。
-
-两者互不抢前台。AI 不能往你的终端里打字，只能读（`dshell_terminal_read`）；你想看它在自己那个
-shell 里干了什么，展开状态卡的 **`AI 终端`** 行，那里是一条只读的实时画面，可随时 `为 AI 开启一个终端`。
-
-如果 dsh 的 bash 工具在同一个会话里另开了一个持久 shell，dshell 会把它**认领**成 AI 的终端，
-让模型的 bash 调用、`terminal_send` 和你看到的这块画面收敛到同一个 PTY 上 —— 不会出现「面板里
-一个 shell、模型命令跑在另一个 shell」的错位。
+In `✦ agent` mode Enter simply sends. **Switching to agent mode also attaches your last three
+commands and their output** (2 KiB each, with the agent able to page further on demand), so you never
+have to explain "that command I just ran failed".
 
 ---
 
-## 输入辅助：Tab、↑、→
+## The AI has a terminal of its own
 
-三个手势都在 `$ shell` 模式的输入行里生效，每个都可以单独关掉。
+Every session has two shells:
 
-| 手势 | 行为 |
+- **Your main shell** — you type, you see it, rendered full width.
+- **The AI's shell** — spawned lazily on first need, starting in the directory your shell is in.
+
+Neither can take the other's foreground. The AI cannot type into your terminal; it can only read it
+(`dshell_terminal_read`). To watch what it does in its own shell, expand the status card's **`AI 终端`**
+row: a read-only live view, with `为 AI 开启一个终端` whenever it is not running.
+
+If dsh's bash tool spawns a persistent shell in the same session, dshell **claims** it as the AI's
+terminal, so the model's `bash` calls, `terminal_send`, and the panel you are watching all converge on
+one PTY — no more "the panel shows one shell while the model ran its command in another".
+
+---
+
+## Input assists: Tab, ↑, →
+
+All three live in the `$ shell` input line and each can be switched off independently.
+
+| Gesture | Behaviour |
 |---|---|
-| `Tab` | 补全路径。**大小写不折叠地比较，但补出来的是真实拼写**：`cd nexus-sh` + `Tab` 会补成 `Nexus-shell/`，顺手把这一行改对。唯一候选直接落地，多个候选弹出浮层（`Tab`/`↑`/`↓` 切换、`Enter` 填入、`Esc` 关闭） |
-| `↑` | 打开本会话历史（`↑↓` 选择、`Enter` 填入），只列与当前草稿同前缀的命令 |
-| `→` | 光标后显示**虚影提示**：最近一条与草稿完全同前缀的命令，按 `→` **逐词采纳**，采完即消失 |
+| `Tab` | Completes paths. The comparison **folds ASCII case, but the completion carries the real spelling**: `cd nexus-sh` + `Tab` becomes `Nexus-shell/`, correcting the line as it completes. A single candidate lands directly; several open a floating list (`Tab`/`↑`/`↓` to move, `Enter` to take, `Esc` to close) |
+| `↑` | Opens this session's history (`↑↓` to move, `Enter` to take), listing only commands that share a prefix with what you have typed |
+| `→` | Shows a **ghost hint** after the caret: the newest command that exactly extends your draft. Each `→` takes **one word** of it, and the ghost disappears with the last word |
 
-输入行右侧图例会跟着变，例如 `→ 采纳一个词 · 继续`、`Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭`。
-把某个开关关掉后，那个键就回到浏览器默认行为（`Tab` 移动焦点、`→` 移动光标）。
+The legend to the right of the input line changes with the state, e.g. `→ 采纳一个词 · 继续` or
+`Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭`. Turn an assist off and its key reverts to the
+browser's behaviour (`Tab` moves focus, `→` moves the caret).
 
 ---
 
-## 多会话协作：管道与缓冲区
+## Cross-session collaboration: pipes and the buffer
 
-这是 dshell 与其他终端工作台区别最大的部分：**会话不是孤岛**。
+This is what separates dshell from other terminal workbenches: **sessions are not islands.**
 
-两个会话之间可以拉一条**管道**，然后各自的 AI 就能互相委派任务、共享文件。链路可以跨机器 ——
-其中一端完全可以是绑在 SSH 设备上的会话。
+Two sessions can be joined by a **pipe**, after which their AIs can delegate tasks to each other and
+share files. A pipe can span machines — either end may be a session bound to an SSH device.
 
 ```mermaid
 flowchart LR
-  A["会话 A · 本机<br/>你在的窗口"] -->|"管道「部署」"| B["会话 B · 构建机<br/>SSH 设备会话"]
-  A -->|"管道「评审」"| C["会话 C · 另一个本机目录"]
-  B -->|"结果回信"| A
-  C -->|"结果回信"| A
+  A["Session A · this machine<br/>the window you type in"] -->|"pipe: deploy"| B["Session B · build host<br/>an SSH device session"]
+  A -->|"pipe: review"| C["Session C<br/>another local directory"]
+  B -->|"the result"| A
+  C -->|"the result"| A
 ```
 
-### 建立管道（只有你能建）
+### Creating a pipe (only you can)
 
-点左侧边栏的 **`管道`**，面板有两个视图：
+Click **`管道`** in the left sidebar. The panel has two views:
 
-- **`列表`** —— `+ 建立管道`，选两个会话（可选一个标签，例如「部署机」），`建立管道`。
-- **`图`** —— 会话是节点，管道是连线。从节点边缘的圆点**拖到另一个节点**就建好了；双击连线可看详情或 `解除`。
+- **`列表`** — `+ 建立管道`, pick two sessions (optionally a label such as "build host"), `建立管道`.
+- **`图`** — sessions are nodes and pipes are edges. Drag from a node's dot **onto another node** to
+  create one; click an edge to see its detail or `解除`.
 
-面板上写着 `只有你能建立管道；agent 没有建连的工具` —— 建连始终是你的动作，AI 只能使用已存在的管道。
+The panel says `只有你能建立管道；agent 没有建连的工具` — connecting is always your move; an AI can only
+use pipes that already exist.
 
-![管道图](docs/images/pipe-graph.png)
+![The pipe graph](docs/images/pipe-graph.png)
 
-### 一次委派的全过程
+### What one delegation looks like
 
-委派是**异步**的：被委派方在忙也没关系，请求会排队；发起方不会阻塞等待，它可以结束本轮，
-对方回报后自动被唤醒继续。
+Delegation is **asynchronous**. A busy peer simply queues the request, and the requester does not
+block: its turn ends, and it is woken up again when the answer comes back.
 
 ```mermaid
 sequenceDiagram
-  participant U as 你
-  participant A as 会话 A（本机）
-  participant B as 会话 B（构建机）
-  U->>A: 把这个目录部署到构建机上
-  A->>A: 确认管道在线
-  A->>B: delegate 委派 · 附带授权「src 只读」
-  Note over A: 本轮结束<br/>状态卡显示 ⏸ 等待 B 回信
-  B->>B: 领取工单，在自己的机器上读 /src/…
-  B->>B: 执行构建
-  B-->>A: finish 回报结果
-  Note over A: 【管道回报】送达<br/>A 自动醒来继续
-  A-->>U: 汇报结果
+  participant U as You
+  participant A as Session A (local)
+  participant B as Session B (build host)
+  U->>A: deploy this directory to the build host
+  A->>A: check that the pipe is live
+  A->>B: delegate the task, granting read on "src"
+  Note over A: this turn ends<br/>status card shows ⏸ waiting for B
+  B->>B: claim the ticket, read /src/… in its own world
+  B->>B: run the build
+  B-->>A: finish, report the result
+  Note over A: [pipe report] arrives<br/>A wakes up and continues
+  A-->>U: reports back to you
 ```
 
-被委派方**只看得到你发给它的内容**：它不知道你的其他文件、其他会话。工单有期限，超时会被看门狗
-判为 `已超时`，发起方会收到通知，可以重新委派或自己继续。
+The peer sees **only what you send it**: not your other files, not your other sessions. Tickets have a
+deadline; a watchdog settles an unanswered one as `已超时` and tells the requester, who can delegate
+again or carry on alone.
 
 ```mermaid
 flowchart LR
-  Q["排队中"] --> P["处理中"] --> D["已完成"]
-  P --> F["已失败"]
-  P --> T["已超时"]
-  Q --> X["已取消"]
+  Q["queued"] --> P["in progress"] --> D["done"]
+  P --> F["failed"]
+  P --> T["timed out"]
+  Q --> X["cancelled"]
 ```
 
-### 缓冲区：把文件按名字交给对方
+### The buffer: handing files over by name
 
-委派时可以把**自己世界里的文件或目录**开放给对面，每份授权带一个名字和读/写权限。
-这个名字就变成对方的**缓冲区路径**，缓冲区是一棵以 `/` 为根的树，一个会话一棵：
+A delegation can open files or directories **from your own world** to the peer, each with a name and
+read and/or write rights. That name becomes the peer's **buffer path**; the buffer is a tree rooted at
+`/`, one per session:
 
 ```mermaid
 flowchart LR
-  subgraph W["会话 A 的真实磁盘"]
+  subgraph W["Session A: real disk"]
     D1["/srv/app/README.md"]
     D2["/srv/app/releases/"]
   end
-  subgraph B["会话 B 看到的缓冲区 /"]
+  subgraph B["Session B: the buffer at /"]
     P1["/readme"]
     P2["/app/releases/v0.4.2.tar"]
   end
-  D1 -->|"授权 as=readme 只读"| P1
-  D2 -->|"授权 as=app 读写"| P2
+  D1 -->|"grant as=readme, read-only"| P1
+  D2 -->|"grant as=app, read+write"| P2
 ```
 
-拿到授权的一方用五个动作在缓冲区里干活：
+The holder of a grant works through five actions:
 
-| 动作 | 作用 |
+| Action | Effect |
 |---|---|
-| `ls` | 不带路径时列出自己拿到的所有映射区（名字、权限、来自谁）；带路径则列目录 |
-| `read` | 读一个文件的文本，可按行翻页 |
-| `edit` | 在**原位**改授权方世界里的那个文件（不产生副本） |
-| `download` | 把缓冲区里的文件搬到**自己的**世界（可指定落点） |
-| `upload` | 把自己世界的文件推进缓冲区 |
+| `ls` | With no path, lists every mapped area you hold (name, rights, who it came from); with a path, lists a directory |
+| `read` | Reads a text file, paging by line |
+| `edit` | Edits that file **in place** inside the granter's world — no copy is made |
+| `download` | Copies a buffer file into **your own** world (at a destination you choose) |
+| `upload` | Pushes a file from your world into the buffer |
 
-两条规则值得记住：
+Two rules are worth remembering:
 
-- **映射就是合同**：路径只能落在被授权的名字之下，绝对路径、`..`、软链接逃逸都会被拒绝。
-  AI 不需要知道你机器上的真实路径，也改不了别的地方。
-- **持有授权的一方动手**：要**给**别人文件，就开只读授权、让对方 `download`；要**收**文件，
-  就由对方开写权限、由你 `upload`。
+- **The mapping is the contract.** Paths can only land under a name you were granted; absolute paths,
+  `..`, and symlink escapes are refused. The AI never needs to know your real paths, and cannot touch
+  anything else.
+- **The grant holder acts.** To *give* someone a file, grant read and let them `download` it. To
+  *receive* one, have them grant write and `upload` it yourself.
 
-授权按**引用计数**回收：工单结算时自动撤销，计数归零就失效 —— 不需要谁记得去清理。
+Grants are **reference counted**: settling a ticket revokes its grants, and a grant at zero is gone —
+nobody has to remember to clean up.
 
-### 大文件
+### Big files
 
-`download` / `upload` 超过 32 MiB 时自动切换成**分块中继**：按 16 MiB 切片、逐块搬运，
-落地后按整个文件的 sha256 校验，校验不过就算失败并保留中间数据（默认上限 1 GiB，硬上限 4 GiB）。
-进度实时出现在状态卡的 **`⇅ 缓冲区传输`** 行里，带百分比和进度条，面板关着也照常显示。
+Above 32 MiB, `download` and `upload` switch to a **chunked relay**: 16 MiB slices moved one at a
+time, then verified end to end by a whole-file sha256. A mismatch is a hard failure and keeps the
+intermediate data (1 GiB by default, 4 GiB hard ceiling). Progress shows up live in the status card's
+**`⇅ 缓冲区传输`** row, with a percentage and a bar per transfer, even with the panel closed.
 
-### 面板里能看到什么
+### What the detail page shows
 
-点开一条管道，就是它的详情页：
+Clicking a pipe opens its detail page:
 
-![管道详情与缓冲区浏览器](docs/images/pipe-detail.png)
+![Pipe detail and the buffer browser](docs/images/pipe-detail.png)
 
-- **缓冲区** —— 一棵可以走的树，和右侧文件浏览器同一套操作手感（面包屑、`刷新`、悬停高亮）；
-  每一行都写着它来自谁、什么权限。
-- **进行中的请求 / 已结束** —— 每张工单的状态、方向、主题和回报全文。
-- **生效中的授权** —— 当前活着的授权，以及每份授权映射了哪个真实路径。
+- **缓冲区** — a walkable tree with the same feel as the right sidebar's file browser (crumbs,
+  `刷新`, hover highlight); each row says where it came from and with which rights.
+- **进行中的请求 / 已结束** — every ticket's state, direction, subject and full reply.
+- **生效中的授权** — the grants that are live right now, and the real path each one maps.
 
-上图这份详情是任务**结算之后**的样子：授权已经自动回收，所以缓冲区又是空的 —— 这是设计如此。
+The screenshot above is a pipe **after** its task settled: the grants have already been reclaimed, so
+the buffer is empty again. That is by design.
 
 ---
 
-## SSH 设备会话
+## SSH device sessions
 
-在 `新会话` 对话框里把 **`运行位置`** 切到 **`SSH 设备`**，选设备、填远端目录，创建时 dshell 会用一次
-真实的 ssh 往返先验证连通性，验证不过不会把会话建出来。
+In the `新会话` dialog, switch **`运行位置`** to **`SSH 设备`**, pick a device and a remote directory.
+Creating the session proves the connection with a real ssh round trip first; if it fails, no session
+is created.
 
-设备本身在 **设置 → 插件 → `SSH 设备`** 里登记：名称、host、端口、用户名、远端工作目录，
-登录方式可选 `密钥`（OpenSSH 私钥，留空则用你本机 ssh agent / `~/.ssh/config`）或 `密码`。
+Devices themselves are registered under **Settings → Plugins → `SSH 设备`**: name, host, port, user,
+remote working directory, and either `密钥` (an OpenSSH private key; leave it empty to use your local
+ssh agent / `~/.ssh/config`) or `密码`.
 
-- 连接用 `IdentitiesOnly=yes`，只带这台设备自己的钥匙；
-- 密码通过 OpenSSH 的 askpass 传递，不出现在命令行里；
-- 密钥与密码写在 `$DSH_HOME/dshell/ssh/keys/`，权限 `0600`；
-- 主机密钥记到 dshell 自己的 `known_hosts`，不动你个人的那份。`测试` 成功时会显示
-  `已连接 user@host（系统）· N ms` 和 `主机密钥 SHA256:…（首次信任，请与服务器管理员核对 | 已信任）`。
+- Connections use `IdentitiesOnly=yes`, carrying only that device's own key;
+- Passwords go through OpenSSH's askpass hook, never onto a command line;
+- Keys and passwords live in `$DSH_HOME/dshell/ssh/keys/`, mode `0600`;
+- Host keys are trusted into dshell's own `known_hosts`, leaving your personal file alone. A successful
+  `测试` reports `已连接 user@host（system）· N ms` and, when a host key is trusted,
+  `主机密钥 SHA256:…（首次信任，请与服务器管理员核对 | 已信任）`.
 
-绑定设备后，这个会话的**命令、文件和终端都在设备上**：
+Once bound to a device, that session's **commands, files and terminal all live on the device**:
 
 ```mermaid
 flowchart LR
-  subgraph L["本机"]
-    S["会话的终端界面"]
-    M["挂载替身目录<br/>mnt/设备/远端目录"]
+  subgraph L["Your machine"]
+    S["the session's terminal UI"]
+    M["a mount stand-in directory<br/>mnt/device/remote-dir"]
   end
-  subgraph R["远端设备"]
-    T["真正的 shell<br/>（你的可见终端）"]
-    F["真实的文件树"]
+  subgraph R["The remote device"]
+    T["a real shell<br/>(your visible terminal)"]
+    F["the real file tree"]
   end
   S <-->|"ws /dshell/pty"| T
-  M -.->|"镜像视图"| F
+  M -.->|"mirrored view"| F
 ```
 
-侧边栏里这类会话带一个 `SSH` 徽章。设备会话的右侧文件浏览器会多出 **`打开文件传输`**：
-左右两栏分别是 `本机` 和 `设备`，把文件或文件夹从一侧拖到另一侧即开始复制，逐项显示进度、分块、
-跳过计数，遇到同名会问你 `覆盖` 还是 `移除`。（单文件上限 32 MB，单次计划上限 20 000 项 / 2 GiB。）
+Such sessions wear an `SSH` badge in the sidebar. Their right sidebar gains **`打开文件传输`**: two
+panes, `本机` and `设备`, and dragging a file or folder from one to the other starts the copy — with
+per-item progress, chunk counts, skip counts, and an `覆盖` / `移除` question when something already
+exists. (32 MB per file, 20 000 entries or 2 GiB per plan.)
 
 ---
 
-## 设置
+## Settings
 
-**设置 → 插件** 里有 dshell 的两张卡：
+**Settings → Plugins** holds two dshell cards:
 
-| 卡片 | 内容 |
+| Card | Contents |
 |---|---|
-| **`终端与输入辅助`** | `终端配色` —— `午夜`（默认）、`柔和`、`神秘`、`森林`，选择立即生效；`输入辅助` —— `Tab 补全`、`历史列表`、`智能提示` 三个开关 |
-| **`SSH 设备`** | 设备清单，每行可 `测试` / `编辑` / `删除` |
+| **`终端与输入辅助`** | `终端配色` — `午夜` (default), `柔和`, `神秘`, `森林`, applied instantly; `输入辅助` — the `Tab 补全`, `历史列表`, `智能提示` switches |
+| **`SSH 设备`** | The device list, each row offering `测试` / `编辑` / `删除` |
 
-设置保存在主机上，**同一主机的所有浏览器共用**（关掉某个辅助键，换台浏览器也一样）。
+Settings are stored on the host and **shared by every browser on it** — turn an assist off here and it
+is off in the other browser too.
 
 ---
 
-## 状态卡
+## The status card
 
-常驻右上角，平时折叠成一行，点开才展开细节。它只在有内容时才显示对应行：
+Pinned to the top right, collapsed to a single line until you expand it. Rows appear only when they
+have something to say:
 
-| 行 | 出现时机 |
+| Row | When it shows |
 |---|---|
-| `计划` | AI 列了待办，显示完成度与当前阶段 |
-| `AI 终端` | AI 的 shell 开起来了，展开是只读实时画面 |
-| `智能体` | 派生了子智能体，可点进某一个 |
-| `后台任务` | 有长任务在跑 |
-| `缓冲区传输` | 有文件在跨世界搬运，带进度条 |
-| `中断点` | 你这一轮把活交给了别人、正在等回信（`⏸ 等待 <对方> 回信`），可 `撤回` |
-| `管道任务` | 别的会话派活给你，列出了待处理工单 |
-| `连接` | 与主机的 ws 断了，可 `重新连接` |
+| `计划` | The AI has a todo list; progress and the current step |
+| `AI 终端` | The AI's shell is up; expand for the read-only live view |
+| `智能体` | Subagents are running; click one to open it |
+| `后台任务` | Long-running jobs |
+| `缓冲区传输` | Files are moving between worlds, with progress bars |
+| `中断点` | You handed this turn to someone else and are waiting (`⏸ 等待 <peer> 回信`); reversible with `撤回` |
+| `管道任务` | Another session delegated work to you; lists the pending tickets |
+| `连接` | The host websocket dropped; offers `重新连接` |
 
 ---
 
-## 手势速查
+## Gesture cheat sheet
 
-| 位置 | 操作 | 效果 |
+| Where | Action | What it does |
 |---|---|---|
-| 输入行 | 点击 `$ shell` / `✦ agent` | 切换模式 |
-| 输入行 | `Tab` | 路径补全（大小写不敏感比较，按真实拼写落地） |
-| 输入行 | `↑` | 历史命令列表 |
-| 输入行 | `→` | 采纳一格虚影提示 |
-| 输入行 | `Ctrl+C` / `Ctrl+Shift+V` | 中断 / 粘贴到终端 |
-| 终端 | 把目录拖进来 | 在这个终端里 `cd` 过去 |
-| 时间线 | 点任务块头部 | 折叠 / 展开 |
-| 时间线 | 右侧书签轨 | 跳到某一轮 AI 的工作 |
-| 侧边栏 | `管道` | 打开跨会话管道面板 |
-| 侧边栏 | 行上悬停 | `归档`；已归档行还有 `恢复` / `删除` |
-| 状态卡 | 点 `▾` | 展开细节 |
+| Input line | click `$ shell` / `✦ agent` | switch modes |
+| Input line | `Tab` | path completion (case-insensitive match, real spelling applied) |
+| Input line | `↑` | command history list |
+| Input line | `→` | take one word of the ghost hint |
+| Input line | `Ctrl+C` / `Ctrl+Shift+V` | interrupt / paste into the terminal |
+| Terminal | drag a directory in | `cd` the terminal there |
+| Timeline | click a task block's header | fold / unfold it |
+| Timeline | the right-edge bookmark rail | jump to an AI turn |
+| Sidebar | `管道` | open the cross-session pipe panel |
+| Sidebar | hover a row | `归档`; archived rows also `恢复` / `删除` |
+| Status card | click `▾` | expand the details |
 
 ---
 
-## 三个例子
+## Three examples
 
-### 例 1：本机改代码，构建机上跑构建
+### 1. Edit locally, build on a build host
 
-1. 设置里登记构建机；`新会话` → `运行位置: SSH 设备` → 选它 → 远端目录 `/srv/order-gateway`。
-2. 在本地会话里建一条到构建机会话的管道，标签「构建机」。
-3. 对本地会话说：**「把这次改动部署到构建机上验证」**。它会委派出去，构建机会话在自己的机器上
-   执行，结果回信后本地会话自动醒来汇报。整个过程你的终端前台不会被占用。
+1. Register the build host in Settings; `新会话` → `运行位置: SSH 设备` → pick it → remote directory
+   `/srv/order-gateway`.
+2. Create a pipe from your local session to that one, labelled "build host".
+3. Tell the local session: **"deploy this change to the build host and verify it."** It delegates, the
+   build-host session runs the work on its own machine, and the local session wakes up with the answer.
+   Your terminal's foreground is never occupied.
 
-### 例 2：两个会话互相评审（本文截图的场景）
+### 2. Two sessions review each other (the screenshots above)
 
-1. 建两个会话 `demo`（代码）和 `demo-peer`（发布说明），拉一条管道，标签「评审」。
-2. 在 `demo` 里说：**「把这个任务委派给 demo-peer：我这边 README.md 映射成 readme（只读），
-   让它读完后写一份评审意见回报。」**
-3. `demo` 确认管道在线 → `delegate` 发出（附带 `as=readme` 的只读授权）→ 本轮结束。
-4. `demo-peer` 被唤醒，用 `/readme` 读到文件，写下意见，`finish` 回报。
-5. `demo` 收到 `【管道回报】` 自动继续。你在管道详情页能看到工单、回报全文，以及结算后自动回收的授权。
+1. Create two sessions, `demo` (the code) and `demo-peer` (the release notes), and pipe them together
+   with the label "review".
+2. In `demo`, say: **"delegate this to demo-peer — map my README.md as `readme` (read-only), have it
+   read the file and report a review."**
+3. `demo` confirms the pipe, sends `delegate` (with a read-only grant named `readme`), and its turn ends.
+4. `demo-peer` wakes up, reads `/readme`, writes the review, and `finish`es the ticket.
+5. `demo` receives the `[pipe report]` and continues on its own. The pipe's detail page shows the
+   ticket, the full reply, and the grant that was reclaimed once it settled.
 
-这正是上面那两张截图发生的过程。
+This is exactly what produced the two screenshots above — the run is real, not staged.
 
-### 例 3：跨机器搬一个大文件
+### 3. Move a large file between machines
 
-1. 两端各一个会话（本机 + 设备），中间拉一条管道。
-2. 让持有文件那侧 `upload`，或让需要文件那侧 `download`，目标路径写在缓冲区里（例如 `/app/releases/v0.4.2.tar`）。
-3. 文件超过 32 MiB 会自动分块 + sha256 校验；状态卡的 `⇅ 缓冲区传输` 行显示进度，完成后两侧的
-   临时分片都会被清掉。
-
----
-
-## 边界与注意
-
-- **重启不保留 PTY 进程，但保留回滚缓冲。** 重启 dsh 会重新起一个 shell，之前的输出会从磁盘日志里
-  恢复出来（`$DSH_HOME/dshell-pty/`，权限 `0600`，目录 `0700`）。
-- **终端转录包含你键入的内容。** 日志既记录输出也记录输入，因此在交互式提示符里输入的密码等敏感内容
-  也会落进这份文件。它只在本机、权限是 owner-only，但请按「这里会被记下来」来使用。
-- **会话的工作目录不可变。** 终端可以随便 `cd`，但会话本身的根目录固定；换目录就 `/new`。
-- **删除会话是两步的。** `删除` 之后会话进入「待删除」，日志在**下次启动 dsh** 时才真正清除，
-  期间可以 `取消` 撤销。
-- **一个会话一个浏览器连接。** 同时开两个 ws 连同一个会话会被拒绝。
-- **归档 ≠ 删除。** 归档的会话仍在管道图里（它可能还是一条合法管道的一端），删除才会把它摘掉。
-- 管道面板靠轮询刷新（约 3 秒一次），没有推送通道；正在传输的文件会以 1 秒的节奏刷新状态卡。
+1. One session on each end (local and device), joined by a pipe.
+2. Have whichever side holds the file `upload` it, or have the side that needs it `download` it, to a
+   path in the buffer (say `/app/releases/v0.4.2.tar`).
+3. Anything above 32 MiB is chunked and sha256-verified automatically; the status card's
+   `⇅ 缓冲区传输` row tracks it, and both sides clean up their temporary slices when it is done.
 
 ---
 
-## 面向开发者的文档
+## Limits worth knowing
 
-| 文档 | 什么时候读 |
+- **A restart keeps the scrollback but not the PTY process.** Restarting dsh spawns a fresh shell;
+  earlier output is restored from the on-disk log (`$DSH_HOME/dshell-pty/`, files `0600` in a `0700`
+  directory).
+- **That transcript records what you type.** Both output and input are captured, so anything typed at
+  an interactive prompt — a password included — lands in the file. It stays on this machine with
+  owner-only permissions, but treat it as recorded.
+- **A session's working directory is immutable.** The terminal may `cd` freely; the session's own root
+  is fixed. A different directory means `/new`.
+- **Deleting a session takes two steps.** After `删除` it sits in `待删除`, and its log is cleared at
+  the **next dsh start**; `取消` reverses it until then.
+- **One browser connection per session.** A second websocket binding to the same session is refused.
+- **Archived is not deleted.** An archived session stays in the pipe graph (it can still be a valid
+  endpoint); only deletion removes it.
+- The pipe panel refreshes by polling (about every 3 seconds) — there is no push channel. In-flight
+  transfers refresh the status card once a second.
+
+---
+
+## Docs for developers
+
+| Doc | Read it when |
 |---|---|
-| [`docs/dshell-design.md`](docs/dshell-design.md) | 目标、非目标与十条设计决策（含为什么不是一个聊天窗口） |
-| [`docs/dshell-architecture.md`](docs/dshell-architecture.md) | 写代码前：ws 协议、Cordis 扩展点、包布局、CSS 约定 |
-| [`docs/dshell-packages.md`](docs/dshell-packages.md) | 查某个功能属于哪个插件 |
-| [`docs/dshell-roadmap.md`](docs/dshell-roadmap.md) | 阶段计划与每个阶段的验收标准 |
-| [`docs/dshell-setup.md`](docs/dshell-setup.md) | 搭环境、排错、构建顺序 |
-| [`docs/README.md`](docs/README.md) | 文档索引与更新规则 |
+| [`docs/dshell-design.md`](docs/dshell-design.md) | You want the goal, the non-goals and the ten design decisions (including why this is not a chat window) |
+| [`docs/dshell-architecture.md`](docs/dshell-architecture.md) | Before writing code: the ws protocol, the Cordis extension points, package layout, CSS conventions |
+| [`docs/dshell-packages.md`](docs/dshell-packages.md) | You need to know which plugin owns a feature |
+| [`docs/dshell-roadmap.md`](docs/dshell-roadmap.md) | The phase plan and each phase's acceptance check |
+| [`docs/dshell-setup.md`](docs/dshell-setup.md) | Setting up a machine, troubleshooting, build order |
+| [`docs/README.md`](docs/README.md) | The documentation index and its update rules |
 
-插件共 11 个包（`@nexus-aethra/dshell-*`）：`std`（契约）、`storage`（存储引擎）、`bundle`（唯一的
-patch 层）、`conversation`、`terminal-bridge`、`mode`、`commands`、`workspace`、`files`、`ssh`、`buffer`。
+Eleven packages (`@nexus-aethra/dshell-*`): `std` (contracts), `storage` (storage engines),
+`bundle` (the single patch layer), `conversation`, `terminal-bridge`, `mode`, `commands`, `workspace`,
+`files`, `ssh`, `buffer`.
 
-## 许可
+## License
 
-MIT，见 [`LICENSE`](LICENSE)。
+MIT, see [`LICENSE`](LICENSE).
