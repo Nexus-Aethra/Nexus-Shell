@@ -11,6 +11,7 @@ import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShellCompletion } from './completion.js'
+import type { CommandHints } from './command-hint.js'
 import { useDshellTheme } from './theme.js'
 import type { SessionMode } from './types.js'
 
@@ -19,6 +20,8 @@ const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 /** The completion seat, created once per browser face and shared with the list. */
 export interface DshellInputCompletion {
   readonly completion: ShellCompletion
+  /** The ghost's store and query, created once and shared with the ghost. */
+  readonly hints: CommandHints
 }
 
 export interface DshellInputStandardProps {
@@ -88,10 +91,22 @@ export function DshellLeftControls(props: {
   const sendShell = props.submitShell
   const clearDraft = props.inputActions?.setDraft
   const completion = props.completion
+  const hints = props.hints
   const completeOpen = useSyncExternalStore(
     completion.store.subscribe,
     () => completion.store.getSnapshot() !== null,
   )
+  // The legend names the ghost's key only while the ghost is actually drawn —
+  // not merely while a hint is in hand, since a caret parked mid-line hides it.
+  const hintVisible = useSyncExternalStore(hints.visible.subscribe, hints.visible.getSnapshot)
+  // The ghost follows the draft, wherever the draft came from. Driving it from
+  // an effect rather than from the keydown handler is what makes typing work:
+  // the handler runs before the composer has taken the character, so it can only
+  // ever offer the PREVIOUS line.
+  useEffect(() => {
+    if (mode !== 'shell' || props.sessionId === undefined) { hints.clear(); return }
+    hints.offer(String(props.sessionId), draft)
+  }, [mode, props.sessionId, draft, hints])
 
   useEffect(() => {
     if (pty === undefined || clearDraft === undefined) return
@@ -293,6 +308,22 @@ export function DshellLeftControls(props: {
         }).catch(() => { completion.store.set(null) })
         return true
       }
+      // The right arrow takes one word of the ghost hint — the gesture that makes
+      // a suggestion usable rather than decoration. It claims the key only when
+      // there IS a chunk to take, so the caret keeps its ordinary behaviour
+      // whenever the ghost is not showing one. (Ctrl+→ and Alt+→ never reach
+      // this handler — the full-mode guard refuses them — while Shift+→ is let
+      // through above as the selection it is.)
+      if (key === 'ArrowRight' && !event.shiftKey) {
+        const next = hints.accept(sessionId, draftRef.current)
+        if (next !== undefined) {
+          writeDraft(next)
+          // The list's offsets assume the caret sits at the end of the draft it
+          // was built for, and that draft has just moved on.
+          completion.store.set(null)
+          return true
+        }
+      }
       if (key !== 'Tab') {
         // Any other edit or caret move invalidates the list: its offsets assume
         // the caret sits at the end of the draft. The next Tab rebuilds it.
@@ -384,7 +415,12 @@ export function DshellLeftControls(props: {
           ? '有附件：Enter 发送给 AI · 附件已转对话'
           : completeOpen
             ? 'Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭'
-            : '直接输入 · Tab 补全 · ↑ 历史 · Ctrl+C 中断')
+            // The ghost is the one gesture with no visible affordance of its own,
+            // so the legend names its key while a hint is in hand — and only
+            // then, since → is an ordinary caret move the rest of the time.
+            : hintVisible
+              ? '→ 采纳一个词 · 继续 → 补完 · Tab 补全 · ↑ 历史'
+              : '直接输入 · Tab 补全 · ↑ 历史 · Ctrl+C 中断')
         : 'Enter 发送对话 · /agent 切终端'),
   )
 }
