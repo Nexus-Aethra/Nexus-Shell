@@ -27,6 +27,7 @@ import type {
   FsTarget, FsWriteIntent, FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
 import type { DeviceConnection } from './devices.js'
+import type { DshellSshTranslate } from './host-locales.js'
 import {
   applyLiteralEdit, detectLineEndings, normalizeLineEndings, restoreLineEndings,
 } from './literal-edit.js'
@@ -43,6 +44,8 @@ export interface RemoteFsDeps {
   readonly mapping: MountMapping
   /** Overwrite-diff basis limit, matching the local backend's knob. */
   readonly diffBasisMaxBytes: number
+  /** This package's bound host copy, for the Chinese-locale error text. */
+  readonly t: DshellSshTranslate
 }
 
 /** One finished remote command. */
@@ -115,7 +118,7 @@ export class RemoteFileSystem {
     const stdout = handle.collected.stdout?.readFrom(0)
     const stderr = handle.collected.stderr?.readFrom(0)
     if (outcome.exitCode === null) {
-      throw new FsError(`远端命令被信号中断（${String(outcome.signal ?? 'unknown')}）`, 'FS_ABORTED')
+      throw new FsError(this.deps.t('error.remoteSignal', { signal: String(outcome.signal ?? 'unknown') }), 'FS_ABORTED')
     }
     return {
       stdout: stdout?.text ?? '',
@@ -146,10 +149,10 @@ export class RemoteFileSystem {
     }
     const outcome = await handle.done
     if (outcome.exitCode === null) {
-      throw new FsError(`远端命令被信号中断（${String(outcome.signal ?? 'unknown')}）`, 'FS_ABORTED')
+      throw new FsError(this.deps.t('error.remoteSignal', { signal: String(outcome.signal ?? 'unknown') }), 'FS_ABORTED')
     }
     if (outcome.exitCode !== 0) {
-      throw classifyRemoteFailure({ stdout: '', stderr: '', exitCode: outcome.exitCode, truncated: false }, command)
+      throw classifyRemoteFailure({ stdout: '', stderr: '', exitCode: outcome.exitCode, truncated: false }, command, this.deps.t)
     }
     return Buffer.concat(chunks)
   }
@@ -162,7 +165,7 @@ export class RemoteFileSystem {
   ): Promise<RemoteRun> {
     const result = await this.run(command, options)
     if (result.exitCode === 0) return result
-    throw classifyRemoteFailure(result, displayPath)
+    throw classifyRemoteFailure(result, displayPath, this.deps.t)
   }
 
   /** `stat` one device path, following symlinks when asked. */
@@ -171,7 +174,7 @@ export class RemoteFileSystem {
     const result = await this.run(`LC_ALL=C stat ${flag} ${quote(STAT_FORMAT)} -- ${quote(remotePath)}`, { signal })
     if (result.exitCode !== 0) {
       if (isMissing(result)) return undefined
-      throw classifyRemoteFailure(result, remotePath)
+      throw classifyRemoteFailure(result, remotePath, this.deps.t)
     }
     const [kind, size, device, inode, mtime, ctime] = result.stdout.trimEnd().split('|')
     return {
@@ -241,7 +244,7 @@ export class RemoteFileSystem {
         throw new FsError(`cannot read "${displayPath}": not valid UTF-8 text`, 'FS_NOT_TEXT', { cause: error })
       }
       const outcome = await handle.done
-      if (outcome.exitCode !== 0) throw classifyRemoteFailure({ stdout: '', stderr: '', exitCode: outcome.exitCode ?? 1, truncated: false }, displayPath)
+      if (outcome.exitCode !== 0) throw classifyRemoteFailure({ stdout: '', stderr: '', exitCode: outcome.exitCode ?? 1, truncated: false }, displayPath, deps.t)
     }
     return Promise.resolve(generator())
   }
@@ -374,7 +377,7 @@ export class RemoteFileSystem {
       'mv -f -- "$t" "$1"',
     ].join(' && ')
     const result = await this.run(`sh -c ${quote(script)} sh ${quote(remote)}`, { signal, stdin: content })
-    if (result.exitCode !== 0) throw classifyRemoteFailure(result, remote)
+    if (result.exitCode !== 0) throw classifyRemoteFailure(result, remote, this.deps.t)
   }
 
   /**
@@ -418,8 +421,8 @@ function isMissing(result: RemoteRun): boolean {
 }
 
 /** Turn a failed remote command into the seam's error vocabulary. */
-function classifyRemoteFailure(result: RemoteRun, displayPath: string): FsError {
-  const message = result.stderr.trim() === '' ? `远端命令失败（退出码 ${String(result.exitCode)}）` : result.stderr.trim()
+function classifyRemoteFailure(result: RemoteRun, displayPath: string, t: DshellSshTranslate): FsError {
+  const message = result.stderr.trim() === '' ? t('error.remoteFailed', { code: result.exitCode }) : result.stderr.trim()
   const code = /Permission denied/i.test(message)
     ? 'FS_PERMISSION_DENIED'
     : /No such file or directory/i.test(message)

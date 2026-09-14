@@ -35,6 +35,7 @@ import type {} from '@deepseek-ai/dsh-shell'
 // authorized against the GRANTER's own mode instead of the fail-safe default.
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import { Feasibility, type DeviceRoutingSeat } from './feasibility.js'
+import type { DshellBufferHostTranslate } from './host-locales.js'
 import {
   sessionLabel, renderRequestNotice, renderSettlementNotice, requestSummary, settlementSummary,
 } from './notice.js'
@@ -177,7 +178,15 @@ export class BufferService {
   private watchdog: ReturnType<typeof setInterval> | undefined
   private disposed = false
 
-  constructor(private readonly ctx: Context) {
+  /**
+   * @param ctx - the plugin's context, inside the injection that guarantees
+   *   every service this one reads.
+   * @param t - this package's host copy, bound to the language the user's
+   *   screen is in. Read at call time by the notices and the refusals a panel
+   *   action can trigger, so a language switch reaches the next one without a
+   *   restart (see `index.ts`).
+   */
+  constructor(private readonly ctx: Context, private readonly t: DshellBufferHostTranslate) {
     const document = readDocument()
     this.links = [...document.links]
     this.tickets = [...document.tickets]
@@ -331,10 +340,10 @@ export class BufferService {
 
   /** Connect two sessions. Called by the pipe UI; no tool exposes this. */
   async createLink(a: string, b: string, label?: string): Promise<BufferLink> {
-    if (a === b) throw new Error('不能把会话连接到它自己')
+    if (a === b) throw new Error(this.t('error.linkSelf'))
     const existing = this.links.find(link =>
       (link.a === a && link.b === b) || (link.a === b && link.b === a))
-    if (existing !== undefined) throw new Error('这两个会话之间已经有管道了')
+    if (existing !== undefined) throw new Error(this.t('error.linkExists'))
     const link: BufferLink = {
       id: newId('link'),
       a, b,
@@ -349,7 +358,7 @@ export class BufferService {
   /** Remove a link. Outstanding tickets keep running; no new delegation may use it. */
   async removeLink(linkId: string): Promise<void> {
     const at = this.links.findIndex(link => link.id === linkId)
-    if (at < 0) throw new Error(`没有这个管道：${linkId}`)
+    if (at < 0) throw new Error(this.t('error.noLink', { id: linkId }))
     this.links.splice(at, 1)
     await this.save()
   }
@@ -496,8 +505,8 @@ export class BufferService {
 
     // Deliver LAST: a delivery failure must not lose the ticket, and the
     // requester needs the ticket id even if the target cannot be reached.
-    const text = renderRequestNotice(ticket, this.labelOf(callerId), held)
-    const delivered = await this.deliver(targetId, text, requestSummary(ticket, this.labelOf(callerId)))
+    const text = renderRequestNotice(this.t, ticket, this.labelOf(callerId), held)
+    const delivered = await this.deliver(targetId, text, requestSummary(this.t, ticket, this.labelOf(callerId)))
     if (!delivered.ok) {
       await this.settle(ticket, 'failed', undefined, `投递失败：${delivered.reason}`)
       throw new Error(delivered.reason)
@@ -676,7 +685,7 @@ export class BufferService {
    */
   async userListing(linkId: string, grantId?: string, relPath?: string): Promise<BufferListing> {
     const link = this.links.find(candidate => candidate.id === linkId)
-    if (link === undefined) throw new Error(`没有这个管道：${linkId}`)
+    if (link === undefined) throw new Error(this.t('error.noLink', { id: linkId }))
     const live = this.grants.filter(grant => grant.revokedAt === undefined
       && ((grant.from === link.a && grant.to === link.b) || (grant.from === link.b && grant.to === link.a)))
 
@@ -702,7 +711,7 @@ export class BufferService {
     }
 
     const grant = live.find(candidate => candidate.id === grantId)
-    if (grant === undefined) throw new Error('授权不属于这条管道，或已被回收')
+    if (grant === undefined) throw new Error(this.t('error.grantNotOnLink'))
     const access = await this.authorizeInGrant(
       grant, relPath === undefined || relPath.trim().length === 0 ? '.' : relPath.trim(), 'read',
     )
@@ -1091,6 +1100,23 @@ export class BufferService {
   }
 
   /**
+   * Join a relative request onto a canonical root, keeping the root's own
+   * separator style (the root may be a device path).
+   *
+   * An absolute request is a refusal, translated at the throw site because the
+   * panel's buffer browser reaches this through `authorizeInGrant` and the
+   * refusal's text is folded into what it renders.
+   */
+  private joinRelative(root: FsTarget, path: string): string {
+    const base = String(root.targetKey).replace(/[/\\]+$/u, '')
+    if (path.length === 0 || path === '.' || path === './') return base
+    if (path.startsWith('/') || /^[A-Za-z]:[/\\]/u.test(path)) {
+      throw new Error(this.t('error.absolutePath', { path }))
+    }
+    return `${base}/${path.replace(/^\.\//u, '')}`
+  }
+
+  /**
    * Resolve a request against a grant's areas.
    *
    * The area root and the requested path are both resolved **as the granter**,
@@ -1127,9 +1153,9 @@ export class BufferService {
     signal?: AbortSignal,
   ): Promise<{ granter: Agent; target: FsTarget; area: BufferArea }> {
     const areas = grant.areas.filter(area => area.rights.includes(right))
-    if (areas.length === 0) throw new Error(`这条缓冲路径不含「${right}」权限`)
+    if (areas.length === 0) throw new Error(this.t('error.grantMissingRight', { right }))
     const resolved = await this.ctx.sessionController.resolveAgent(SessionId(grant.from))
-    if ('error' in resolved) throw new Error(`授权方会话不可用：${resolved.error.code}`)
+    if ('error' in resolved) throw new Error(this.t('error.granterUnavailable', { code: resolved.error.code }))
     const granter = resolved.agent
     // Built conditionally: `exactOptionalPropertyTypes` treats an explicit
     // `undefined` as a value, and the resolution options are optional keys.
@@ -1143,18 +1169,24 @@ export class BufferService {
         )
         const fileTarget = await this.ctx.agents.withInitiator(
           granter,
-          () => this.ctx.fs.resolve(joinRelative(rootTarget, path), options),
+          () => this.ctx.fs.resolve(this.joinRelative(rootTarget, path), options),
         )
         if (!isUnder(String(rootTarget.targetKey), String(fileTarget.targetKey))) {
-          rejections.push(`${area.path}：越界`)
+          rejections.push(this.t('error.areaOutOfBounds', { path: area.path }))
           continue
         }
         return { granter, target: fileTarget, area }
       } catch (error) {
-        rejections.push(`${area.path}：${error instanceof Error ? error.message : String(error)}`)
+        rejections.push(this.t('error.areaRejected', {
+          path: area.path,
+          reason: error instanceof Error ? error.message : String(error),
+        }))
       }
     }
-    throw new Error(`这个位置不在受权的范围内（区域内路径 ${path}）：${rejections.join('；')}`)
+    throw new Error(this.t('error.outOfScope', {
+      path,
+      reasons: rejections.join(this.t('error.reasonSeparator')),
+    }))
   }
 
   // --------------------------------------------------------------- internals
@@ -1285,8 +1317,8 @@ export class BufferService {
 
   /** Deliver the settlement notice to the requester. */
   private async wake(ticket: BufferTicket): Promise<void> {
-    const text = renderSettlementNotice(ticket, this.labelOf(ticket.to))
-    await this.deliver(ticket.from, text, settlementSummary(ticket, this.labelOf(ticket.to)))
+    const text = renderSettlementNotice(this.t, ticket, this.labelOf(ticket.to))
+    await this.deliver(ticket.from, text, settlementSummary(this.t, ticket, this.labelOf(ticket.to)))
   }
 
   /**
@@ -1368,13 +1400,13 @@ export class BufferService {
 
   private requireGrant(grantId: string): BufferGrant {
     const grant = this.grants.find(candidate => candidate.id === grantId)
-    if (grant === undefined) throw new Error('这条缓冲路径已失效：对应的授权不存在')
+    if (grant === undefined) throw new Error(this.t('error.grantMissing'))
     return grant
   }
 
   private requireTicket(ticketId: string): BufferTicket {
     const ticket = this.tickets.find(candidate => candidate.id === ticketId)
-    if (ticket === undefined) throw new Error(`没有这个 ticket：${ticketId}`)
+    if (ticket === undefined) throw new Error(this.t('error.noTicket', { id: ticketId }))
     return ticket
   }
 
@@ -1460,15 +1492,3 @@ function quote(value: string): string {
   return `'${value.replace(/'/gu, "'\\''")}'`
 }
 
-/**
- * Join a relative request onto a canonical root, keeping the root's own
- * separator style (the root may be a device path).
- */
-function joinRelative(root: FsTarget, path: string): string {
-  const base = String(root.targetKey).replace(/[/\\]+$/u, '')
-  if (path.length === 0 || path === '.' || path === './') return base
-  if (path.startsWith('/') || /^[A-Za-z]:[/\\]/u.test(path)) {
-    throw new Error(`path 必须是相对于授权目录的路径，收到绝对路径：${path}`)
-  }
-  return `${base}/${path.replace(/^\.\//u, '')}`
-}

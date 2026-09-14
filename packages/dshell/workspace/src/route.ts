@@ -16,12 +16,22 @@
  */
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
+import type { HostCopyParams } from '@nexus-aethra/dshell-std'
 import { DSHELL_SESSIONS_PATH, type SessionRequest, type SessionResponse } from './protocol.js'
 import { purgeSessionArtifacts } from './purge.js'
 import type { SessionTagStore } from './tags.js'
+import type { DshellWorkspaceHostKey } from './host-locales.js'
 
 /** What the route needs from the plugin that owns it. */
 export interface SessionPanelDeps {
+  /**
+   * This package's host copy, bound to the language the browser reported.
+   *
+   * A refusal here is rendered verbatim by the sidebar, so it must be written
+   * in the language on screen: the host authors this text, the browser reads
+   * it. See `host-locales.ts`.
+   */
+  readonly t: (key: DshellWorkspaceHostKey, params?: HostCopyParams) => string
   /** The durable archive tag set. */
   readonly tags: SessionTagStore
   /** Whether a session is still loaded in this harness process. */
@@ -94,7 +104,7 @@ export function createSessionsRoute(deps: SessionPanelDeps): ConnectionFetchRout
       case 'delete': {
         const { sessionId } = input
         if (deps.running(sessionId)) {
-          return { ...await state(), error: '会话正在运行，等它结束后再删除' }
+          return { ...await state(), error: deps.t('error.running') }
         }
         // The pipes die with the session in both branches: a live one is
         // still resolvable until restart, so detaching first also stops it
@@ -116,7 +126,7 @@ export function createSessionsRoute(deps: SessionPanelDeps): ConnectionFetchRout
         return await state()
       }
       default:
-        return { ...await state(), error: '未知操作' }
+        return { ...await state(), error: deps.t('error.unknownAction') }
     }
   }
 

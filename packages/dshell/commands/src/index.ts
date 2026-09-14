@@ -21,11 +21,19 @@ import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
+import type { HostCopy } from '@nexus-aethra/dshell-std'
 import type { DshellTerminalBridge, TerminalCommandRecord } from '@nexus-aethra/dshell-terminal-bridge'
+import { hostCopy } from './host-locales.js'
 
 export const name = '@nexus-aethra/dshell-commands'
 
-export const inject = ['commands', 'tools', 'dshellTerminalBridge'] as const
+// `dshellHostCopy` is what the `/new` command's result lines are localized
+// through, and `sessionController` is what creates the session the command
+// reports on — both are accessors this module reads, so both have to be
+// declared here or the handler throws "cannot get property … without inject".
+export const inject = [
+  'commands', 'tools', 'dshellTerminalBridge', 'dshellHostCopy', 'sessionController',
+] as const
 
 /** Bytes one `dshell_terminal_output` call returns by default. */
 const DEFAULT_OUTPUT_SLICE_BYTES = 2 * 1024
@@ -69,6 +77,13 @@ function formatCommand(record: TerminalCommandRecord, includeOutput: boolean): s
 
 export function apply(ctx: Context): void {
   const bridge: DshellTerminalBridge = ctx.dshellTerminalBridge
+  // Structural read, as this repo reads dshell services whose accessor
+  // declaration lives with the PROVIDER (dshell-terminal-bridge): a consumer's tsc program
+  // does not include that package's source, and the `inject` list above is what
+  // guarantees the service is there. Bound once, read at call time, so a
+  // language switch reaches the next `/new` result without re-binding.
+  const copy = ctx.get('dshellHostCopy') as HostCopy
+  const t = copy.bind(hostCopy)
 
   ctx.commands.register({
     name: 'new',
@@ -77,9 +92,14 @@ export function apply(ctx: Context): void {
       try {
         const cwd = invocation.agent.session?.header?.cwd
         const created = await ctx.sessionController.create(cwd === undefined ? {} : { cwd })
-        return { kind: 'success', text: `新会话已创建:${String(created.sessionId)}` }
+        return { kind: 'success', text: t('command.new.created', { id: String(created.sessionId) }) }
       } catch (error) {
-        return { kind: 'error', text: `创建会话失败:${error instanceof Error ? error.message : String(error)}` }
+        return {
+          kind: 'error',
+          text: t('command.new.failed', {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        }
       }
     },
   })

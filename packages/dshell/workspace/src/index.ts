@@ -19,6 +19,8 @@
  */
 
 import { join } from 'node:path'
+import { hostCopy } from './host-locales.js'
+import type { HostCopy } from '@nexus-aethra/dshell-std'
 import { Service, type Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the agents service merge (ctx.agents).
 import type {} from '@deepseek-ai/dsh-agent'
@@ -78,7 +80,7 @@ export function apply(ctx: Context): void {
   // runs during composition, before a client can resume anything, which is
   // the only window where those log writers are guaranteed gone.
   void drainPendingPurges(tags)
-  ctx.inject(['sessions', 'agents', 'connection'], (panelCtx) => {
+  ctx.inject(['sessions', 'agents', 'connection', 'dshellHostCopy'], (panelCtx) => {
     // This package compiles its host and client halves in one program, so the
     // client contract's `Context.sessions` (ISessions) merges over the host
     // SessionStore declaration and hides `get`. The service really is the
@@ -87,7 +89,15 @@ export function apply(ctx: Context): void {
     const agents = panelCtx.agents as unknown as {
       get(id: SessionId): { status?: string } | undefined
     }
+    // Structural read, as this package already reads dshell-buffer's service:
+    // the Context accessor's declaration lives with the PROVIDER (dshell-terminal-bridge),
+    // and a consumer's tsc program does not include that package's source. The
+    // `inject` above is what guarantees the service is there.
+    const copy = panelCtx.get('dshellHostCopy') as HostCopy
     const route = createSessionsRoute({
+      // Bound once, and read at call time inside the route: a language switch
+      // reaches the next refusal without re-registering anything.
+      t: copy.bind(hostCopy),
       tags,
       // A session still in the host store has a live log writer: its
       // directory would be recreated by the next event, so its purge is

@@ -15,6 +15,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { HostCopy } from '@nexus-aethra/dshell-std'
 // Type-only: pulls the host agent service merge (ctx.agents.currentInitiator).
 import type {} from '@deepseek-ai/dsh-agent'
 // Type-only: pulls the host connection merge (ctx.connection.fetch).
@@ -25,6 +26,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import DshellFsPlugin from './fs-routing.js'
+import { hostCopy } from './host-locales.js'
 import { sshDeviceRoot } from './paths.js'
 import { createSshRoute } from './route.js'
 import { installShellRouting, SSH_ROUTING_SERVICE, SshRouter } from './router.js'
@@ -47,14 +49,22 @@ export function apply(ctx: Context): void {
   // of the stock backend — can resolve a call's session without this module
   // handing it anything directly.
   ctx.provide(SSH_ROUTING_SERVICE, router)
+  // Bind host copy as soon as its provider is up: this package's host methods
+  // compose user-visible refusals, and the translator resolves the language at
+  // call time, so a switch needs no re-binding.
+  ctx.inject(['dshellHostCopy'], (copyCtx) => {
+    const copy = copyCtx.get('dshellHostCopy') as HostCopy
+    router.bindCopy(copy.bind(hostCopy))
+  })
   // `ctx.fs` for device-bound sessions. The composition disables the stock
   // `fs-sandbox` row, because a service name has exactly one provider.
   ctx.plugin(DshellFsPlugin)
   // Routing waits for both services: the shell executor is what gets wrapped,
   // and the agent registry is how the wrapped call learns whose session it is.
-  ctx.inject(['shell', 'agents'], (routingCtx) => {
+  ctx.inject(['shell', 'agents', 'dshellHostCopy'], (routingCtx) => {
+    const copy = routingCtx.get('dshellHostCopy') as HostCopy
     routingCtx.effect(
-      () => installShellRouting(routingCtx, router),
+      () => installShellRouting(routingCtx, router, copy.bind(hostCopy)),
       'dshell-ssh: shell routing',
     )
   })
@@ -68,9 +78,10 @@ export function apply(ctx: Context): void {
   })
   // The connection test spawns `ssh` through the harness's own process
   // primitive, so that context needs the subprocess service injected.
-  ctx.inject(['connection', 'subprocess'], (connectionCtx) => {
+  ctx.inject(['connection', 'subprocess', 'dshellHostCopy'], (connectionCtx) => {
+    const copy = connectionCtx.get('dshellHostCopy') as HostCopy
     connectionCtx.effect(
-      () => connectionCtx.connection.fetch.register(createSshRoute({ router, ctx: connectionCtx })),
+      () => connectionCtx.connection.fetch.register(createSshRoute({ router, ctx: connectionCtx, t: copy.bind(hostCopy) })),
       'dshell-ssh: device route',
     )
   })

@@ -22,6 +22,7 @@
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import { DSHELL_PTY_PATH, type DshellPtyCommand, type DshellPtyRequest, type DshellPtyResponse } from '@nexus-aethra/dshell-std'
+import type { DshellTerminalBridgeHostTranslator } from './host-locales.js'
 import type { DshellTerminalBridge } from './index.js'
 
 // The wire contract lives in the shared standard layer and is re-exported here,
@@ -49,18 +50,24 @@ function respond(body: DshellPtyResponse, status = 200): Response {
 /**
  * Bind the history route to a bridge.
  * @param bridge - the service holding each session's command records.
+ * @param t - the bridge's host copy, bound to the language the browser
+ *   reported: the refusals below travel to the browser as `error`, so they
+ *   must read in the language on screen.
  * @returns the route the host's connection layer can register.
  */
-export function createPtyRoute(bridge: DshellTerminalBridge): ConnectionFetchRoute {
+export function createPtyRoute(
+  bridge: DshellTerminalBridge,
+  t: DshellTerminalBridgeHostTranslator,
+): ConnectionFetchRoute {
   return {
     path: DSHELL_PTY_PATH,
     methods: ['POST'],
     requestBody: 'buffered',
     fetch: async (request) => {
       try {
-        if (request.method === 'GET') return respond({ error: '这条路由只接受 POST' }, 400)
+        if (request.method === 'GET') return respond({ error: t('route.postOnly') }, 400)
         const input = await request.json() as DshellPtyRequest
-        if (input.action !== 'history') return respond({ error: '未知操作' }, 400)
+        if (input.action !== 'history') return respond({ error: t('route.unknownAction') }, 400)
         const limit = Math.max(1, Math.min(input.limit ?? MAX_HISTORY, MAX_HISTORY))
         const draft = input.draft ?? ''
         // A blank command is a tracked line that never assembled into one (the

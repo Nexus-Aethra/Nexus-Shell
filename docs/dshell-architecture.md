@@ -399,12 +399,42 @@ Three rules the retrofit established:
   `待删除`; dshell-ssh's settings-nav matcher already lists both languages
   (`['插件', 'Plugins']`).
 
-Host-face text stays out of scope, exactly as it is in dsh: dsh localizes its
-browser chrome only, and host strings — route errors, tool results, the pipe
-notices, the system-prompt sections — are not locale-aware. A host string a
-client renders verbatim therefore keeps whatever language the host wrote it in;
-localizing it would need a message-key protocol across the wire, not a
-dictionary.
+### Host-side copy
+
+A host half authors text a reader sees: route refusals, device errors, the SSH
+Test result, a spawn-failure reason, the `/new` result, and the pipe notices a
+delegated request carries. That text needs the same language as the screen, and
+the browser's choice is not visible to the host — dsh's `ctx.locale` is
+browser-side only. dshell therefore states the direction itself:
+
+- `dshell-terminal-bridge` provides **`ctx.dshellHostCopy`** (`std` declares the
+  shape — `locale()`, `bind(dicts)`) and registers **`POST
+  /api/dshell/locale`**; every browser face reports the locale it resolved on
+  boot and on every change.
+- `bind` resolves the language **at call time**, in order: the reported locale →
+  the durable `locale.preference` dsh's Language row writes → `zh`, the
+  source-of-truth language the dictionaries follow. A switch reaches the next
+  host-composed string with no restart and no re-binding.
+- Each package keeps its own host dictionaries in `src/host-locales.ts` — `zh`
+  as the key-set source of truth, `en` complete, the same `satisfies` discipline
+  the browser dictionaries use — and binds them once where the strings are
+  composed.
+
+The provider's placement is forced by the activation graph, not chosen for
+tidiness: `dshell-mode` owns the presentation surfaces, but it **waits** for this
+package's PTY service, so a provider mode owned would deadlock the profile —
+mode pending on the bridge, the bridge pending on mode. Every writer of host copy
+waiting for the bridge is what it was already doing.
+
+Consumers read the service structurally (`ctx.get('dshellHostCopy') as HostCopy`)
+rather than through the typed `Context` accessor: the accessor's declaration
+lives with the provider, and a consumer's tsc program does not include that
+package's source.
+
+Deliberately **outside** the host copy: **tool results and prompt sections**.
+Those are the agent's interface — written once and read by the model — and a
+per-language variant would make the model's data depend on the UI language. They
+stay single-language, exactly as dsh's own tool copy does.
 
 ## 11. Test layout
 

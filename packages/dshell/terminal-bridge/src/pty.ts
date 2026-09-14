@@ -35,6 +35,7 @@ import type {
   TerminalWaitReason,
 } from '@deepseek-ai/dsh-terminal'
 import type { TerminalBackendSpawnSpec } from '@deepseek-ai/dsh-terminal'
+import type { DshellTerminalBridgeHostTranslator } from './host-locales.js'
 
 /** Retention bounds for one raw session (mirrors dsh's own defaults). */
 const RETAINED_MAX_BYTES = 4 * 1024 * 1024
@@ -281,6 +282,7 @@ class LocalRawSession implements DshellPtySession {
     cwd: string | undefined,
     cols: number,
     rows: number,
+    private readonly t: DshellTerminalBridgeHostTranslator,
     plan: PtySpawnPlan = LOCAL_SHELL,
   ) {
     const [file, ...args] = plan.argv
@@ -316,12 +318,16 @@ class LocalRawSession implements DshellPtySession {
       const status = result.sessionStatus
       // "before its first prompt", not "during startup": this same failure is
       // what a respawn after a dropped connection produces, where nothing is
-      // starting up — it is the NEW shell that never got to a prompt.
+      // starting up — it is the NEW shell that never got to a prompt. The head
+      // is host copy the connection panel renders, so it comes from the bound
+      // translator; the exit label and ssh diagnostic inside it are data.
       const head = result.waitReason === 'session_exit'
-        ? `PTY shell exited before its first prompt${status.kind === 'exited' ? ` (${exitLabel(status)})` : ''}`
-        : 'PTY shell did not reach a prompt before the startup timeout'
+        ? this.t('spawn.exitBeforePrompt', {
+            exit: status.kind === 'exited' ? ` (${exitLabel(status)})` : '',
+          })
+        : this.t('spawn.startupTimeout')
       const detail = diagnosticTail(this.retained)
-      throw new Error(detail === undefined ? head : `${head}：${detail}`)
+      throw new Error(detail === undefined ? head : this.t('spawn.withDetail', { head, detail }))
     }
     this.motd = result.viewport
   }
@@ -515,6 +521,8 @@ export class DshellPtyBackend implements TerminalBackend {
   constructor(
     private readonly cols: number,
     private readonly rows: number,
+    /** Bound host translator for the spawn-failure copy a reader sees. */
+    private readonly t: DshellTerminalBridgeHostTranslator,
     /** Optional redirect: a session whose cwd is a device mount gets that device's shell. */
     private readonly planFor: PtySpawnPlanResolver | undefined = undefined,
     /**
@@ -547,6 +555,7 @@ export class DshellPtyBackend implements TerminalBackend {
       spec.cwd,
       this.cols,
       this.rows,
+      this.t,
       plan ?? LOCAL_SHELL,
     )
     this.sessions.set(spec.sessionId as TerminalSessionId, session)

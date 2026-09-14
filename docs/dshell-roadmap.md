@@ -2455,3 +2455,59 @@ the collapsed rail), composer chip and legend, block timeline, status card,
 settings cards (terminal palette names included), the pipe panel, the SSH device
 card, and the new-session dialog — plus a clean `pnpm typecheck` and full
 `pnpm build`.
+
+## Phase 10.18 — the host half follows the language too
+
+Phase 10.17 localized the browser faces, which left the other half: text the
+HOST authors and the reader still sees. A route refusal, an SSH device error, the
+Test result line, a spawn-failure reason in the terminal's connection panel, the
+`/new` result, and the pipe notices a delegated request carries were all still
+Chinese after switching to English — and they could not simply read the setting,
+because dsh's locale service is browser-side and the host never sees the language
+on screen.
+
+The direction is now stated by dshell itself. `dshell-terminal-bridge` provides
+`ctx.dshellHostCopy` and registers `POST /api/dshell/locale`; every browser face
+reports the locale it resolved on boot and on every change. `bind(dicts)` resolves
+the language at call time — reported locale, then the durable
+`locale.preference`, then `zh` — and each package keeps its own host dictionaries
+in `src/host-locales.ts` beside the browser ones (`zh` the key-set source of
+truth, `en` complete, the same compile-time discipline). 68 host keys across
+`ssh` (13), `buffer` (45), `terminal-bridge` (6), `commands` (2) and `workspace`
+(2).
+
+Three things the work turned up:
+
+- **The provider's home is decided by the activation graph.** It went into
+  `dshell-mode` first — the package that owns the presentation surfaces — and the
+  profile refused to boot: mode waits for the bridge's PTY service, and the
+  bridge had been given an `inject` on the copy service mode provided, so both
+  sat pending on each other (`dsh: 4 entries did not activate`, with dsh's own
+  `fs` chain stalled behind them, since a pending row never provides its
+  service). Moving the provider to `dshell-terminal-bridge` — the far end of a
+  dependency edge that already existed — removes the cycle: every writer of host
+  copy waits for the bridge, which is what it was already doing. Cordis has no
+  optional `inject`, so the direction has to be acyclic, not merely lazy.
+- **A consumer cannot use the typed accessor.** The `Context` augmentation lives
+  with the provider and a consumer's tsc program does not include that package's
+  source, so consumers read the service structurally
+  (`ctx.get('dshellHostCopy') as HostCopy`), the same way this repo already reads
+  `dshellBufferCore`.
+- **`/new` had been broken on `main`, and localizing its result is what exposed
+  it.** The command registered its handler but never declared `sessionController`
+  in `inject`, so every invocation died with `cannot get property
+  "sessionController" without inject` — after creating nothing, and reporting a
+  failure the user could not act on. Found by running the command to see the
+  localized line; fixed by declaring the inject (the same commit, since the
+  localized string is only observable once the command works).
+
+The boundary is unchanged where it matters: **tool results and prompt sections
+are not localized** — they are the agent's interface, and a per-language variant
+would make the model's data depend on the UI language.
+
+Verified against a live harness: route refusals in both languages
+(`未知操作` → `Unknown action`), the SSH Test result in both (`已连接 wpp@wpp（Linux
+7.0.0-31-generic） · 336ms` → `Connected wpp@wpp (Linux 7.0.0-31-generic) ·
+402ms`, host-key line included), and the framework-carried `/new` result
+(`New session created: session-a410b363-…`) — with the language switched back to
+Chinese afterwards.

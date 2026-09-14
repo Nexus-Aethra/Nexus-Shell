@@ -28,6 +28,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@nexus-aethra/dshell-std": "workspace:^",
     "@nexus-aethra/dshell-terminal-bridge": "workspace:^"
   },
   "peerDependencies": {

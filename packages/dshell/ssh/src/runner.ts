@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { DeviceConnection } from './devices.js'
+import type { DshellSshTranslate } from './host-locales.js'
 import { sshDeviceRoot, sshKnownHostsPath } from './paths.js'
 
 /** Linux's `sun_path` limit, and the room `ssh` needs for its own listener name. */
@@ -209,9 +210,10 @@ export function remoteShellLine(device: DeviceConnection, command: string, remot
  *
  * @param device - device to connect to.
  * @param remoteCwd - directory the shell starts in; empty means the login dir.
+ * @param t - this package's bound host copy, for the fallback message.
  * @returns argv for the local `ssh` process.
  */
-export function interactiveShellArgv(device: DeviceConnection, remoteCwd: string): string[] {
+export function interactiveShellArgv(device: DeviceConnection, remoteCwd: string, t: DshellSshTranslate): string[] {
   // A missing directory must not cost the user their terminal. Chaining with
   // `&&` would short-circuit `exec bash` and end the session on a typo, with
   // nothing on screen to explain it; the shell lands in the login directory
@@ -219,7 +221,7 @@ export function interactiveShellArgv(device: DeviceConnection, remoteCwd: string
   const root = remoteCwd.trim()
   const cd = root === ''
     ? ''
-    : `cd ${quote(root)} 2>/dev/null || echo ${quote(`dshell: 远端目录 ${root} 不存在，已回到登录目录`)} >&2; `
+    : `cd ${quote(root)} 2>/dev/null || echo ${quote(t('shell.missingRemoteDir', { root }))} >&2; `
   return [
     'ssh',
     ...baseOptions(device),

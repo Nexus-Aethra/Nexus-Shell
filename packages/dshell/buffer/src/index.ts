@@ -12,6 +12,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { HostCopy } from '@nexus-aethra/dshell-std'
+import { hostCopy } from './host-locales.js'
 import { renderBufferPrompt } from './prompt.js'
 import { createBufferRoute } from './route.js'
 import { BufferService } from './service.js'
@@ -53,8 +55,16 @@ export { BufferService } from './service.js'
 const PROMPT_ORDER = 1650
 
 export function apply(ctx: Context): void {
-  ctx.inject(['tools', 'systemPrompt', 'fs', 'sessionController', 'agents'], (bufferCtx) => {
-    const service = new BufferService(bufferCtx)
+  ctx.inject(['tools', 'systemPrompt', 'fs', 'sessionController', 'agents', 'dshellHostCopy'], (bufferCtx) => {
+    // Structural read, the same one this package already uses for its own
+    // `dshellBufferCore`: the Context accessor's declaration lives with the
+    // PROVIDER (dshell-terminal-bridge), and a consumer's tsc program does not include
+    // that package's source. The `inject` above is what guarantees it exists.
+    const copy = bufferCtx.get('dshellHostCopy') as HostCopy
+    // Bound once, read at call time by the notices and the route refusals, so
+    // a language switch reaches the next message without a restart.
+    const t = copy.bind(hostCopy)
+    const service = new BufferService(bufferCtx, t)
     // Published for the session-deletion path: deleting a session must also
     // settle its tickets, revoke its grants and drop its pipes, and the
     // workspace package owns that path.
@@ -80,7 +90,7 @@ export function apply(ctx: Context): void {
     // inside this injection rather than from a second `apply`-level inject.
     bufferCtx.inject(['connection'], (routeCtx) => {
       routeCtx.effect(
-        () => routeCtx.connection.fetch.register(createBufferRoute({ service, ctx: routeCtx })),
+        () => routeCtx.connection.fetch.register(createBufferRoute({ service, ctx: routeCtx, t })),
         'dshell-buffer: pipe route',
       )
     })
