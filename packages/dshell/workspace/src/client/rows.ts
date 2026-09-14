@@ -7,6 +7,9 @@
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { AgentPresetRow } from '@deepseek-ai/dsh-agent-presets/types'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: pulls this namespace's key set for TranslateNS<'dshellWorkspace'>.
+import type {} from './locales.js'
 
 /** One ordinary session as the sidebar renders it. */
 export interface SessionRow {
@@ -66,14 +69,15 @@ export interface PresetChoice {
  * from — a broken composition is dropped here, not deferred to a failed
  * session start.
  * @param rows - roster rows as the host reported them.
+ * @param t - this package's bound translate, so the default suffix follows the active language.
  * @returns the selectable presets, in roster order.
  */
-export function presetChoices(rows: readonly AgentPresetRow[]): PresetChoice[] {
+export function presetChoices(rows: readonly AgentPresetRow[], t: TranslateNS<'dshellWorkspace'>): PresetChoice[] {
   return rows
     .filter(row => row.broken === undefined)
     .map(row => ({
       id: row.id,
-      label: row.isDefault ? `${row.name ?? row.id}（默认）` : row.name ?? row.id,
+      label: row.isDefault ? t('preset.default', { name: row.name ?? row.id }) : row.name ?? row.id,
       ...(row.description === undefined ? {} : { description: row.description }),
     }))
 }

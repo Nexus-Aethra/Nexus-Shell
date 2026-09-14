@@ -8,7 +8,8 @@ happened. No chat bubbles.
 
 ![dshell, the main view](docs/images/main-view.png)
 
-> The screenshots show the Chinese interface — dshell currently ships Chinese text only.
+> The screenshots show the Chinese interface. dshell follows dsh's own language setting
+> (**Settings → General → Language**), so every dshell surface is available in English too.
 
 dshell is a set of plugins for **dsh** (DeepSeek Harness). It does not modify dsh's source: it plugs
 into dsh's documented extension points, so dsh stays upgradeable with upstream.

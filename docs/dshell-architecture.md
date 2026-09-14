@@ -351,19 +351,60 @@ mapped in xterm's ITheme on mount.
 
 ## 10. Localization
 
-Every user-visible string is locale-owned. dshell registers a single
-locale namespace per dsh convention:
+Every user-visible string in a browser face is locale-owned. dshell uses dsh's
+own mechanism — `ctx.locale` from `@deepseek-ai/dsh-client-locale` — rather than
+inventing one, so the Language row dsh already ships (**设置 → 通用设置 → 语言**)
+drives dshell's surfaces too.
 
-```
-'@nexus-aethra/dshell/locale/<package-name>'
-```
+One namespace per package, named after the package's camel-cased id:
 
-Three namespaces for now:
+| Package | Namespace | Keys |
+|---|---|---|
+| `mode` | `dshellMode` | 161 |
+| `workspace` | `dshellWorkspace` | 62 |
+| `buffer` | `dshellBuffer` | 58 |
+| `files` | `dshellFiles` | 25 |
+| `ssh` | `dshellSsh` | 25 |
+| `terminal-bridge` | `dshellTerminalBridge` | 1 |
 
-- `dshell-conversation` — terminal title, mode toggle labels.
-- `dshell-mode` — `/agent`, `/shell`, `/new`, `/compact`
-  command descriptions and input hints.
-- `dshell-terminal-bridge` — connection status badge strings.
+The shape, per package:
+
+- `src/client/locales.ts` merges the namespace into `LocaleNamespaceMap` (from
+  `@deepseek-ai/dsh-client-ui-slots`) and exports `zh` (`satisfies
+  Record<string, string>` — the key set's **source of truth**), the key union
+  derived from it, and `en` as `satisfies Record<Key, string>`. A missing or
+  extra English key is a compile error, and registration requires both locales.
+- The client `apply` adds `'locale'` to `inject`, registers the dictionaries in
+  `ctx.effect(() => ctx.locale.register(NS, { zh, en }), …)`, and declares
+  `locale: NS` on every `ctx.slots.register({ … })` — that field is what makes
+  the renderer synthesize the `t` seat into the component's props.
+- Sites outside a slot — services, `label: () => …` callbacks, injected faces —
+  bind `ctx.locale.bind(NS)` and hold the result (`private readonly t`).
+- Lookups resolve **at call time**, so a language switch re-renders live: no
+  reload, no re-registration.
+
+Three rules the retrofit established:
+
+- **No copy in module scope.** A `const LABELS = { … }` built at import cannot
+  see a `t` bound later in `apply`. Such a table becomes an identifier→key map
+  resolved at render (`TICKET_STATE_KEY[ticket.state]`) or a factory that takes
+  `t` (`makeRightsLabel(t)`).
+- **A slot registration must pass the component, not a call to it.**
+  `register({ … }, () => Card(props))` discards the injected props, `t`
+  included; declare the extra face as `inject: () => ({ … })` and pass `Card`.
+- **Never translate a value the code also matches on.** Two surfaces find
+  elements by rendered text. The compact rail marks the sidebar's section
+  headings through `data-dshell-row="archive-header"` / `"pending-header"` plus a
+  structural walk for the main header, which is locale-proof and finally covers
+  `待删除`; dshell-ssh's settings-nav matcher already lists both languages
+  (`['插件', 'Plugins']`).
+
+Host-face text stays out of scope, exactly as it is in dsh: dsh localizes its
+browser chrome only, and host strings — route errors, tool results, the pipe
+notices, the system-prompt sections — are not locale-aware. A host string a
+client renders verbatim therefore keeps whatever language the host wrote it in;
+localizing it would need a message-key protocol across the wire, not a
+dictionary.
 
 ## 11. Test layout
 

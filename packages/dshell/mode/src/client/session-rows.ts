@@ -3,7 +3,12 @@
  * plus the ANSI text renderer the canvas draws them with.
  */
 
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionEventLike } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { DshellModeKey } from './locales.js'
+
+/** The bound translator of this package's namespace. */
+type ModeTranslate = TranslateNS<'dshellMode'>
 
 export type SessionRowRole = 'user' | 'assistant' | 'reasoning' | 'call' | 'tool' | 'command'
 
@@ -100,12 +105,12 @@ export function reasoningOfBlocks(content: readonly unknown[] | undefined): stri
 }
 
 /** Extract the model's tool invocations from one assistant message. */
-export function toolCallsOfBlocks(content: readonly unknown[] | undefined): readonly { id: string; name: string; args: string }[] {
+export function toolCallsOfBlocks(content: readonly unknown[] | undefined, t: ModeTranslate): readonly { id: string; name: string; args: string }[] {
   return contentBlocks(content)
     .filter(block => block.type === 'tool-call')
     .map(block => ({
       id: String(block.id ?? ''),
-      name: String(block.name ?? '工具'),
+      name: String(block.name ?? t('row.tool')),
       args: typeof block.arguments === 'string' ? block.arguments : '',
     }))
 }
@@ -177,9 +182,10 @@ export function rowOf(
  * @param event - the durable event.
  * @param toolNames - call-id → tool-name directory, populated by assistant
  *   messages and read by their results (which carry only the call id).
+ * @param t - the bound translator, for the row-label fallbacks.
  * @returns the rows, in display order.
  */
-export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, string>): readonly SessionRow[] {
+export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, string>, t: ModeTranslate): readonly SessionRow[] {
   if (event.type === 'user/message') {
     // Plugin-sourced user messages (host-side terminal context, guard
     // notices) are model input, not the user's words — keeping them out
@@ -198,11 +204,11 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     const content = event.data.message.content
     const rows: SessionRow[] = []
     const base = `${event.type}:${event.seq}`
-    const reasoning = rowOf('reasoning', `${base}:r`, reasoningOfBlocks(content), event.time, { label: '思考' })
+    const reasoning = rowOf('reasoning', `${base}:r`, reasoningOfBlocks(content), event.time, { label: t('row.reasoning') })
     if (reasoning !== null) rows.push(reasoning)
     const answer = rowOf('assistant', `${base}:t`, textOfBlocks(content), event.time, { images: imagesOf(content) })
     if (answer !== null) rows.push(answer)
-    toolCallsOfBlocks(content).forEach((call, index) => {
+    toolCallsOfBlocks(content, t).forEach((call, index) => {
       toolNames.set(call.id, call.name)
       const preview = compactArguments(call.args)
       const row = rowOf('call', `${base}:c${String(index)}`, preview, event.time, {
@@ -216,7 +222,7 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
   }
   if (event.type === 'tool/result') {
     const callId = event.data.message.source.callId
-    const name = toolNames.get(callId) ?? event.data.error?.name ?? '工具'
+    const name = toolNames.get(callId) ?? event.data.error?.name ?? t('row.tool')
     const body = resultText(event.data.message.content)
     const failed = event.data.error !== undefined
     const images = imagesOf(event.data.message.content)
@@ -228,8 +234,10 @@ export function sessionRowsOf(event: SessionEventLike, toolNames: Map<string, st
     return row === null ? [] : [row]
   }
   if (event.type === 'command/done') {
-    const outcome = event.data.kind === 'error' ? `失败:${event.data.text ?? ''}` : (event.data.text ?? '')
-    const row = rowOf('command', `${event.type}:${event.seq}`, outcome.trim().length === 0 ? '完成' : outcome, event.time)
+    const outcome = event.data.kind === 'error'
+      ? t('row.command.failed', { text: event.data.text ?? '' })
+      : (event.data.text ?? '')
+    const row = rowOf('command', `${event.type}:${event.seq}`, outcome.trim().length === 0 ? t('row.command.done') : outcome, event.time)
     return row === null ? [] : [row]
   }
   if (event.type === 'command/run') {
@@ -271,13 +279,14 @@ export const GUTTER_COLOR: Record<GutterStyle, string> = {
   failed: '#cc0000', // aborted or failed block
 }
 
-export const SESSION_ROW_LABEL: Record<SessionRowRole, string> = {
-  user: '你',
-  assistant: 'AI',
-  reasoning: '思考过程',
-  call: '调用',
-  tool: '工具',
-  command: '⚡ 命令',
+/** Row role → dictionary key; the role identifiers stay wire/log values. */
+export const SESSION_ROW_KEY: Record<SessionRowRole, DshellModeKey> = {
+  user: 'row.user',
+  assistant: 'row.assistant',
+  reasoning: 'row.reasoning',
+  call: 'row.call',
+  tool: 'row.tool',
+  command: 'row.command',
 }
 
 /** Columns the block's rule owns; text never reaches into them. */
@@ -416,9 +425,10 @@ export function endsAtLineStart(text: string): boolean | undefined {
  * @param row - the row to draw.
  * @param collapsed - whether the body is hidden.
  * @param cols - current terminal width in cells.
+ * @param t - the bound translator for the label and fold hints.
  * @returns the ANSI text for the row (header plus body, newline-terminated).
  */
-export function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number, hints = true): string {
+export function renderSessionRow(row: SessionRow, collapsed: boolean, cols: number, t: ModeTranslate, hints = true): string {
   const width = Math.max(16, cols - GUTTER_COLUMNS)
   const color = SESSION_ROW_COLOR[row.role]
   const reset = '\u001b[0m'
@@ -429,13 +439,13 @@ export function renderSessionRow(row: SessionRow, collapsed: boolean, cols: numb
   // first line is a whole paragraph.
   const summary = collapsed && first.length > 160 ? `${first.slice(0, 157)}…` : first
   const rest = lines.slice(1)
-  const folded = rest.length > 0 ? `+${String(rest.length)} 行 ▸ 点击展开` : '点击展开'
+  const folded = rest.length > 0 ? t('row.expandMore', { count: rest.length }) : t('row.expand')
   const hint = !hints || !row.collapsible
     ? ''
     : collapsed
       ? ` ${dim}[${folded}]${reset}`
-      : ` ${dim}[▾ 点击收起]${reset}`
-  const label = row.label === undefined ? SESSION_ROW_LABEL[row.role] : sanitizeRowText(row.label)
+      : ` ${dim}[${t('row.collapse')}]${reset}`
+  const label = row.label === undefined ? t(SESSION_ROW_KEY[row.role]) : sanitizeRowText(row.label)
   // The gutter column stays blank in the text; paintGutter() draws the block's
   // rule over it as a continuous CSS band.
   let out = wrapBlockLine(`${color}${label}${reset} ${summary}${hint}`, width)

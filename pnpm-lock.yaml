@@ -87,6 +87,9 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: link:../../../dsh/packages/client/connection
         version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-locale':
+        specifier: link:../../../dsh/packages/client/locale
+        version: link:../../../dsh/packages/client/locale
       '@deepseek-ai/dsh-client-ui-layout':
         specifier: link:../../../dsh/packages/client/ui-layout
         version: link:../../../dsh/packages/client/ui-layout
@@ -96,6 +99,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: link:../../../dsh/packages/client/ui-renderer
         version: link:../../../dsh/packages/client/ui-renderer
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
       '@deepseek-ai/dsh-fs':
         specifier: link:../../../dsh/packages/fs/fs
         version: link:../../../dsh/packages/fs/fs
@@ -361,6 +367,9 @@ importers:
       '@deepseek-ai/dsh-api-session-controller':
         specifier: link:../../../dsh/packages/api/session-controller
         version: link:../../../dsh/packages/api/session-controller
+      '@deepseek-ai/dsh-client-locale':
+        specifier: link:../../../dsh/packages/client/locale
+        version: link:../../../dsh/packages/client/locale
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
@@ -446,6 +455,9 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: link:../../../dsh/packages/client/connection
         version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-locale':
+        specifier: link:../../../dsh/packages/client/locale
+        version: link:../../../dsh/packages/client/locale
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
@@ -458,6 +470,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-settings-plugins':
         specifier: link:../../../dsh/packages/client/ui-settings-plugins
         version: link:../../../dsh/packages/client/ui-settings-plugins
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
       '@deepseek-ai/dsh-fs':
         specifier: link:../../../dsh/packages/fs/fs
         version: link:../../../dsh/packages/fs/fs
@@ -544,9 +559,15 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: link:../../../dsh/packages/client/connection
         version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-locale':
+        specifier: link:../../../dsh/packages/client/locale
+        version: link:../../../dsh/packages/client/locale
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
       '@deepseek-ai/dsh-host-webserver':
         specifier: link:../../../dsh/packages/host/webserver
         version: link:../../../dsh/packages/host/webserver
@@ -611,6 +632,9 @@ importers:
       '@deepseek-ai/dsh-client-connection':
         specifier: link:../../../dsh/packages/client/connection
         version: link:../../../dsh/packages/client/connection
+      '@deepseek-ai/dsh-client-locale':
+        specifier: link:../../../dsh/packages/client/locale
+        version: link:../../../dsh/packages/client/locale
       '@deepseek-ai/dsh-client-store':
         specifier: link:../../../dsh/packages/client/store
         version: link:../../../dsh/packages/client/store
@@ -623,6 +647,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-sidebar':
         specifier: link:../../../dsh/packages/client/ui-sidebar
         version: link:../../../dsh/packages/client/ui-sidebar
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: link:../../../dsh/packages/client/ui-slots
+        version: link:../../../dsh/packages/client/ui-slots
       '@deepseek-ai/dsh-client-ui-workspace':
         specifier: link:../../../dsh/packages/client/ui-workspace
         version: link:../../../dsh/packages/client/ui-workspace

@@ -21,6 +21,7 @@
  */
 
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TurnBlock } from './blocks.js'
 import { agentItemOf } from './block-model.js'
 import { useDshellTheme, type Theme } from './theme.js'
@@ -69,7 +70,7 @@ export interface Bookmark {
  * no card and no jump anchor, and collapsed no-op turns draw nothing at
  * all — a bookmark for either would read as an empty conversation.
  */
-export function bookmarksOf(blocks: readonly TurnBlock[]): readonly Bookmark[] {
+export function bookmarksOf(blocks: readonly TurnBlock[], t: TranslateNS<'dshellMode'>): readonly Bookmark[] {
   const out: Bookmark[] = []
   for (const block of blocks) {
     const item = agentItemOf(block)
@@ -78,7 +79,7 @@ export function bookmarksOf(blocks: readonly TurnBlock[]): readonly Bookmark[] {
     const raw = asked?.text ?? block.title
     const line = sanitizeRowText(raw).split('\n').map(part => part.trim()).find(part => part.length > 0) ?? ''
     const label = line.length > LABEL_MAX ? `${line.slice(0, LABEL_MAX - 1)}…` : line
-    out.push({ key: block.key, label: label.length > 0 ? label : '(空消息)', status: block.status })
+    out.push({ key: block.key, label: label.length > 0 ? label : t('bookmark.empty'), status: block.status })
   }
   return out
 }

@@ -29,7 +29,9 @@
 
 import { createElement, useSyncExternalStore, useState, type CSSProperties, type ReactElement } from 'react'
 import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DshellShellHelper } from '../settings.js'
+import type { DshellModeKey } from './locales.js'
 import { THEMES, setTheme, themeStore } from './theme.js'
 import { setShellHelper, useShellHelpers } from './shell-settings.js'
 
@@ -136,25 +138,25 @@ const helperDetailStyle: CSSProperties = {
 /**
  * The switches, in the order the card shows them.
  *
- * The labels live here rather than in the shared settings vocabulary because
- * they are the card's own copy — the Host stores three booleans and never reads
- * a word of this.
+ * The labels are dictionary keys resolved against the bound translator at
+ * render, so the copy follows a language switch; the Host stores three booleans
+ * and never reads a word of this.
  */
-const HELPER_ROWS: readonly { field: DshellShellHelper; label: string; detail: string }[] = [
+const HELPER_ROWS: readonly { field: DshellShellHelper; labelKey: DshellModeKey; detailKey: DshellModeKey }[] = [
   {
     field: 'tabCompletion',
-    label: 'Tab 补全',
-    detail: 'Tab 列出路径候选，大小写不敏感；唯一候选直接补全并纠正大小写',
+    labelKey: 'settings.helper.tabCompletion.label',
+    detailKey: 'settings.helper.tabCompletion.detail',
   },
   {
     field: 'historyList',
-    label: '历史列表',
-    detail: '↑ 打开本会话的历史命令，↑↓ 选择、Enter 填入',
+    labelKey: 'settings.helper.historyList.label',
+    detailKey: 'settings.helper.historyList.detail',
   },
   {
     field: 'commandHint',
-    label: '智能提示',
-    detail: '按最近命令在光标后显示虚影，→ 逐词采纳',
+    labelKey: 'settings.helper.commandHint.label',
+    detailKey: 'settings.helper.commandHint.detail',
   },
 ]
 
@@ -189,19 +191,23 @@ function Chevron({ open }: { open: boolean }): ReactElement {
 
 /**
  * Render the dshell settings card.
+ * @param props - the framework-injected `t` seat for this namespace.
  * @returns the card element.
  */
-export function DshellSettingsCard(): ReactElement {
+export function DshellSettingsCard({ t }: PropsLocale<'dshellMode'>): ReactElement {
   const [open, setOpen] = useState(false)
   const current = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
   const helpers = useShellHelpers()
   // The header says what the card is set TO, so the two groups are readable
   // without opening it: the palette by name, the assists by how many are off.
   const off = HELPER_ROWS.filter(row => !helpers[row.field])
-  const themeLabel = THEMES.find(theme => theme.id === current)?.label ?? current
+  const currentTheme = THEMES.find(theme => theme.id === current)
+  const themeLabel = currentTheme === undefined ? current : t(currentTheme.labelKey)
   const helperSummary = off.length === 0
-    ? '全部开启'
-    : `已关闭 ${off.map(row => row.label).join('、')}`
+    ? t('settings.helpers.allOn')
+    : t('settings.helpers.off', {
+      list: off.map(row => t(row.labelKey)).join(t('settings.helpers.joiner')),
+    })
   return createElement('li', {
     style: open ? { ...cardStyle, ...openCardStyle } : cardStyle,
     'data-dshell-card': 'settings',
@@ -215,15 +221,15 @@ export function DshellSettingsCard(): ReactElement {
       createElement('span', { style: headTextStyle },
         createElement('span', {
           style: { fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-primary)' },
-        }, '终端与输入辅助'),
+        }, t('settings.title')),
         createElement('span', { style: descStyle },
-          `配色：${themeLabel} · 输入辅助：${helperSummary}`),
+          t('settings.summary', { theme: themeLabel, helpers: helperSummary })),
       ),
       createElement(Chevron, { open }),
     ),
     open
       ? createElement('div', { style: bodyStyle },
-        createElement('div', { style: groupStyle }, '终端配色'),
+        createElement('div', { style: groupStyle }, t('settings.group.theme')),
         THEMES.map(theme => createElement('button', {
           key: theme.id,
           type: 'button',
@@ -257,28 +263,28 @@ export function DshellSettingsCard(): ReactElement {
               border: `1px solid ${theme.borderStrong}`,
             },
           }),
-          theme.label,
+          t(theme.labelKey),
         )),
         createElement('div', { style: noteStyle },
-          '主终端（画布、块视图与命令行）的调色板 · 选择立即生效，并保存到主机设置（同一主机所有浏览器共用）。'),
-        createElement('div', { style: groupStyle }, '输入辅助'),
+          t('settings.note.theme')),
+        createElement('div', { style: groupStyle }, t('settings.group.helpers')),
         HELPER_ROWS.map(row => createElement('div', {
           key: row.field,
           style: helperRowStyle,
           'data-dshell-helper': row.field,
         },
           createElement('div', { style: helperTextStyle },
-            createElement('div', { style: helperLabelStyle }, row.label),
-            createElement('div', { style: helperDetailStyle }, row.detail),
+            createElement('div', { style: helperLabelStyle }, t(row.labelKey)),
+            createElement('div', { style: helperDetailStyle }, t(row.detailKey)),
           ),
           createElement(Switch, {
             checked: helpers[row.field],
             onChange: (next: boolean) => { setShellHelper(row.field, next) },
-            label: row.label,
+            label: t(row.labelKey),
           }),
         )),
         createElement('div', { style: noteStyle },
-          '关闭后对应按键回到浏览器的默认行为（Tab 移动焦点、↑ 移动光标、→ 移动光标）· 设置保存在主机，同一主机所有浏览器共用。'),
+          t('settings.note.helpers')),
       )
       : null,
   )

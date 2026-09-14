@@ -24,6 +24,7 @@ import type {
 import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { PropsLocale, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { clearStream, createFold, foldEvent, noteLiveChunk, type BlockFold } from './blocks.js'
 import { AgentBlock, UserBubble } from './agent-block.js'
 import { assembleTimeline, type ViewItem } from './block-model.js'
@@ -98,7 +99,7 @@ function textOfContent(content: readonly unknown[] | undefined): string {
  * replayed entry a no-op).
  * @returns whether the call changed anything visible.
  */
-function advance(state: FoldState, entry: SessionEventLikeEntry): boolean {
+function advance(state: FoldState, entry: SessionEventLikeEntry, t: TranslateNS<'dshellMode'>): boolean {
   if (entry.type === 'transient') return noteLiveChunk(state.fold.open, entry.event)
   if (entry.event.seq <= state.watermark) return false
   state.watermark = entry.event.seq
@@ -136,7 +137,7 @@ function advance(state: FoldState, entry: SessionEventLikeEntry): boolean {
       state.inbox.delete(rpcId)
     }
   }
-  foldEvent(state.fold, event)
+  foldEvent(state.fold, event, t)
   return true
 }
 
@@ -183,7 +184,8 @@ export function BlockView(props: {
   ssh?: SshSeat | undefined
   /** The cross-session pipe's face; absent in a composition without it. */
   pipe?: PipeSeat | undefined
-}): ReactElement {
+} & PropsLocale<'dshellMode'>): ReactElement {
+  const { t } = props
   const theme = useDshellTheme()
   const seat = useRef<HTMLDivElement | null>(null)
   const probe = useRef<HTMLSpanElement | null>(null)
@@ -260,7 +262,7 @@ export function BlockView(props: {
       state.fold = createFold()
       state.watermark = 0
       state.todos = []
-      for (const entry of entries) advance(state, entry)
+      for (const entry of entries) advance(state, entry, t)
       foldRef.current = state
       repaint()
     }
@@ -276,11 +278,11 @@ export function BlockView(props: {
         // that supersedes it arrives with this very change (never as an
         // append), so it has to be folded here or the answer is lost.
         let changed = clearStream(state.fold.open)
-        if (window.change.entry !== undefined) changed = advance(state, window.change.entry) || changed
+        if (window.change.entry !== undefined) changed = advance(state, window.change.entry, t) || changed
         if (changed) repaint()
         return
       }
-      for (const entry of window.change.entries) advance(state, entry)
+      for (const entry of window.change.entries) advance(state, entry, t)
       repaint()
     }
     const tryBind = (): boolean => {
@@ -445,9 +447,9 @@ export function BlockView(props: {
   const bookmarks = useMemo(() => {
     const state = foldRef.current
     return id !== undefined && state !== undefined && state.sessionId === id
-      ? bookmarksOf(state.fold.blocks)
+      ? bookmarksOf(state.fold.blocks, t)
       : []
-  }, [version, id])
+  }, [version, id, t])
   // A jump unsticks the tail-pin so a fresh turn does not drag the reader
   // back to the bottom while they are still reading an earlier block.
   const handleJump = useCallback((): void => { pinned.current = false }, [])
@@ -515,6 +517,7 @@ export function BlockView(props: {
       sessionId: id,
       sessions: props.sessions,
       pipe: props.pipe,
+      t,
     })),
     createElement('div', {
       ref: scroll,
@@ -563,8 +566,8 @@ export function BlockView(props: {
               },
             }, `▸ ${item.text}`)
             : item.kind === 'pending'
-            ? createElement(UserBubble, { key: item.key, text: item.text, loadImage: props.loadImage, theme })
-            : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage })
+            ? createElement(UserBubble, { key: item.key, text: item.text, loadImage: props.loadImage, theme, t })
+            : createElement(AgentBlock, { key: item.key, block: item.block, theme, loadImage: props.loadImage, t })
         return [...divider, node]
       }),
       // The connection marker closes the output, where the shell stopped. It
@@ -583,6 +586,7 @@ export function BlockView(props: {
           sessionKey: id,
           onRetry: retry,
           ...openSettings === undefined ? {} : { onSettings: openSettings },
+          t,
         })
         : null,
     ),
@@ -602,6 +606,7 @@ export function BlockView(props: {
         sessionKey: id,
         onRetry: retry,
         ...openSettings === undefined ? {} : { onSettings: openSettings },
+        t,
       })
       : null,
     // The right-edge bookmark rail sits on top of the column at zIndex 2 —

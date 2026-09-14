@@ -7,12 +7,17 @@
  */
 
 import { createElement, useEffect, useMemo, useState, type ReactElement } from 'react'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TurnBlock } from './blocks.js'
-import { SESSION_ROW_LABEL, sanitizeRowText, type SessionRow } from './session-rows.js'
+import { SESSION_ROW_KEY, sanitizeRowText, type SessionRow } from './session-rows.js'
 import { SPAN_FONT, SPAN_FONT_SIZE } from './block-terminal.js'
 import { renderMarkdown } from './markdown.js'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { DshellModeKey } from './locales.js'
 import type { Theme } from './theme.js'
+
+/** The bound translator of this package's namespace. */
+type ModeTranslate = TranslateNS<'dshellMode'>
 
 /** A foldable row: one hover target, so the whole line reads as the control. */
 const FOLD_STYLE = { margin: '0 -6px', padding: '1px 6px', borderRadius: '6px', cursor: 'pointer' } as const
@@ -103,26 +108,27 @@ type Step =
   | { kind: 'group'; key: string; label: string; items: ToolStepModel[] }
 
 /** Tool names the reader knows by their job rather than their identifier. */
-const TOOL_LABEL: Record<string, string> = {
-  bash: '终端', shell: '终端', terminal: '终端', exec: '终端',
-  execute_command: '终端', run_command: '终端', run_terminal_cmd: '终端',
-  read_file: '读取', read: '读取', write_file: '写入', write: '写入',
-  edit_file: '编辑', edit: '编辑', replace: '编辑', grep: '搜索', glob: '搜索',
+const TOOL_LABEL_KEY: Record<string, DshellModeKey> = {
+  bash: 'tool.terminal', shell: 'tool.terminal', terminal: 'tool.terminal', exec: 'tool.terminal',
+  execute_command: 'tool.terminal', run_command: 'tool.terminal', run_terminal_cmd: 'tool.terminal',
+  read_file: 'tool.read', read: 'tool.read', write_file: 'tool.write', write: 'tool.write',
+  edit_file: 'tool.edit', edit: 'tool.edit', replace: 'tool.edit', grep: 'tool.search', glob: 'tool.search',
 }
 
 /** Display name of a tool call. */
-function toolLabel(name: string): string {
+function toolLabel(name: string, t: ModeTranslate): string {
   const key = name.toLowerCase().replace(/[^a-z_]/gu, '')
-  return TOOL_LABEL[key] ?? name
+  const labelKey = TOOL_LABEL_KEY[key]
+  return labelKey === undefined ? name : t(labelKey)
 }
 
 /** Human duration: `11 秒`, `2 分 5 秒`, `1 小时 2 分`. */
-export function formatDuration(ms: number): string {
+export function formatDuration(t: ModeTranslate, ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000))
-  if (seconds < 60) return `${String(seconds)} 秒`
+  if (seconds < 60) return t('agent.duration.seconds', { seconds })
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${String(minutes)} 分 ${String(seconds % 60)} 秒`
-  return `${String(Math.floor(minutes / 60))} 小时 ${String(minutes % 60)} 分`
+  if (minutes < 60) return t('agent.duration.minutesSeconds', { minutes, seconds: seconds % 60 })
+  return t('agent.duration.hoursMinutes', { hours: Math.floor(minutes / 60), minutes: minutes % 60 })
 }
 
 /**
@@ -130,9 +136,10 @@ export function formatDuration(ms: number): string {
  * results, runs of consecutive calls grouped, everything else kept in order.
  * @param rows - the block's rows, oldest first.
  * @param startedAt - when the task opened, the first row's baseline.
+ * @param t - the bound translator, for the tool-call labels.
  * @returns the steps, in display order.
  */
-export function buildSteps(rows: readonly SessionRow[], startedAt: number): Step[] {
+export function buildSteps(rows: readonly SessionRow[], startedAt: number, t: ModeTranslate): Step[] {
   const results = new Map<string, SessionRow>()
   for (const row of rows) {
     if (row.role === 'tool' && row.callId !== undefined) results.set(row.callId, row)
@@ -148,7 +155,7 @@ export function buildSteps(rows: readonly SessionRow[], startedAt: number): Step
       steps.push({
         kind: 'tool',
         key: row.key,
-        label: toolLabel(row.label ?? SESSION_ROW_LABEL.call),
+        label: toolLabel(row.label ?? t(SESSION_ROW_KEY.call), t),
         command: row.command,
         output: result?.text,
         images: result?.images,
@@ -162,11 +169,11 @@ export function buildSteps(rows: readonly SessionRow[], startedAt: number): Step
       duration: row.role === 'reasoning' ? Math.max(0, row.time - previous) : undefined,
     })
   }
-  return groupRuns(steps)
+  return groupRuns(steps, t)
 }
 
 /** A run of consecutive tool calls collapses to one counted group. */
-function groupRuns(steps: readonly Step[]): Step[] {
+function groupRuns(steps: readonly Step[], t: ModeTranslate): Step[] {
   const out: Step[] = []
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index]
@@ -181,7 +188,7 @@ function groupRuns(steps: readonly Step[]): Step[] {
     if (run.length === 1 && run[0] !== undefined) {
       out.push({ kind: 'tool', key: run[0].key, label: run[0].label, command: run[0].command, output: run[0].output, images: run[0].images })
     } else if (run.length > 1) {
-      out.push({ kind: 'group', key: `group:${run[0]?.key ?? String(index)}`, label: run[0]?.label ?? '终端', items: run })
+      out.push({ kind: 'group', key: `group:${run[0]?.key ?? String(index)}`, label: run[0]?.label ?? t('tool.terminal'), items: run })
     }
     index = cursor - 1
   }
@@ -198,8 +205,8 @@ function clip(text: string, limit: number): { text: string; hidden: number } {
 }
 
 /** A terminal call: one line folded, a `$ command` + output card expanded. */
-function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
-  const { step, theme } = props
+function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; loadImage: ImageLoader | undefined; t: ModeTranslate }): ReactElement {
+  const { step, theme, t } = props
   const [open, setOpen] = useState(false)
   const preview = step.command ?? '…'
   const output = step.output === undefined ? undefined : sanitizeRowText(step.output)
@@ -243,9 +250,9 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; 
     },
       step.command === undefined ? null : createElement('div', { style: { color: theme.muted } }, `$ ${step.command}`),
       clipped.text,
-      clipped.hidden > 0 ? createElement('div', { style: { color: theme.muted } }, `… 还有 ${String(clipped.hidden)} 行`) : null,
+      clipped.hidden > 0 ? createElement('div', { style: { color: theme.muted } }, t('agent.output.moreLines', { count: clipped.hidden })) : null,
     ),
-    createElement(RowImages, { images: step.images, loadImage: props.loadImage, theme }),
+    createElement(RowImages, { images: step.images, loadImage: props.loadImage, theme, t }),
   )
 }
 
@@ -263,6 +270,7 @@ export function UserBubble(props: {
   images?: readonly unknown[] | undefined
   loadImage: ImageLoader | undefined
   theme: Theme
+  t: ModeTranslate
 }): ReactElement {
   return createElement('div', {
     style: {
@@ -276,7 +284,7 @@ export function UserBubble(props: {
     },
   },
     createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, sanitizeRowText(props.text)),
-    createElement(RowImages, { images: props.images, loadImage: props.loadImage, theme: props.theme }),
+    createElement(RowImages, { images: props.images, loadImage: props.loadImage, theme: props.theme, t: props.t }),
   )
 }
 
@@ -285,7 +293,7 @@ export function UserBubble(props: {
  * service. Rendering them is what lets the reader confirm the model was handed
  * the image at all.
  */
-function RowImages(props: { images: readonly unknown[] | undefined; loadImage: ImageLoader | undefined; theme: Theme }): ReactElement | null {
+function RowImages(props: { images: readonly unknown[] | undefined; loadImage: ImageLoader | undefined; theme: Theme; t: ModeTranslate }): ReactElement | null {
   const { images, loadImage } = props
   const [urls, setUrls] = useState<readonly string[]>([])
   const key = JSON.stringify(images ?? [])
@@ -304,7 +312,7 @@ function RowImages(props: { images: readonly unknown[] | undefined; loadImage: I
   }, ...urls.map((url, index) => createElement('img', {
     key: `${url}:${String(index)}`,
     src: url,
-    alt: '附件图片',
+    alt: props.t('agent.attachmentAlt'),
     onClick: () => { window.open(url, '_blank', 'noopener') },
     style: {
       maxWidth: 'min(420px, 100%)',
@@ -318,8 +326,8 @@ function RowImages(props: { images: readonly unknown[] | undefined; loadImage: I
 }
 
 /** A run of terminal calls: one counted line, the calls listed when opened. */
-function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
-  const { step, theme } = props
+function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme; loadImage: ImageLoader | undefined; t: ModeTranslate }): ReactElement {
+  const { step, theme, t } = props
   const [open, setOpen] = useState(false)
   return createElement('div', { style: { margin: '2px 0' } },
     createElement('div', {
@@ -339,19 +347,19 @@ function ToolGroup(props: { step: Extract<Step, { kind: 'group' }>; theme: Theme
         // doesn't gain a second accent tier.
         style: { fontWeight: 600, color: theme.muted },
       }, String(step.items.length)),
-      createElement('span', null, ' 个命令'),
+      createElement('span', null, t('agent.group.commands')),
       createElement(Chevron, { open, theme }),
     ),
     ...(open
       ? step.items.map(item => createElement('div', { key: item.key, style: { marginLeft: '20px' } },
-          createElement(ToolStep, { step: { kind: 'tool', ...item }, theme, loadImage: props.loadImage })))
+          createElement(ToolStep, { step: { kind: 'tool', ...item }, theme, loadImage: props.loadImage, t })))
       : []),
   )
 }
 
 /** Prose and thinking steps. */
-function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
-  const { step, theme } = props
+function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; loadImage: ImageLoader | undefined; t: ModeTranslate }): ReactElement {
+  const { step, theme, t } = props
   const row = step.row
   const [open, setOpen] = useState(false)
   if (row.role === 'reasoning') {
@@ -372,8 +380,8 @@ function TextStep(props: { step: Extract<Step, { kind: 'text' }>; theme: Theme; 
         createElement('span', {
           'data-dshell-thinking-glyph': step.duration === undefined ? '' : undefined,
           style: { color: 'var(--dsw-alias-label-tertiary)' },
-        }, SESSION_ROW_LABEL.reasoning),
-        step.duration === undefined ? null : createElement('span', null, `· 持续了 ${formatDuration(step.duration)}`),
+        }, t(SESSION_ROW_KEY.reasoning)),
+        step.duration === undefined ? null : createElement('span', null, t('agent.reasoning.duration', { duration: formatDuration(t, step.duration) })),
         createElement(Chevron, { open, theme }),
       ),
       open ? createElement('div', {
@@ -545,8 +553,8 @@ function formatTokens(tokens: number): string | undefined {
  * collapse behind a single summary line — `已工作 6 秒 · 1.2k tok ›` — the way
  * the transcript this is modelled on reads.
  */
-export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: ImageLoader | undefined }): ReactElement {
-  const { block, theme } = props
+export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: ImageLoader | undefined; t: ModeTranslate }): ReactElement {
+  const { block, theme, t } = props
   const [expanded, setExpanded] = useState(false)
   const running = block.status === 'running'
   const [now, setNow] = useState(() => Date.now())
@@ -566,7 +574,7 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
     answers: block.rows.filter(row => row.role === 'assistant'),
     process: block.rows.filter(row => row.role !== 'user' && row.role !== 'assistant'),
   }), [block.rows, block.rows.length])
-  const steps = useMemo(() => buildSteps(process, block.startedAt), [process, block.startedAt])
+  const steps = useMemo(() => buildSteps(process, block.startedAt, t), [process, block.startedAt, t])
   const tokens = formatTokens(block.tokens)
   const failed = block.status === 'failed' || block.status === 'aborted'
   // Answers are written to be read: render their markdown rather than the raw
@@ -574,9 +582,9 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
   const answerNodes = useMemo(
     () => answers.flatMap(row => [
       ...renderMarkdown(sanitizeRowText(row.text), theme, row.key),
-      createElement(RowImages, { key: `${row.key}:img`, images: row.images, loadImage: props.loadImage, theme }),
+      createElement(RowImages, { key: `${row.key}:img`, images: row.images, loadImage: props.loadImage, theme, t }),
     ]),
-    [answers, theme, props.loadImage],
+    [answers, theme, props.loadImage, t],
   )
   // The live line the model is still writing. It renders through the same
   // paths, in the same position, as the durable rows that supersede it, so
@@ -596,12 +604,13 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
           collapsible: false,
           defaultCollapsed: false,
           time: stream.time,
-          label: SESSION_ROW_LABEL.reasoning,
+          label: t(SESSION_ROW_KEY.reasoning),
         },
         duration: undefined,
       },
       theme,
       loadImage: props.loadImage,
+      t,
     })
   const liveText = stream === undefined || stream.text.length === 0
     ? undefined
@@ -621,6 +630,7 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
       images: row.images,
       loadImage: props.loadImage,
       theme,
+      t,
     })),
     createElement('div', {
       'data-dshell-fold': '',
@@ -643,9 +653,11 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
         : createElement(FishMark, { tone: 'muted' }),
       running
         ? createElement('span', { 'data-dshell-running-text': '' },
-            `深度求索中 · ${formatDuration(endedAt - block.startedAt)}`)
+            t('agent.running', { duration: formatDuration(t, endedAt - block.startedAt) }))
         : createElement('span', null,
-            failed ? `已中断 · ${formatDuration(endedAt - block.startedAt)}` : `已工作 ${formatDuration(endedAt - block.startedAt)}`),
+            failed
+              ? t('agent.interrupted', { duration: formatDuration(t, endedAt - block.startedAt) })
+              : t('agent.worked', { duration: formatDuration(t, endedAt - block.startedAt) })),
       tokens === undefined ? null : createElement('span', null, `· ${tokens}`),
       createElement(Chevron, { open: expanded, theme }),
     ),
@@ -658,10 +670,10 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
     // duplicate is gone.
     expanded ? createElement('div', running ? { 'data-dshell-running-row': '' } : undefined,
       ...steps.map(step => (step.kind === 'tool'
-        ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage })
+        ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage, t })
         : step.kind === 'group'
-          ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage })
-          : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage }))),
+          ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage, t })
+          : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage, t }))),
       liveReasoning,
     ) : null,
     ...answerNodes,

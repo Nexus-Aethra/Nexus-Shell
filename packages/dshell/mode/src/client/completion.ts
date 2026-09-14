@@ -27,7 +27,7 @@ import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-
 // Type-only: pulls the Conversation SlotMap (`conversation.input.overlay`) and
 // the SessionStandardProps that hand a slot its `useInput`/`inputActions`.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { useDshellTheme } from './theme.js'
 
 /** The files route, from the shared contract: dshell-files owns it. */
@@ -345,8 +345,9 @@ function row(
  * without pushing the layout.
  */
 export function ShellCompletionList(
-  props: { readonly completion: ShellCompletion } & PropsRuntime<'conversation.input.overlay'>,
+  props: { readonly completion: ShellCompletion } & PropsRuntime<'conversation.input.overlay'> & PropsLocale<'dshellMode'>,
 ): ReactElement | null {
+  const { t } = props
   const theme = useDshellTheme()
   const state = useSyncExternalStore(props.completion.store.subscribe, props.completion.store.getSnapshot)
   // The draft and its writer come from the composer's own standard kit, so the
@@ -379,10 +380,10 @@ export function ShellCompletionList(
     'data-dshell-completion': '',
     'data-dshell-completion-source': state.source,
     role: 'listbox',
-    title: state.source === 'history' ? `${String(state.items.length)} 条历史命令` : state.dir,
+    title: state.source === 'history' ? t('completion.historyCount', { count: state.items.length }) : state.dir,
   },
     state.items.length === 0
-      ? createElement('div', { style: { padding: '3px 10px', opacity: 0.6 } }, state.note ?? '无匹配')
+      ? createElement('div', { style: { padding: '3px 10px', opacity: 0.6 } }, state.note ?? t('completion.noMatch'))
       : state.items.map((item, index) => row(item, index === state.index, theme, () => { pick(index) }, activeRef)),
   )
 }

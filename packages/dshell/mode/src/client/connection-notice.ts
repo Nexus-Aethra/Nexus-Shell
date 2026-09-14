@@ -15,8 +15,12 @@
  */
 
 import { createElement, useEffect, useState, type CSSProperties, type ReactElement } from 'react'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PtyStreamState } from '@nexus-aethra/dshell-terminal-bridge/client'
 import { useDshellTheme, type Theme } from './theme.js'
+
+/** The bound translator of this package's namespace. */
+type ModeTranslate = TranslateNS<'dshellMode'>
 
 /** Error red, matching the sidebar's notice colour. */
 const DANGER = '#f87171'
@@ -155,6 +159,7 @@ interface ConnectionActions {
  * panel. Hooks are unconditional: the caller always renders both slots.
  */
 function useSettingsLink(
+  t: ModeTranslate,
   theme: Theme,
   onSettings: (() => boolean) | undefined,
   sessionKey: string | undefined,
@@ -168,9 +173,9 @@ function useSettingsLink(
       type: 'button',
       style: actionStyle(theme, false),
       onClick: () => {
-        if (onSettings() !== true) setHint('请在「设置 → 插件 → SSH 设备」中检查该设备')
+        if (onSettings() !== true) setHint(t('connection.settingsHint'))
       },
-    }, '去设置')
+    }, t('connection.goSettings'))
   return { node, hint }
 }
 
@@ -193,6 +198,8 @@ export interface ConnectionPanelProps extends ConnectionActions {
   exhausted: boolean
   /** Identifies the session, so a switch clears the settings hint. */
   sessionKey: string | undefined
+  /** The bound translator for this package's copy. */
+  t: ModeTranslate
 }
 
 /**
@@ -205,14 +212,15 @@ export interface ConnectionPanelProps extends ConnectionActions {
  */
 export function ConnectionPanel(props: ConnectionPanelProps): ReactElement {
   const theme = useDshellTheme()
+  const { t } = props
   const seconds = useElapsed(props.since)
-  const settings = useSettingsLink(theme, props.onSettings, props.sessionKey)
+  const settings = useSettingsLink(t, theme, props.onSettings, props.sessionKey)
   const failed = props.phase === 'failed'
-  const address = props.device === undefined ? '设备' : props.device
+  const address = props.device === undefined ? t('connection.device') : props.device
   const detail = failed ? props.detail ?? props.reason : undefined
   const progress = props.attempt > 0
-    ? `正在自动重连（第 ${String(props.attempt)}/${String(props.maxAttempts)} 次）…`
-    : `已等待 ${String(seconds)} 秒`
+    ? t('connection.reconnecting', { attempt: props.attempt, max: props.maxAttempts })
+    : t('connection.waited', { seconds })
   return createElement('div', {
     'data-dshell-connection-panel': props.phase,
     style: {
@@ -243,12 +251,12 @@ export function ConnectionPanel(props: ConnectionPanelProps): ReactElement {
     },
       createElement('div', {
         style: { fontSize: 14, fontWeight: 600, color: failed ? DANGER : theme.text },
-      }, failed ? `⚠ 无法连接到 ${address}` : `◌ 正在连接 ${address}`),
+      }, failed ? t('connection.panel.failed', { address }) : t('connection.panel.connecting', { address })),
       createElement('div', { style: { color: theme.muted, lineHeight: 1.5 } },
         failed
           ? props.exhausted
-            ? `已自动重试 ${String(props.maxAttempts)} 次均未成功。`
-            : '这个会话的终端没有建立起来。'
+            ? t('connection.retriesFailed', { max: props.maxAttempts })
+            : t('connection.notEstablished')
           : progress),
       detail === undefined || detail === ''
         ? null
@@ -261,7 +269,7 @@ export function ConnectionPanel(props: ConnectionPanelProps): ReactElement {
           type: 'button',
           style: actionStyle(theme, true),
           onClick: props.onRetry,
-        }, '重试连接'),
+        }, t('connection.retry')),
         settings.node,
       ),
     ),
@@ -286,6 +294,8 @@ export interface ConnectionNoticeProps extends ConnectionActions {
   since: number
   /** Identifies the session, so a switch clears the settings hint. */
   sessionKey: string | undefined
+  /** The bound translator for this package's copy. */
+  t: ModeTranslate
 }
 
 /**
@@ -298,17 +308,21 @@ export interface ConnectionNoticeProps extends ConnectionActions {
  */
 export function ConnectionNotice(props: ConnectionNoticeProps): ReactElement {
   const theme = useDshellTheme()
+  const { t } = props
   const seconds = useElapsed(props.since)
-  const settings = useSettingsLink(theme, props.onSettings, props.sessionKey)
+  const settings = useSettingsLink(t, theme, props.onSettings, props.sessionKey)
   const lost = props.tone === 'failed'
   const title = lost
-    ? `${props.device === undefined ? '终端已退出' : '连接已断开'}${props.reason === undefined ? '' : ` · ${props.reason}`}`
-    : `◌ 正在连接${props.device === undefined ? '' : ` ${props.device}`}… ${String(seconds)} 秒`
+    ? `${props.device === undefined ? t('connection.notice.terminalExited') : t('connection.notice.disconnected')}${props.reason === undefined ? '' : ` · ${props.reason}`}`
+    : t('connection.notice.connecting', {
+      device: props.device === undefined ? '' : ` ${props.device}`,
+      seconds,
+    })
   // Retrying is a state, not a message: while an attempt is in flight say so,
   // and once the budget is gone say that, rather than leaving "connecting" up
   // forever.
   const progress = props.attempt > 0
-    ? `正在自动重连（第 ${String(props.attempt)}/${String(props.maxAttempts)} 次）…`
+    ? t('connection.reconnecting', { attempt: props.attempt, max: props.maxAttempts })
     : undefined
   const stopped = lost && props.exhausted
   return createElement('div', {
@@ -335,7 +349,7 @@ export function ConnectionNotice(props: ConnectionNoticeProps): ReactElement {
       : createElement('div', { style: detailStyle(theme) }, props.detail),
     stopped
       ? createElement('div', { style: { color: DANGER } },
-        `✗ 自动重连已停止（${String(props.maxAttempts)} 次均失败）`)
+        t('connection.reconnectStopped', { max: props.maxAttempts }))
       : progress === undefined
         ? null
         : createElement('div', { style: { color: theme.muted } }, progress),
@@ -347,7 +361,7 @@ export function ConnectionNotice(props: ConnectionNoticeProps): ReactElement {
         type: 'button',
         style: actionStyle(theme, true),
         onClick: props.onRetry,
-      }, props.device === undefined ? '重新打开终端' : '重试连接'),
+      }, props.device === undefined ? t('connection.reopenTerminal') : t('connection.retry')),
       settings.node,
     ),
   )

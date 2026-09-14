@@ -21,7 +21,7 @@ import type { UseProjection } from '@deepseek-ai/dsh-api-session-controller/clie
 // Type-only: pulls the Conversation SlotMap (`conversation.composer.dock`) and
 // the SessionStandardProps that carry `useProjection` to a dock entry.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the `sessionStats` projection merge for useProjection.
 import type {} from '@deepseek-ai/dsh-session-stats/client'
 // Type-only: pulls the `tokenUsage` projection merge for useProjection.
@@ -92,7 +92,8 @@ function cacheHitPercent(cacheReadTokens: number, billedInputTokens: number): st
  */
 export const DshellComposerStats = memo(function DshellComposerStats({
   useProjection,
-}: ComposerStatsProps & { readonly useProjection: UseProjection }): ReactElement | null {
+  t,
+}: ComposerStatsProps & { readonly useProjection: UseProjection } & PropsLocale<'dshellMode'>): ReactElement | null {
   const stats = useProjection('sessionStats')
   const usage = useProjection('tokenUsage')
 
@@ -110,18 +111,20 @@ export const DshellComposerStats = memo(function DshellComposerStats({
 
   const timeTitle = stats === undefined
     ? undefined
-    : `轮次 ${String(stats.turns)} · 步骤 ${String(stats.steps)}`
-      + (stats.llmMs > 0 ? ` · 模型耗时 ${formatDuration(stats.llmMs)}` : '')
-      + (stats.toolMs > 0 ? ` · 工具耗时 ${formatDuration(stats.toolMs)}` : '')
-      + (stats.ttftSteps > 0 ? ` · 首字 ${formatDuration(stats.ttftMs / stats.ttftSteps)}` : '')
-      + (speed === null ? '' : ` · 输出速度 ${speed} tok/s`)
+    : t('stats.title.time', { turns: stats.turns, steps: stats.steps })
+      + (stats.llmMs > 0 ? t('stats.title.llm', { duration: formatDuration(stats.llmMs) }) : '')
+      + (stats.toolMs > 0 ? t('stats.title.tools', { duration: formatDuration(stats.toolMs) }) : '')
+      + (stats.ttftSteps > 0 ? t('stats.title.ttft', { duration: formatDuration(stats.ttftMs / stats.ttftSteps) }) : '')
+      + (speed === null ? '' : t('stats.title.speed', { speed }))
   const usageTitle = usage === undefined
     ? undefined
-    : `合计 ${totalTokens.toLocaleString()} tok`
-      + ` · 未命中输入 ${usage.uncachedInputTokens.toLocaleString()}`
-      + ` · 缓存读取 ${usage.cacheReadTokens.toLocaleString()}`
-      + (usage.cacheWriteTokens === 0 ? '' : ` · 缓存写入 ${usage.cacheWriteTokens.toLocaleString()}`)
-      + ` · 输出 ${usage.outputTokens.toLocaleString()}`
+    : t('stats.title.usage', {
+        total: totalTokens.toLocaleString(),
+        uncached: usage.uncachedInputTokens.toLocaleString(),
+        cached: usage.cacheReadTokens.toLocaleString(),
+      })
+      + (usage.cacheWriteTokens === 0 ? '' : t('stats.title.cacheWrite', { written: usage.cacheWriteTokens.toLocaleString() }))
+      + t('stats.title.output', { output: usage.outputTokens.toLocaleString() })
 
   return createElement('div', { style: rowStyle, 'data-composer-stats': '' },
     stats === undefined || stats.steps === 0
@@ -129,8 +132,8 @@ export const DshellComposerStats = memo(function DshellComposerStats({
       : createElement('span', { style: pillStyle, title: timeTitle },
         createElement('span', { style: iconStyle }, createElement(IconGaugeOutline16, { size: 14 })),
         createElement('span', null,
-          `${String(stats.turns)} 轮 ${String(stats.steps)} 步`,
-          speed === null ? '' : ` · ${speed} tok/s`,
+          t('stats.turnsSteps', { turns: stats.turns, steps: stats.steps }),
+          speed === null ? '' : t('stats.speed', { speed }),
         ),
       ),
     !hasTokens || usage === undefined
@@ -138,8 +141,8 @@ export const DshellComposerStats = memo(function DshellComposerStats({
       : createElement('span', { style: pillStyle, title: usageTitle },
         createElement('span', { style: iconStyle }, createElement(IconDatabaseOutline16, { size: 14 })),
         createElement('span', null,
-          `${formatTokens(totalTokens)} tok`,
-          hit === null ? '' : ` · 缓存命中 ${hit}%`,
+          t('stats.tokens', { tokens: formatTokens(totalTokens) }),
+          hit === null ? '' : t('stats.cacheHit', { hit }),
         ),
       ),
   )

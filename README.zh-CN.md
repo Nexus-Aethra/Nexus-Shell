@@ -7,7 +7,7 @@ AI 的每一轮工作、你敲的每一条命令，按发生的先后排成一�
 
 ![dshell 主界面](docs/images/main-view.png)
 
-> 界面截图是中文的 —— dshell 目前只有中文文案。
+> 界面截图是中文的。dshell 跟随 dsh 自身的语言设置（**设置 → 通用设置 → 语言**），切到 English 后同一套界面也是英文。
 
 dshell 是 **dsh**（DeepSeek Harness）的一组插件。它不修改 dsh 的源码，全部通过 dsh 公开的扩展点接入，
 所以 dsh 随时可以跟着上游升级。

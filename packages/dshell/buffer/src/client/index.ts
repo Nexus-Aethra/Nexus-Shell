@@ -14,13 +14,20 @@ import { type Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: pulls ui-layout's SlotMap merge (the `shell.overlay` seat).
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: pulls the locale service merge (ctx.locale) and this namespace's keys.
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import { en, zh } from './locales.js'
 import { PipePanel } from './panel.js'
 import { BufferClientService, type SessionSeat } from './service.js'
 
 export const name = '@nexus-aethra/dshell-buffer/client'
 
-export const inject = ['slots'] as const
+export const inject = ['slots', 'locale'] as const
+
+/** This package's copy namespace. */
+const NS = 'dshellBuffer'
 
 export type { BufferSnapshot, SessionSeat } from './service.js'
 export type { PipePanelProps } from './panel.js'
@@ -29,8 +36,13 @@ export type { PipePanelProps } from './panel.js'
 const EMPTY_SESSIONS: ReturnType<SessionSeat['getSnapshot']> = { ids: [], byId: {}, current: undefined }
 
 export function apply(ctx: Context): void {
+  const t: TranslateNS<'dshellBuffer'> = ctx.locale.bind(NS)
   const buffer = new BufferClientService(ctx)
   void buffer.load()
+
+  // The dictionaries are registered through an effect so a composition that
+  // unloads this plugin takes its copy with it.
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshell-buffer: dictionaries')
 
   // The sessions service may be provided by a sibling row that activates after
   // this one, so it is resolved by injection rather than read once at apply
@@ -51,7 +63,8 @@ export function apply(ctx: Context): void {
       name: 'shell.overlay',
       id: 'dshell-buffer',
       order: 100,
-      label: '管道',
+      label: () => t('panel.label'),
+      locale: NS,
       inject: () => ({ buffer, sessions: sessionsSeat }),
     },
     PipePanel,
