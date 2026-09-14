@@ -21,7 +21,9 @@ import {
 import {
   FileTypeIcon, IconChevronLeftOutline14, IconFolderClose16, IconRefreshOutline16, classifyFileType,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PropsLocale, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BufferGrant, BufferTicket, BufferUserEntry } from '../protocol.js'
+import type { DshellBufferKey } from './locales.js'
 import type { BufferClientService, SessionSeat } from './service.js'
 import { PipeGraph, type GraphSession } from './pipe-graph.js'
 
@@ -96,21 +98,24 @@ const clickableRowStyle: CSSProperties = {
 }
 const backRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }
 
-const STATE_LABEL: Record<BufferTicket['state'], string> = {
-  queued: '排队中',
-  running: '处理中',
-  done: '已完成',
-  failed: '已失败',
-  timeout: '已超时',
-  cancelled: '已取消',
+/** Ticket-state identifier → dictionary key. The identifier stays a protocol value. */
+const TICKET_STATE_KEY: Record<BufferTicket['state'], DshellBufferKey> = {
+  queued: 'ticket.state.queued',
+  running: 'ticket.state.running',
+  done: 'ticket.state.done',
+  failed: 'ticket.state.failed',
+  timeout: 'ticket.state.timeout',
+  cancelled: 'ticket.state.cancelled',
 }
 
-/** Rights as a short Chinese label. */
-function rightsLabel(rights: readonly string[]): string {
-  const parts: string[] = []
-  if (rights.includes('read')) parts.push('读')
-  if (rights.includes('write')) parts.push('写')
-  return parts.length > 0 ? parts.join('/') : '无'
+/** Build a short rights label over the bound translator. */
+function makeRightsLabel(t: TranslateNS<'dshellBuffer'>): (rights: readonly string[]) => string {
+  return (rights) => {
+    const parts: string[] = []
+    if (rights.includes('read')) parts.push(t('rights.read'))
+    if (rights.includes('write')) parts.push(t('rights.write'))
+    return parts.length > 0 ? parts.join('/') : t('rights.none')
+  }
 }
 
 /** Minutes until a deadline, floored at zero. */
@@ -119,11 +124,11 @@ function minutesLeft(deadlineAt: number): number {
 }
 
 /** The panel's props: the pipe state plus the session labels it renders peers by. */
-export interface PipePanelProps {
+export type PipePanelProps = {
   readonly buffer: BufferClientService
   /** Absent in a composition that mounts no sessions service; ids are shown raw. */
   readonly sessions?: SessionSeat | undefined
-}
+} & PropsLocale<'dshellBuffer'>
 
 /** One label for a session id (title, without the cwd suffix). */
 function shortLabel(seat: SessionSeat | undefined, id: string): string {
@@ -131,10 +136,10 @@ function shortLabel(seat: SessionSeat | undefined, id: string): string {
 }
 
 /** One label with the cwd, the way list rows render peers. */
-function labelFor(seat: SessionSeat | undefined, id: string): string {
+function labelFor(t: TranslateNS<'dshellBuffer'>, seat: SessionSeat | undefined, id: string): string {
   const row = seat?.getSnapshot().byId[id]
   const title = row?.displayTitle ?? id.slice(0, 8)
-  return row?.cwd === undefined ? title : `${title}（${row.cwd}）`
+  return row?.cwd === undefined ? title : t('session.withCwd', { title, cwd: row.cwd })
 }
 
 /** Stable stand-ins so a composition without a sessions service still has hooks. */
@@ -147,6 +152,7 @@ type View = 'list' | 'graph'
 export function PipePanel(props: PipePanelProps): ReactElement | null {
   const snapshot = useSyncExternalStore(props.buffer.subscribe, props.buffer.getSnapshot)
   const sessions = props.sessions
+  const t = props.t
   const sessionState = useSyncExternalStore<ReturnType<SessionSeat['getSnapshot']> | undefined>(
     sessions === undefined ? noSessionsSubscribe : sessions.subscribe,
     sessions === undefined ? noSessionsSnapshot : sessions.getSnapshot,
@@ -198,18 +204,22 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
   },
     createElement('div', { style: dialogStyle, onClick: (event: { stopPropagation: () => void }) => { event.stopPropagation() } },
       createElement('div', { style: headerStyle },
-        createElement('span', { style: titleStyle }, '跨会话管道'),
+        createElement('span', { style: titleStyle }, t('panel.title')),
         createElement('span', { style: headerDimStyle },
-          `${String(snapshot.links.length)} 条管道 · ${String(snapshot.tickets.filter(t => t.state === 'queued' || t.state === 'running').length)} 个进行中请求`),
+          t('panel.summary', {
+            links: snapshot.links.length,
+            open: snapshot.tickets.filter(ticket => ticket.state === 'queued' || ticket.state === 'running').length,
+          })),
         createElement('div', { style: tabRowStyle },
-          createElement('button', { style: tabStyle(view === 'list'), onClick: () => { setView('list') } }, '列表'),
-          createElement('button', { style: tabStyle(view === 'graph'), onClick: () => { setView('graph') } }, '图'),
+          createElement('button', { style: tabStyle(view === 'list'), onClick: () => { setView('list') } }, t('tab.list')),
+          createElement('button', { style: tabStyle(view === 'graph'), onClick: () => { setView('graph') } }, t('tab.graph')),
         ),
-        createElement('button', { style: smallButtonStyle, title: '关闭', onClick: close }, '关闭'),
+        createElement('button', { style: smallButtonStyle, title: t('panel.close'), onClick: close }, t('panel.close')),
       ),
       view === 'graph'
         ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, position: 'relative' } },
           createElement(PipeGraph, {
+            t,
             sessions: graphSessions,
             links: snapshot.links,
             tickets: snapshot.tickets,
@@ -223,13 +233,13 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
         )
         : detailLink === undefined
           ? createElement(ListPane, {
-            snapshot, sessions, sessionState,
+            snapshot, sessions, sessionState, t,
             creating, setCreating,
             onOpenDetail: openDetail,
             buffer: props.buffer,
           })
           : createElement(DetailPane, {
-            snapshot, sessions,
+            snapshot, sessions, t,
             linkId: detailLink,
             onBack: () => { setDetailLink(undefined) },
             buffer: props.buffer,
@@ -237,7 +247,7 @@ export function PipePanel(props: PipePanelProps): ReactElement | null {
       snapshot.error === undefined ? null : createElement('div', {
         style: errorStyle,
         onClick: () => { props.buffer.clearError() },
-        title: '点击清除',
+        title: t('error.clear'),
       }, snapshot.error),
     ),
   )
@@ -248,6 +258,7 @@ interface ListSideProps {
   readonly snapshot: ReturnType<BufferClientService['getSnapshot']>
   readonly buffer: BufferClientService
   readonly sessions?: SessionSeat | undefined
+  readonly t: TranslateNS<'dshellBuffer'>
 }
 
 /** The list view: established pipes (click → detail), the create form. */
@@ -257,7 +268,7 @@ function ListPane(props: ListSideProps & {
   readonly setCreating: (next: boolean) => void
   readonly onOpenDetail: (linkId: string) => void
 }): ReactElement {
-  const { snapshot, sessions, sessionState } = props
+  const { snapshot, sessions, sessionState, t } = props
   const [left, setLeft] = useState('')
   const [right, setRight] = useState('')
   const [label, setLabel] = useState('')
@@ -300,55 +311,55 @@ function ListPane(props: ListSideProps & {
   return createElement('div', { style: bodyStyle },
     createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 } },
       createElement('div', { style: { ...sectionTitleStyle, marginTop: 0, marginBottom: 0 } },
-        `已建立的管道 (${String(snapshot.links.length)})`),
+        t('links.heading', { count: snapshot.links.length })),
       createElement('button', {
         style: props.creating ? smallButtonStyle : primaryStyle,
         onClick: () => { props.setCreating(!props.creating) },
-      }, props.creating ? '收起' : '+ 建立管道'),
+      }, props.creating ? t('links.collapse') : t('links.create')),
     ),
     props.creating ? createElement('div', { style: cardStyle },
       createElement('div', { style: rowStyle },
-        sessionSelect(left, setLeft, sessionIds, labelFor.bind(null, seat)),
+        sessionSelect(left, setLeft, sessionIds, id => labelFor(t, seat, id)),
         createElement('span', { style: dimStyle }, '↔'),
-        sessionSelect(right, setRight, sessionIds, labelFor.bind(null, seat)),
+        sessionSelect(right, setRight, sessionIds, id => labelFor(t, seat, id)),
       ),
       createElement('input', {
         style: fieldStyle,
-        placeholder: '标签（可选），例如「部署机」',
+        placeholder: t('form.labelPlaceholder'),
         value: label,
         onChange: (event: { target: { value: string } }) => { setLabel(event.target.value) },
       }),
       createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
-        createElement('div', { style: dimStyle }, '只有你能建立管道；agent 没有建连的工具。'),
+        createElement('div', { style: dimStyle }, t('form.authorityNote')),
         createElement('button', {
           style: primaryStyle,
           disabled: !picksValid,
           onClick: create,
-        }, '建立管道'),
+        }, t('form.submit')),
       ),
     ) : null,
     snapshot.links.length === 0
       ? createElement('div', { style: { ...emptyStyle, marginTop: 12 } },
-        props.creating ? '' : '还没有管道。建立之后，两侧的 agent 才能互相委派。')
+        props.creating ? '' : t('links.empty'))
       : createElement('div', { style: cardStyle },
         snapshot.links.map(link => {
           const open = openCountOf(snapshot.tickets, link.id)
           return createElement('div', {
             key: link.id,
             style: clickableRowStyle,
-            title: '点击查看这条管道的请求与授权',
+            title: t('links.rowTitle'),
             onClick: () => { props.onOpenDetail(link.id) },
           },
             createElement('span', { style: { ...growStyle, fontWeight: 500 } },
-              `${labelFor(seat, link.a)} ↔ ${labelFor(seat, link.b)}${link.label === undefined ? '' : ` · ${link.label}`}`),
-            open > 0 ? createElement('span', { style: dimStyle }, `${String(open)} 个进行中`) : null,
+              `${labelFor(t, seat, link.a)} ↔ ${labelFor(t, seat, link.b)}${link.label === undefined ? '' : ` · ${link.label}`}`),
+            open > 0 ? createElement('span', { style: dimStyle }, t('links.open', { count: open })) : null,
             createElement('button', {
               style: smallButtonStyle,
               onClick: (event: { stopPropagation: () => void }) => {
                 event.stopPropagation()
                 void props.buffer.unlink(link.id).catch(() => {})
               },
-            }, '解除'),
+            }, t('action.release')),
           )
         })),
   )
@@ -359,13 +370,13 @@ function DetailPane(props: ListSideProps & {
   readonly linkId: string
   readonly onBack: () => void
 }): ReactElement {
-  const { snapshot, sessions } = props
+  const { snapshot, sessions, t } = props
   const link = snapshot.links.find(candidate => candidate.id === props.linkId)
   if (link === undefined) {
     return createElement('div', { style: bodyStyle },
       createElement('div', { style: backRowStyle },
-        createElement('button', { style: smallButtonStyle, onClick: props.onBack }, '← 返回')),
-      createElement('div', { style: emptyStyle }, '这条管道已被解除。'))
+        createElement('button', { style: smallButtonStyle, onClick: props.onBack }, t('action.back'))),
+      createElement('div', { style: emptyStyle }, t('detail.gone')))
   }
   const seats = new Set([link.a, link.b])
   const tickets = snapshot.tickets.filter(ticket => ticket.linkId === link.id)
@@ -375,28 +386,28 @@ function DetailPane(props: ListSideProps & {
 
   return createElement('div', { style: bodyStyle },
     createElement('div', { style: backRowStyle },
-      createElement('button', { style: smallButtonStyle, onClick: props.onBack }, '← 返回'),
+      createElement('button', { style: smallButtonStyle, onClick: props.onBack }, t('action.back')),
       createElement('span', { style: { fontWeight: 600 } },
-        `${labelFor(sessions, link.a)} ↔ ${labelFor(sessions, link.b)}`),
+        `${labelFor(t, sessions, link.a)} ↔ ${labelFor(t, sessions, link.b)}`),
       link.label === undefined ? null : createElement('span', { style: dimStyle }, link.label),
       createElement('span', { style: { flex: '1 1 auto' } }),
       createElement('button', {
         style: smallButtonStyle,
         onClick: () => { void props.buffer.unlink(link.id).catch(() => {}) },
-      }, '解除管道'),
+      }, t('action.releasePipe')),
     ),
-    createElement(BufferBrowser, { buffer: props.buffer, linkId: link.id, sessions }),
-    createElement('div', { style: sectionTitleStyle }, `进行中的请求 (${String(open.length)})`),
+    createElement(BufferBrowser, { buffer: props.buffer, linkId: link.id, sessions, t }),
+    createElement('div', { style: sectionTitleStyle }, t('detail.activeRequests', { count: open.length })),
     open.length === 0
-      ? createElement('div', { style: emptyStyle }, '没有进行中的请求。')
-      : createElement('div', { style: cardStyle }, open.map(ticket => ticketRow(ticket, props.buffer, sessions, true))),
+      ? createElement('div', { style: emptyStyle }, t('detail.noActiveRequests'))
+      : createElement('div', { style: cardStyle }, open.map(ticket => ticketRow(ticket, props.buffer, sessions, true, t))),
     settled.length === 0 ? null : createElement('div', null,
-      createElement('div', { style: sectionTitleStyle }, `已结束 (${String(settled.length)})`),
-      createElement('div', { style: cardStyle }, settled.map(ticket => ticketRow(ticket, props.buffer, sessions, false)))),
-    createElement('div', { style: sectionTitleStyle }, `生效中的授权 (${String(grants.length)})`),
+      createElement('div', { style: sectionTitleStyle }, t('detail.settled', { count: settled.length })),
+      createElement('div', { style: cardStyle }, settled.map(ticket => ticketRow(ticket, props.buffer, sessions, false, t)))),
+    createElement('div', { style: sectionTitleStyle }, t('detail.grants', { count: grants.length })),
     grants.length === 0
-      ? createElement('div', { style: emptyStyle }, '没有生效中的授权。任务结算时授权会自动回收。')
-      : createElement('div', { style: cardStyle }, grants.map(grant => grantRow(grant, sessions))),
+      ? createElement('div', { style: emptyStyle }, t('detail.noGrants'))
+      : createElement('div', { style: cardStyle }, grants.map(grant => grantRow(grant, sessions, t))),
   )
 }
 
@@ -426,15 +437,16 @@ function ticketRow(
   buffer: BufferClientService,
   sessions: SessionSeat | undefined,
   cancellable: boolean,
+  t: TranslateNS<'dshellBuffer'>,
 ): ReactElement {
   const tail = ticket.result ?? ticket.error ?? ticket.reports[ticket.reports.length - 1]?.text
   const unsettled = ticket.state === 'queued' || ticket.state === 'running'
   return createElement('div', { key: ticket.id, style: { ...rowStyle, alignItems: 'flex-start' } },
     createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
       createElement('span', { style: growStyle },
-        `${STATE_LABEL[ticket.state]} · ${shortLabel(sessions, ticket.from)} → ${shortLabel(sessions, ticket.to)} · ${ticket.subject}`),
+        `${t(TICKET_STATE_KEY[ticket.state])} · ${shortLabel(sessions, ticket.from)} → ${shortLabel(sessions, ticket.to)} · ${ticket.subject}`),
       unsettled
-        ? createElement('span', { style: dimStyle }, `剩约 ${String(minutesLeft(ticket.deadlineAt))} 分钟 · ${ticket.id}`)
+        ? createElement('span', { style: dimStyle }, t('ticket.expires', { minutes: minutesLeft(ticket.deadlineAt), id: ticket.id }))
         : createElement('span', { style: dimStyle }, ticket.id),
       tail === undefined ? null : createElement('span', { style: subStyle }, tail),
     ),
@@ -442,23 +454,24 @@ function ticketRow(
       ? createElement('button', {
         style: smallButtonStyle,
         onClick: () => { void buffer.cancel(ticket.id).catch(() => {}) },
-      }, '取消')
+      }, t('action.cancel'))
       : null,
   )
 }
 
 /** One live grant with its revoke button. */
-function grantRow(grant: BufferGrant, sessions: SessionSeat | undefined): ReactElement {
+function grantRow(grant: BufferGrant, sessions: SessionSeat | undefined, t: TranslateNS<'dshellBuffer'>): ReactElement {
+  const rightsLabel = makeRightsLabel(t)
   return createElement('div', { key: grant.id, style: { ...rowStyle, alignItems: 'flex-start' } },
     createElement('div', { style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
-      createElement('span', { style: growStyle }, `${shortLabel(sessions, grant.from)} → ${shortLabel(sessions, grant.to)} · 剩余引用 ${String(grant.count)}`),
+      createElement('span', { style: growStyle }, `${shortLabel(sessions, grant.from)} → ${shortLabel(sessions, grant.to)} · ${t('grant.remaining', { count: grant.count })}`),
       grant.description.trim().length === 0 ? null : createElement('span', { style: subStyle }, grant.description),
       ...grant.areas.map((area, index) => createElement('span', {
         key: `${grant.id}:${String(index)}`,
         style: dimStyle,
       }, area.as === undefined
-        ? `${area.path}（${rightsLabel(area.rights)}，未映射）`
-        : `/${area.as}/ ← ${area.path}（${rightsLabel(area.rights)}）`)),
+        ? t('grant.areaUnmapped', { path: area.path, rights: rightsLabel(area.rights) })
+        : t('grant.areaMapped', { as: area.as, path: area.path, rights: rightsLabel(area.rights) }))),
     ),
   )
 }
@@ -570,7 +583,10 @@ function BufferBrowser(props: {
   readonly buffer: BufferClientService
   readonly linkId: string
   readonly sessions?: SessionSeat | undefined
+  readonly t: TranslateNS<'dshellBuffer'>
 }): ReactElement {
+  const t = props.t
+  const rightsLabel = makeRightsLabel(t)
   const [location, setLocation] = useState<BrowserLocation | undefined>(undefined)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
@@ -658,7 +674,7 @@ function BufferBrowser(props: {
   // so the separator starts after it rather than doubling it.
   const crumbs: ReactElement[] = [    createElement('button', {
       key: '__root__', type: 'button', style: atNamespaceRoot ? crumbCurrentStyle : crumbStyle,
-      disabled: atNamespaceRoot, title: '缓冲区根', 'data-dshell-buffer-crumb': 'namespace',
+      disabled: atNamespaceRoot, title: t('browser.rootTitle'), 'data-dshell-buffer-crumb': 'namespace',
       onClick: () => { back() },
     }, '/'),
   ]
@@ -681,14 +697,14 @@ function BufferBrowser(props: {
   }
 
   return createElement('div', null,
-    createElement('div', { style: sectionTitleStyle }, '缓冲区'),
+    createElement('div', { style: sectionTitleStyle }, t('browser.heading')),
     createElement('div', null,
       createElement('div', { style: browserNavStyle },
         createElement('button', {
           type: 'button',
           style: atNamespaceRoot || loading ? navButtonOffStyle : navButtonStyle,
           disabled: atNamespaceRoot || loading,
-          title: atNamespaceRoot ? '已在缓冲区根' : '上一级',
+          title: atNamespaceRoot ? t('browser.atRoot') : t('browser.up'),
           'data-dshell-buffer-nav': 'up',
           onClick: back,
         }, createElement(IconChevronLeftOutline14, { size: 14 })),
@@ -696,7 +712,7 @@ function BufferBrowser(props: {
           type: 'button',
           style: loading ? navButtonOffStyle : navButtonStyle,
           disabled: loading,
-          title: '刷新',
+          title: t('browser.refresh'),
           'data-dshell-buffer-nav': 'refresh',
           onClick: refresh,
         }, createElement(IconRefreshOutline16, { size: 16 })),
@@ -710,16 +726,16 @@ function BufferBrowser(props: {
         }, crumbs),
       ),
       error === undefined ? null : createElement('div', { style: browserErrorStyle, 'data-dshell-buffer-note': 'error' }, error),
-      loading && location === undefined ? createElement('div', { style: noteStyle, 'data-dshell-buffer-note': 'loading' }, '读取中…') : null,
+      loading && location === undefined ? createElement('div', { style: noteStyle, 'data-dshell-buffer-note': 'loading' }, t('browser.loading')) : null,
       !loading && location === undefined && error === undefined
         ? createElement('div', { style: noteStyle, 'data-dshell-buffer-note': 'empty' },
-          '缓冲区为空。委派任务时带上带 as 名字的授权，映射目录会出现在这里。')
+          t('browser.empty'))
         : null,
       location === undefined ? null : createElement('ul', { style: browserListStyle },
         ...(atNamespaceRoot ? [] : [createElement('li', { key: '__up__', style: browserListStyle },
           createElement('button', {
             type: 'button', style: browserRowStyle, 'data-dshell-buffer-row': 'parent',
-            'data-dshell-buffer-entry': 'parent', title: '上一级',
+            'data-dshell-buffer-entry': 'parent', title: t('browser.up'),
             onClick: back, onDoubleClick: back,
           },
             createElement('span', { style: rowIconStyle }, createElement(IconFolderClose16, { size: 16 })),
@@ -742,7 +758,9 @@ function BufferBrowser(props: {
               type: 'button',
               style: enterable ? browserRowStyle : entry.kind === 'other' ? { ...browserIdleRowStyle, opacity: 0.5 } : browserIdleRowStyle,
               'data-dshell-buffer-row': isRoot ? 'area' : entry.kind,
-              title: isRoot ? `${entry.name}：${entry.origin ?? ''}（${rightsLabel(entry.rights ?? [])}）` : entry.name,
+              title: isRoot
+                ? t('browser.areaTitle', { name: entry.name, origin: entry.origin ?? '', rights: rightsLabel(entry.rights ?? []) })
+                : entry.name,
               ...enterable
                 ? {
                   onClick: () => { if (isRoot) open(entry, ''); else if (root !== undefined) open(root, childRel) },
@@ -766,10 +784,10 @@ function BufferBrowser(props: {
           )
         }),
         location.entries.length === 0
-          ? createElement('li', { style: noteStyle, 'data-dshell-buffer-note': 'empty-dir' }, '（空目录）')
+          ? createElement('li', { style: noteStyle, 'data-dshell-buffer-note': 'empty-dir' }, t('browser.emptyDir'))
           : null,
         location.truncated
-          ? createElement('li', { style: noteStyle, 'data-dshell-buffer-note': 'truncated' }, '（条目过多，已截断到前 1000 项）')
+          ? createElement('li', { style: noteStyle, 'data-dshell-buffer-note': 'truncated' }, t('browser.truncated'))
           : null,
       ),
     ),

@@ -23,9 +23,11 @@
 import { Component, createElement, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement, type ReactNode } from 'react'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { SPAN_FONT } from './block-terminal.js'
 import { createAgentTerminal, AGENT_PANEL_HEIGHT, type AgentTerminalView } from './agent-terminal.js'
 import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
+import type { DshellModeKey } from './locales.js'
 import type { Theme } from './theme.js'
 
 /** One item of the session's task list, as the `todo/write` event carries it. */
@@ -51,12 +53,13 @@ interface JobView {
   readonly finishedAt?: number | undefined
 }
 
-const JOB_STATUS_LABEL: Record<JobView['status'], string> = {
-  running: '运行中',
-  stopping: '停止中',
-  completed: '已完成',
-  killed: '已终止',
-  failed: '失败',
+/** Job status identifier → dictionary key. The identifier stays a wire value. */
+const JOB_STATUS_KEY: Record<JobView['status'], DshellModeKey> = {
+  running: 'status.job.running',
+  stopping: 'status.job.stopping',
+  completed: 'status.job.completed',
+  killed: 'status.job.killed',
+  failed: 'status.job.failed',
 }
 
 function jobLive(job: JobView): boolean {
@@ -64,14 +67,14 @@ function jobLive(job: JobView): boolean {
 }
 
 /** Elapsed time in at most two units; the same shape dsh's own widget shows. */
-function jobDuration(job: JobView, now: number): string {
+function jobDuration(t: PropsLocale<'dshellMode'>['t'], job: JobView, now: number): string {
   const total = Math.max(0, Math.floor(((job.finishedAt ?? now) - job.startedAt) / 1000))
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor(total / 60) % 60
   const seconds = total % 60
-  return hours > 0 ? `${String(hours)} 时 ${String(minutes)} 分`
-    : minutes > 0 ? `${String(minutes)} 分 ${String(seconds)} 秒`
-      : `${String(seconds)} 秒`
+  return hours > 0 ? t('duration.hoursMinutes', { hours, minutes })
+    : minutes > 0 ? t('duration.minutesSeconds', { minutes, seconds })
+      : t('duration.seconds', { seconds })
 }
 
 /**
@@ -129,23 +132,25 @@ const NO_PIPE_SUBSCRIBE = (): (() => void) => () => {}
 /** Ticket states that are still running; everything else is settled. */
 const SETTLED: readonly PipeTicket['state'][] = ['done', 'failed', 'timeout', 'cancelled']
 
-/** How a ticket's state reads in a row. */
-const STATE_LABEL: Record<PipeTicket['state'], string> = {
-  queued: '待领取',
-  running: '对方处理中',
-  done: '已完成',
-  failed: '失败',
-  timeout: '已超时',
-  cancelled: '已撤回',
+/** How a ticket's state reads in a row. The state identifier stays a wire value. */
+const STATE_KEY: Record<PipeTicket['state'], DshellModeKey> = {
+  queued: 'status.ticket.queued',
+  running: 'status.ticket.running',
+  done: 'status.ticket.done',
+  failed: 'status.ticket.failed',
+  timeout: 'status.ticket.timeout',
+  cancelled: 'status.ticket.cancelled',
 }
 
 /** How long a ticket has left before the host's watchdog settles it. */
-function remaining(deadlineAt: number): string {
+function remaining(t: PropsLocale<'dshellMode'>['t'], deadlineAt: number): string {
   const left = deadlineAt - Date.now()
   if (!Number.isFinite(left)) return ''
-  if (left <= 0) return '已到期限'
+  if (left <= 0) return t('status.remaining.expired')
   const minutes = Math.floor(left / 60_000)
-  return minutes >= 1 ? `剩 ${String(minutes)} 分钟` : `剩 ${String(Math.max(1, Math.round(left / 1000)))} 秒`
+  return minutes >= 1
+    ? t('status.remaining.minutes', { minutes })
+    : t('status.remaining.seconds', { seconds: Math.max(1, Math.round(left / 1000)) })
 }
 
 /** How often the card re-reads the pipe while this session has one. */
@@ -275,17 +280,8 @@ function Row(props: {
 }
 
 /**
- * The line an idle session shows.
- *
- * The card is permanent, so "nothing is happening" needs a settled word rather
- * than a blank or a shifting count: a number here would redraw whenever any
- * session was created or archived, in a corner nobody is reading for that.
+ * One line inside a detail body.
  */
-function idleHeadline(): string {
-  return '空闲'
-}
-
-/** One line inside a detail body. */
 function line(text: string, theme: Theme, extra: CSSProperties = {}): ReactElement {
   return createElement('div', {
     key: text,
@@ -340,8 +336,8 @@ export function StatusCard(props: {
   sessions: ISessions
   /** The cross-session pipe's face; absent in a composition without it. */
   pipe?: PipeSeat | undefined
-}): ReactElement | null {
-  const { todos, activity, theme, pty, sessionId, sessions, pipe } = props
+} & PropsLocale<'dshellMode'>): ReactElement | null {
+  const { todos, activity, theme, pty, sessionId, sessions, pipe, t } = props
   // Subscribed before any early return: hooks cannot be conditional, and the
   // state they carry is what decides whether the card exists at all.
   const agent = useSyncExternalStore(pty.agent.subscribe, pty.agent.getSnapshot)
@@ -462,18 +458,18 @@ export function StatusCard(props: {
   // quiet session says so and stays openable: the card is the session's status
   // surface, and its rows are worth reaching even when nothing is running.
   const headline =
-    running ? `◐ ${activeTodo?.content ?? activity ?? 'AI 正在工作'}`
-      : waiting.length > 0 ? `⏸ 等待 ${peerTitle(waiting[0]?.to ?? '')} 回信`
+    running ? `◐ ${activeTodo?.content ?? activity ?? t('status.working')}`
+      : waiting.length > 0 ? `⏸ ${t('status.waiting', { peer: peerTitle(waiting[0]?.to ?? '') })}`
         : activeTodo !== undefined ? `◐ ${activeTodo.content}`
-          : owed.length > 0 ? `⇄ ${String(owed.length)} 个管道任务待处理`
-            : live ? '▚ AI 终端运行中'
-              : runningChildren > 0 ? `⎇ ${String(runningChildren)} 个智能体运行中`
-                : liveTransfers.length > 0 ? `⇅ 传输中 ${String(transferPct(liveTransfers[0]))}%`
-                  : liveJobs.length > 0 ? `⟳ ${String(liveJobs.length)} 个后台任务运行中`
+          : owed.length > 0 ? `⇄ ${t('status.owed', { count: owed.length })}`
+            : live ? `▚ ${t('status.terminalRunning')}`
+              : runningChildren > 0 ? `⎇ ${t('status.agentsRunning', { count: runningChildren })}`
+                : liveTransfers.length > 0 ? `⇅ ${t('status.transferring', { pct: transferPct(liveTransfers[0]) })}`
+                  : liveJobs.length > 0 ? `⟳ ${t('status.jobsRunning', { count: liveJobs.length })}`
                   : pendingTodo !== undefined ? `○ ${pendingTodo.content}`
-                    : dead ? 'AI 终端已结束'
-                      : linkBroken ? '终端连接中断'
-                        : idleHeadline()
+                    : dead ? t('status.terminalEnded')
+                      : linkBroken ? t('status.linkBroken')
+                        : t('status.idle')
   const idle = !running && activeTodo === undefined && !live && runningChildren === 0
     && pendingTodo === undefined && !dead && !linkBroken && waiting.length === 0 && owed.length === 0
     && liveJobs.length === 0 && liveTransfers.length === 0
@@ -482,7 +478,7 @@ export function StatusCard(props: {
   if (todos.length > 0) {
     const phase = activeTodo?.content ?? pendingTodo?.content
     rows.push({
-      id: 'plan', glyph: '◐', label: '计划', active: activeTodo !== undefined,
+      id: 'plan', glyph: '◐', label: t('status.plan'), active: activeTodo !== undefined,
       value: `${String(done)}/${String(todos.length)}${phase === undefined ? '' : ` · ${phase}`}`,
       detail: createElement('div', { style: { display: 'grid', gap: '3px' } },
         ...todos.map(item => createElement('div', {
@@ -501,32 +497,32 @@ export function StatusCard(props: {
     })
   }
   rows.push({
-    id: 'terminal', glyph: '▚', label: 'AI 终端', active: live,
+    id: 'terminal', glyph: '▚', label: t('status.terminal'), active: live,
     value: !live
-      ? (dead ? '已结束' : '未开启')
-      : agent.ready ? '运行中 · 只读' : '启动中…',
+      ? (dead ? t('status.ended') : t('status.off'))
+      : agent.ready ? t('status.runningReadonly') : t('status.starting'),
     detail: createElement('div', { style: { display: 'grid', gap: '4px' } },
       live || !agentHere
         ? null
         : createElement('div', {
           onClick: () => { pty.openAgentTerminal() },
           style: { color: theme.accentText, textDecoration: 'underline', cursor: 'pointer', fontSize: 11.5 },
-        }, agent.reason === undefined ? '为 AI 开启一个终端' : '重新开启'),
+        }, agent.reason === undefined ? t('status.openTerminal') : t('status.reopen')),
       dead ? line(agent.reason ?? '', theme) : null,
-      live && !agent.ready ? line('正在启动它自己的 shell…', theme) : null,
+      live && !agent.ready ? line(t('status.startingShell'), theme) : null,
       agentHere
         ? createElement(AgentTerminalPanel, { pty, sessionId, theme })
-        : line('切换到会话后可用。', theme),
+        : line(t('status.switchToSession'), theme),
     ),
   })
   if (children.length > 0 || runningChildren > 0) {
     rows.push({
-      id: 'agents', glyph: '⎇', label: '智能体', active: runningChildren > 0,
+      id: 'agents', glyph: '⎇', label: t('status.agents'), active: runningChildren > 0,
       value: children.length === 0
-        ? '读取中…'
-        : `${String(children.length)} 个${runningChildren === 0 ? '' : ` · ${String(runningChildren)} 运行中`}`,
+        ? t('status.loading')
+        : `${t('status.agents.count', { count: children.length })}${runningChildren === 0 ? '' : t('status.agents.running', { count: runningChildren })}`,
       detail: children.length === 0
-        ? line('还没有派生子智能体。', theme)
+        ? line(t('status.noAgents'), theme)
         : createElement('div', { style: { display: 'grid', gap: '2px' } },
           ...children.map(entry => createElement('div', {
             key: String(entry.id),
@@ -551,11 +547,12 @@ export function StatusCard(props: {
   }
   if (jobs.length > 0) {
     rows.push({
-      id: 'jobs', glyph: '⟳', label: '后台任务', active: liveJobs.length > 0,
-      value: liveJobs.length > 0 ? `${String(liveJobs.length)} 个运行中` : `${String(jobs.length)} 个`,
+      id: 'jobs', glyph: '⟳', label: t('status.jobs'), active: liveJobs.length > 0,
+      value: liveJobs.length > 0 ? t('status.jobs.live', { count: liveJobs.length }) : t('status.jobs.count', { count: jobs.length }),
       detail: createElement('div', { style: { display: 'grid', gap: '2px' } },
         ...sortedJobs.map(job => {
           const live = jobLive(job)
+          const statusLabel = t(JOB_STATUS_KEY[job.status])
           return createElement('div', {
             key: job.id,
             style: { display: 'grid', gridTemplateColumns: '10px 1fr auto', gap: '6px', alignItems: 'baseline' },
@@ -571,9 +568,9 @@ export function StatusCard(props: {
               },
             }, `${job.kind} · ${job.label}`),
             createElement('span', {
-              title: job.detail ?? JOB_STATUS_LABEL[job.status],
+              title: job.detail ?? statusLabel,
               style: { color: theme.muted, fontSize: 11, whiteSpace: 'nowrap' },
-            }, `${job.detail ?? JOB_STATUS_LABEL[job.status]} · ${jobDuration(job, now)}`),
+            }, `${job.detail ?? statusLabel} · ${jobDuration(t, job, now)}`),
           )
         }),
       ),
@@ -581,11 +578,11 @@ export function StatusCard(props: {
   }
   if (transfersHere.length > 0) {
     rows.push({
-      id: 'transfers', glyph: '⇅', label: '缓冲区传输',
+      id: 'transfers', glyph: '⇅', label: t('status.transfers'),
       active: liveTransfers.length > 0,
       value: liveTransfers.length > 0
-        ? `${String(liveTransfers.length)} 个传输中 · ${String(transferPct(liveTransfers[0]))}%`
-        : '刚刚完成',
+        ? t('status.transfers.live', { count: liveTransfers.length, pct: transferPct(liveTransfers[0]) })
+        : t('status.transfers.done'),
       detail: createElement('div', { style: { display: 'grid', gap: '5px' } },
         ...transfersHere.map(entry => {
           const pct = transferPct(entry)
@@ -603,7 +600,7 @@ export function StatusCard(props: {
                 style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
               }, entry.label),
               createElement('span', { style: { flex: '0 0 auto', opacity: 0.75 } },
-                entry.error !== undefined ? '失败' : `${String(pct)}%`),
+                entry.error !== undefined ? t('status.failed') : `${String(pct)}%`),
             ),
             createElement('div', {
               style: {
@@ -630,29 +627,29 @@ export function StatusCard(props: {
   // turn on purpose); a pipe task is work another session handed to this one.
   if (waiting.length > 0) {
     rows.push({
-      id: 'breakpoint', glyph: '⏸', label: '中断点', active: true,
-      value: `等待 ${peerTitle(waiting[0]?.to ?? '')} 回信${waiting.length > 1 ? ` · ${String(waiting.length)} 个` : ''}`,
+      id: 'breakpoint', glyph: '⏸', label: t('status.breakpoint'), active: true,
+      value: `${t('status.waiting', { peer: peerTitle(waiting[0]?.to ?? '') })}${waiting.length > 1 ? t('status.breakpoint.more', { count: waiting.length }) : ''}`,
       detail: createElement('div', { style: { display: 'grid', gap: '3px' } },
-        line('已把活交给别的会话并结束本轮，对方回信后会自动唤醒。', theme),
+        line(t('status.breakpoint.detail'), theme),
         ...waiting.map(ticket => createElement('div', {
           key: ticket.id,
           style: { display: 'grid', gap: '1px', marginTop: '2px' },
         },
           createElement('div', {
             style: { color: theme.text, fontSize: 11.5, lineHeight: '16px', whiteSpace: 'pre-wrap' },
-          }, `→ ${peerTitle(ticket.to)}：${ticket.subject}`),
+          }, t('status.breakpoint.to', { peer: peerTitle(ticket.to), subject: ticket.subject })),
           createElement('div', {
             style: { display: 'flex', gap: '8px', color: theme.muted, fontSize: 11 },
           },
-            createElement('span', null, `${STATE_LABEL[ticket.state]} · ${remaining(ticket.deadlineAt)}`),
-            ticket.reports.length === 0 ? null : createElement('span', null, `${String(ticket.reports.length)} 条进展`),
+            createElement('span', null, `${t(STATE_KEY[ticket.state])} · ${remaining(t, ticket.deadlineAt)}`),
+            ticket.reports.length === 0 ? null : createElement('span', null, t('status.reports', { count: ticket.reports.length })),
             createElement('span', {
               onClick: (event: { stopPropagation: () => void }) => {
                 event.stopPropagation()
                 void pipe?.cancel(ticket.id)
               },
               style: { color: theme.accentText, textDecoration: 'underline', cursor: 'pointer' },
-            }, '撤回'),
+            }, t('status.withdraw')),
           ),
         )),
       ),
@@ -660,8 +657,8 @@ export function StatusCard(props: {
   }
   if (owed.length > 0) {
     rows.push({
-      id: 'pipe', glyph: '⇄', label: '管道任务', active: true,
-      value: `${String(owed.length)} 个待处理 · ${peerTitle(owed[0]?.from ?? '')}`,
+      id: 'pipe', glyph: '⇄', label: t('status.pipe'), active: true,
+      value: t('status.pipe.value', { count: owed.length, peer: peerTitle(owed[0]?.from ?? '') }),
       detail: createElement('div', { style: { display: 'grid', gap: '3px' } },
         ...owed.map(ticket => createElement('div', {
           key: ticket.id,
@@ -669,9 +666,9 @@ export function StatusCard(props: {
         },
           createElement('div', {
             style: { color: theme.text, fontSize: 11.5, lineHeight: '16px', whiteSpace: 'pre-wrap' },
-          }, `← ${peerTitle(ticket.from)}：${ticket.subject}`),
+          }, t('status.pipe.from', { peer: peerTitle(ticket.from), subject: ticket.subject })),
           createElement('div', { style: { color: theme.muted, fontSize: 11 } },
-            `${STATE_LABEL[ticket.state]} · ${remaining(ticket.deadlineAt)}`),
+            `${t(STATE_KEY[ticket.state])} · ${remaining(t, ticket.deadlineAt)}`),
         )),
         pipe === undefined
           ? null
@@ -681,21 +678,21 @@ export function StatusCard(props: {
               pipe.setOpen(true)
             },
             style: { color: theme.accentText, textDecoration: 'underline', cursor: 'pointer', fontSize: 11.5, marginTop: '3px' },
-          }, '打开管道面板'),
+          }, t('status.openPipePanel')),
       ),
     })
   }
   if (linkBroken || (linkHere && link.status === 'connecting')) {
     rows.push({
-      id: 'link', glyph: '⚡', label: '连接', active: false,
-      value: linkBroken ? '已断开' : '连接中…',
+      id: 'link', glyph: '⚡', label: t('status.link'), active: false,
+      value: linkBroken ? t('status.disconnected') : t('status.connecting'),
       detail: createElement('div', { style: { display: 'grid', gap: '3px' } },
         line(link.reason ?? '', theme),
         link.detail === undefined ? null : line(link.detail, theme),
         createElement('div', {
           onClick: () => { pty.reconnect() },
           style: { color: theme.accentText, textDecoration: 'underline', cursor: 'pointer', fontSize: 11.5 },
-        }, '重新连接'),
+        }, t('status.reconnect')),
       ),
     })
   }

@@ -12,8 +12,11 @@ import {
   createElement, useState, useSyncExternalStore,
   type CSSProperties, type ChangeEvent, type ReactElement,
 } from 'react'
+import type { PropsLocale, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DeviceAuth, DeviceView } from '../protocol.js'
 import type { SshClientService } from './service.js'
+// Type-only: pulls this namespace's key merge (`PropsLocale<'dshellSsh'>`).
+import type {} from './locales.js'
 
 const cardStyle: CSSProperties = {
   listStyle: 'none',
@@ -90,10 +93,15 @@ const BLANK = {
 }
 
 /** Sliding segmented control: two labels, one highlight that follows the pick. */
-function AuthSwitch(props: { value: DeviceAuth; disabled: boolean; onChange: (next: DeviceAuth) => void }): ReactElement {
+function AuthSwitch(props: {
+  value: DeviceAuth
+  disabled: boolean
+  t: TranslateNS<'dshellSsh'>
+  onChange: (next: DeviceAuth) => void
+}): ReactElement {
   const options: readonly { id: DeviceAuth; label: string }[] = [
-    { id: 'key', label: '密钥' },
-    { id: 'password', label: '密码' },
+    { id: 'key', label: props.t('auth.key') },
+    { id: 'password', label: props.t('auth.password') },
   ]
   return createElement('div', {
     style: {
@@ -130,10 +138,17 @@ function AuthSwitch(props: { value: DeviceAuth; disabled: boolean; onChange: (ne
 /** Login-method field label. */
 const labelStyle: CSSProperties = { fontSize: 12, opacity: 0.7, gridColumn: '1 / -1', marginBottom: -4 }
 
-export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
+/**
+ * The card's composed props: the device service this package injects into the
+ * slot, plus the framework-synthesized `t` seat for the declared namespace.
+ */
+export type DshellSshCardProps = { ssh: SshClientService } & PropsLocale<'dshellSsh'>
+
+export function DshellSshCard(props: DshellSshCardProps): ReactElement {
+  const { ssh, t } = props
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(BLANK)
-  const snapshot = useSyncExternalStore(props.ssh.subscribe, props.ssh.getSnapshot)
+  const snapshot = useSyncExternalStore(ssh.subscribe, ssh.getSnapshot)
   const edit = (field: keyof typeof BLANK, value: string): void => {
     setForm(current => ({ ...current, [field]: value }))
   }
@@ -141,7 +156,7 @@ export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
     setForm(current => ({ ...current, auth: next, secret: '' }))
   }
   const submit = (): void => {
-    void props.ssh.save({
+    void ssh.save({
       ...form.id === undefined ? {} : { id: form.id },
       name: form.name,
       host: form.host,
@@ -181,11 +196,14 @@ export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
       createElement('span', { style: headTextStyle },
         createElement('span', {
           style: { fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-primary)' },
-        }, 'SSH 设备'),
+        }, t('card.title')),
         createElement('span', { style: descStyle },
           snapshot.devices.length === 0
-            ? '添加远程设备，开新会话时可以直接选择它'
-            : `${String(snapshot.devices.length)} 台设备 · ${snapshot.devices.map(d => d.name).join('、')}`),
+            ? t('card.empty')
+            : t('card.summary', {
+              count: snapshot.devices.length,
+              names: snapshot.devices.map(d => d.name).join(t('card.nameSeparator')),
+            })),
       ),
       createElement(Chevron, { open }),
     ),
@@ -194,71 +212,71 @@ export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
         ...snapshot.devices.map(device => createElement('div', { key: device.id, style: rowStyle },
           createElement('span', { style: rowTitleStyle },
             `${device.name} · ${device.user}@${device.host}:${String(device.port)}`
-            + ` · ${device.auth === 'password' ? '密码' : '密钥'}登录${device.hasSecret ? '' : '（未存凭据）'}`),
+            + ` · ${t('device.login', {
+              method: device.auth === 'password' ? t('auth.password') : t('auth.key'),
+            })}${device.hasSecret ? '' : t('device.noSecret')}`),
           createElement('button', {
-            type: 'button', style: actionStyle, title: '测试连接',
+            type: 'button', style: actionStyle, title: t('device.testTooltip'),
             // The refusal is published on the snapshot, which this card
             // renders; catching it here keeps a deliberate refusal from also
             // looking like an unhandled failure in the console.
-            onClick: () => { void props.ssh.test(device.id).catch(() => {}) },
-          }, '测试'),
+            onClick: () => { void ssh.test(device.id).catch(() => {}) },
+          }, t('device.test')),
           createElement('button', {
-            type: 'button', style: actionStyle, title: '编辑',
+            type: 'button', style: actionStyle, title: t('device.edit'),
             onClick: () => { loadIntoForm(device) },
-          }, '编辑'),
+          }, t('device.edit')),
           createElement('button', {
-            type: 'button', style: actionStyle, title: '删除',
-            onClick: () => { void props.ssh.remove(device.id) },
-          }, '删除'),
+            type: 'button', style: actionStyle, title: t('device.remove'),
+            onClick: () => { void ssh.remove(device.id) },
+          }, t('device.remove')),
         )),
         createElement('div', { style: formStyle },
           createElement('input', {
-            style: fieldStyle, placeholder: '名称，例如 构建机',
+            style: fieldStyle, placeholder: t('form.namePlaceholder'),
             value: form.name,
             onChange: (event: ChangeEvent<HTMLInputElement>) => { edit('name', event.target.value) },
           }),
           createElement('input', {
-            style: fieldStyle, placeholder: 'host 或 IP',
+            style: fieldStyle, placeholder: t('form.hostPlaceholder'),
             value: form.host,
             onChange: (event: ChangeEvent<HTMLInputElement>) => { edit('host', event.target.value) },
           }),
           createElement('input', {
-            style: fieldStyle, placeholder: '端口 22',
+            style: fieldStyle, placeholder: t('form.portPlaceholder'),
             value: form.port,
             onChange: (event: ChangeEvent<HTMLInputElement>) => { edit('port', event.target.value) },
           }),
           createElement('input', {
-            style: fieldStyle, placeholder: '用户名',
+            style: fieldStyle, placeholder: t('form.userPlaceholder'),
             value: form.user,
             onChange: (event: ChangeEvent<HTMLInputElement>) => { edit('user', event.target.value) },
           }),
           createElement('input', {
-            style: fieldStyle, placeholder: '远端工作目录，例如 /srv/app',
+            style: fieldStyle, placeholder: t('form.remoteRootPlaceholder'),
             value: form.remoteRoot,
             onChange: (event: ChangeEvent<HTMLInputElement>) => { edit('remoteRoot', event.target.value) },
           }),
-          createElement('div', { style: noteStyle }, '留空的目录表示登录目录；会话绑定该设备后，命令默认在这个目录下执行。'),
-          createElement('div', { style: labelStyle }, '登录方式'),
-          createElement(AuthSwitch, { value: form.auth, disabled: false, onChange: pickAuth }),
+          createElement('div', { style: noteStyle }, t('form.remoteRootNote')),
+          createElement('div', { style: labelStyle }, t('form.authLabel')),
+          createElement(AuthSwitch, { value: form.auth, disabled: false, t, onChange: pickAuth }),
           form.auth === 'password'
             ? createElement('input', {
               style: fieldStyle,
               type: 'password',
-              placeholder: '登录密码（可留空以使用本机 ssh agent / ~/.ssh/config）',
+              placeholder: t('form.passwordPlaceholder'),
               value: form.secret,
               autoComplete: 'new-password',
               onChange: (event: ChangeEvent<HTMLInputElement>) => { edit('secret', event.target.value) },
             })
             : createElement('textarea', {
               style: keyStyle,
-              placeholder: '私钥内容（OpenSSH 格式，可留空以使用本机 ssh agent / ~/.ssh/config）',
+              placeholder: t('form.keyPlaceholder'),
               value: form.secret,
               onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { edit('secret', event.target.value) },
             }),
           createElement('div', { style: noteStyle },
-            form.auth === 'password'
-              ? '密码写入 $DSH_HOME/dshell/ssh/keys/<设备>.password（0600），连接时通过 OpenSSH 的 askpass 钩子交给 ssh，不出现在命令行里。'
-              : '私钥写入 $DSH_HOME/dshell/ssh/keys/ 并设为 0600；编辑时留空表示不改动已存的凭据。'),
+            form.auth === 'password' ? t('form.passwordNote') : t('form.keyNote')),
           snapshot.error !== undefined ? createElement('div', { style: errorStyle }, snapshot.error) : null,
           snapshot.testResult !== undefined ? createElement('div', { style: resultStyle }, snapshot.testResult) : null,
           createElement('button', {
@@ -266,7 +284,7 @@ export function DshellSshCard(props: { ssh: SshClientService }): ReactElement {
             style: primaryStyle,
             disabled: form.host.trim() === '' || form.user.trim() === '',
             onClick: submit,
-          }, form.id === undefined ? '添加设备' : '保存修改'),
+          }, form.id === undefined ? t('form.submitAdd') : t('form.submitSave')),
         ),
       )
       : null,

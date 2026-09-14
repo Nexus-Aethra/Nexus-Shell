@@ -9,6 +9,10 @@
  */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
+// Type-only: pulls the locale service merge (ctx.locale) and this namespace's keys.
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from './locales.js'
 import {
   DSHELL_BUFFER_PATH, type BufferGrant, type BufferLink, type BufferListing, type BufferRequest,
   type BufferResponse, type BufferTicket, type BufferTransfer,
@@ -67,14 +71,19 @@ export interface SessionSeat {
   subscribe: (listener: () => void) => () => void
 }
 
+/** This package's copy namespace. */
+const NS = 'dshellBuffer'
+
 /** Pipe state mirror plus its mutations. */
 export class BufferClientService extends Service {
   private snapshot: BufferSnapshot = EMPTY
   private readonly listeners = new Set<() => void>()
+  private readonly t: TranslateNS<'dshellBuffer'>
   private poll: ReturnType<typeof setInterval> | undefined
 
   constructor(ctx: Context) {
     super(ctx, 'dshellBuffer')
+    this.t = ctx.locale.bind(NS)
   }
 
   getSnapshot = (): BufferSnapshot => this.snapshot
@@ -157,7 +166,7 @@ export class BufferClientService extends Service {
     })
     const body = await response.json() as BufferResponse
     if (body.error !== undefined) throw new Error(body.error)
-    if (body.listing === undefined) throw new Error('响应缺少目录内容')
+    if (body.listing === undefined) throw new Error(this.t('error.missingListing'))
     return body.listing
   }
 

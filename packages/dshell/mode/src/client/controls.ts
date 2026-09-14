@@ -8,6 +8,7 @@ import {
   type ReactElement,
 } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShellCompletion } from './completion.js'
@@ -60,7 +61,8 @@ export function DshellLeftControls(props: {
   pty: PtyStreamService | undefined
   setMode(next: SessionMode): void
   submitShell(text: string): void
-} & DshellInputStandardProps & DshellInputCompletion): ReactElement | null {
+} & DshellInputStandardProps & DshellInputCompletion & PropsLocale<'dshellMode'>): ReactElement | null {
+  const { t } = props
   const theme = useDshellTheme()
   const mode = useSyncExternalStore(
     props.mode?.subscribe ?? (() => () => {}),
@@ -435,7 +437,7 @@ export function DshellLeftControls(props: {
   if (props.sessionId === undefined) return null
   const next: SessionMode = mode === 'shell' ? 'agent' : 'shell'
   const glyph = mode === 'shell' ? '$' : '✦'
-  const label = mode === 'shell' ? 'shell' : 'agent'
+  const label = t(mode === 'shell' ? 'composer.mode.shell' : 'composer.mode.agent')
   const chipStyle: CSSProperties = {
     border: `1px solid ${mode === 'shell' ? theme.accentBorder : theme.borderStrong}`,
     background: mode === 'shell' ? theme.accentFaint : 'transparent',
@@ -452,9 +454,9 @@ export function DshellLeftControls(props: {
    * key the settings card has turned off is a worse answer than a shorter line. */
   const legendFor = (...leading: readonly string[]): string => [
     ...leading,
-    ...helpers.tabCompletion ? ['Tab 补全'] : [],
-    ...helpers.historyList ? ['↑ 历史'] : [],
-    'Ctrl+C 中断',
+    ...helpers.tabCompletion ? [t('composer.legend.tab')] : [],
+    ...helpers.historyList ? [t('composer.legend.history')] : [],
+    t('composer.legend.ctrlC'),
   ].join(' · ')
   return createElement('div', { style: chipSeatStyle },
     createElement('button', {
@@ -464,16 +466,16 @@ export function DshellLeftControls(props: {
     createElement('div', { style: { color: theme.muted, fontSize: 12, marginLeft: 8 } },
       mode === 'shell'
         ? (attachmentCount > 0
-          ? '有附件：Enter 发送给 AI · 附件已转对话'
+          ? t('composer.legend.attachments')
           : completeOpen
-            ? 'Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭'
+            ? t('composer.legend.completionOpen')
             // The ghost is the one gesture with no visible affordance of its own,
             // so the legend names its key while a ghost is actually drawn — and
             // only then, since → is an ordinary caret move the rest of the time.
             : hintVisible
-              ? legendFor('→ 采纳一个词', '继续 → 补完')
-              : legendFor('直接输入'))
-        : 'Enter 发送对话 · /agent 切终端'),
+              ? legendFor(t('composer.legend.acceptWord'), t('composer.legend.continueHint'))
+              : legendFor(t('composer.legend.idle')))
+        : t('composer.legend.agent')),
   )
 }
 

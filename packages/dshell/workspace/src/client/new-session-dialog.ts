@@ -20,6 +20,9 @@ import {
   type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactElement,
 } from 'react'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: pulls this namespace's key set (TranslateNS<'dshellWorkspace'>).
+import type {} from './locales.js'
 import { newSessionDialog } from './dialog-store.js'
 import type { PresetChoice } from './rows.js'
 import {
@@ -42,10 +45,14 @@ function TargetSwitch(props: {
   value: SessionTarget
   disabled: boolean
   onChange: (next: SessionTarget) => void
+  /** This package's bound translate, threaded from the dialog. */
+  t: TranslateNS<'dshellWorkspace'>
 }): ReactElement {
+  // The option ids are identifiers the switch logic matches on; only the
+  // labels are copy, so they are resolved from the dictionary here.
   const options: readonly { id: SessionTarget; label: string }[] = [
-    { id: 'local', label: '本机' },
-    { id: 'ssh', label: 'SSH 设备' },
+    { id: 'local', label: props.t('dialog.new.target.local') },
+    { id: 'ssh', label: props.t('dialog.new.target.ssh') },
   ]
   return createElement('div', {
     style: {
@@ -80,6 +87,8 @@ function TargetSwitch(props: {
 
 /** Props the flat list hands the dialog when it opens. */
 export interface NewSessionDialogProps {
+  /** This package's bound translate seat, threaded from the list. */
+  t: TranslateNS<'dshellWorkspace'>
   defaultCwd: string | undefined
   listPresets: () => Promise<PresetChoice[]>
   createSession(
@@ -120,6 +129,7 @@ export interface NewSessionDialogProps {
 }
 
 export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
+  const t = props.t
   const [name, setName] = useState('')
   // Terminal continuity, with one exclusion: the previous session's directory
   // is only a sensible default when it is a real working directory. An SSH
@@ -179,18 +189,18 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
     try {
       // A chosen target with nothing to run on must not fall back to local:
       // the session would silently be a local one under an SSH label.
-      if (target === 'ssh' && deviceId === '') throw new Error('请先添加并选择一台 SSH 设备')
+      if (target === 'ssh' && deviceId === '') throw new Error(t('dialog.new.error.sshDevice'))
       // The mirror of that mistake: a local session created in a mount
       // directory is routed to the device by every execution seam.
       if (target === 'local' && dir.trim() !== '' && props.isMountPath?.(dir.trim()) === true) {
-        throw new Error('该目录是设备的挂载目录，本机会话不能使用；请换一个目录或改选 SSH')
+        throw new Error(t('dialog.new.error.mountLocal'))
       }
       // An empty directory is not "no choice": dsh then inherits the current
       // session's directory, which can be the mount this dialog just refused
       // to prefill. Asking for one is the only way to keep a local session
       // local, so it is a refusal rather than a silent inherited mount.
       if (target === 'local' && dir.trim() === '' && inheritedMount) {
-        throw new Error('上一个会话的目录是设备挂载目录，本机会话不能沿用它；请填写一个本机目录')
+        throw new Error(t('dialog.new.error.inheritedMount'))
       }
       const remote = target === 'ssh' && deviceId !== ''
       const remoteRoot = remote ? remoteDir.trim() === '' ? null : remoteDir.trim() : null
@@ -209,7 +219,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       // created without it: a device-bound session whose cwd were a normal
       // local directory would look plausible and quietly point nowhere.
       const mount = remote ? await props.mountFor?.(deviceId, remoteRoot) : undefined
-      if (remote && mount === undefined) throw new Error('无法解析设备挂载目录')
+      if (remote && mount === undefined) throw new Error(t('dialog.new.error.mountResolve'))
       const sessionId = await props.createSession(
         name.trim() === '' ? undefined : name.trim(),
         remote ? mount : dir.trim() === '' ? undefined : dir.trim(),
@@ -238,7 +248,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
   const presetField = presetOptions.length === 0
     ? null
     : createElement('div', null,
-      createElement('div', { style: fieldLabelStyle }, 'Agent 预设'),
+      createElement('div', { style: fieldLabelStyle }, t('dialog.new.preset')),
       // A SelectMenu rather than a native <select>: the OS-drawn option list
       // cannot be positioned by the page and pops up detached from the
       // control inside this webview.
@@ -246,7 +256,7 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
         value: preset,
         disabled: busy,
         options: [
-          { id: '', label: '跟随默认' },
+          { id: '', label: t('dialog.new.preset.follow') },
           ...presetOptions.map(choice => ({
             id: choice.id,
             label: choice.label,
@@ -262,16 +272,16 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
     },
   },
     createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
-      createElement('div', { style: dialogTitleStyle }, '新会话'),
+      createElement('div', { style: dialogTitleStyle }, t('dialog.new.title')),
       props.revealSettings === undefined
         ? null
         : createElement('div', null,
-          createElement('div', { style: fieldLabelStyle }, '运行位置'),
-          createElement(TargetSwitch, { value: target, disabled: busy, onChange: pickTarget })),
+          createElement('div', { style: fieldLabelStyle }, t('dialog.new.target')),
+          createElement(TargetSwitch, { value: target, disabled: busy, onChange: pickTarget, t })),
       target !== 'ssh' || devices.length > 0
         ? null
         : createElement('div', { style: emptyDeviceStyle },
-          createElement('span', null, '还没有配置任何设备。'),
+          createElement('span', null, t('dialog.new.noDevices')),
           createElement('button', {
             type: 'button',
             style: linkButtonStyle,
@@ -281,14 +291,14 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
               // controls are not where we expect them, say the path instead of
               // silently doing nothing.
               if (props.revealSettings?.() !== true) {
-                setError('请在「设置 → 插件 → SSH 设备」中添加设备')
+                setError(t('dialog.new.error.settings'))
               }
             },
-          }, '去设置中添加')),
+          }, t('dialog.new.addDevice'))),
       target !== 'ssh' || devices.length === 0
         ? null
         : createElement('div', null,
-          createElement('div', { style: fieldLabelStyle }, 'SSH 设备'),
+          createElement('div', { style: fieldLabelStyle }, t('dialog.new.device')),
           createElement(SelectMenu, {
             value: deviceId,
             disabled: busy,
@@ -298,32 +308,32 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
       target !== 'ssh' || devices.length === 0
         ? null
         : createElement('div', null,
-          createElement('div', { style: fieldLabelStyle }, '远端目录'),
+          createElement('div', { style: fieldLabelStyle }, t('dialog.new.remoteDir')),
           createElement('input', {
             style: fieldInputStyle,
             value: remoteDir,
             autoFocus: true,
-            placeholder: selectedDevice === undefined ? '登录目录' : selectedDevice.remoteRoot,
+            placeholder: selectedDevice === undefined ? t('dialog.new.remoteDir.placeholder') : selectedDevice.remoteRoot,
             onChange: (event) => { setRemoteTyped(true); setRemoteDir(event.target.value) },
             onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
           })),
       createElement('div', null,
-        createElement('div', { style: fieldLabelStyle }, '名称'),
+        createElement('div', { style: fieldLabelStyle }, t('dialog.new.name')),
         createElement('input', {
           style: fieldInputStyle,
           value: name,
-          placeholder: '可选，留空则用目录名',
+          placeholder: t('dialog.new.name.placeholder'),
           onChange: (event) => { setName(event.target.value) },
           onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
         })),
       target === 'ssh'
         ? null
         : createElement('div', null,
-          createElement('div', { style: fieldLabelStyle }, '起始目录'),
+          createElement('div', { style: fieldLabelStyle }, t('dialog.new.dir')),
           createElement('input', {
             style: fieldInputStyle,
             value: dir,
-            placeholder: props.defaultCwd === undefined ? '默认目录' : '会话的工作目录',
+            placeholder: props.defaultCwd === undefined ? t('dialog.new.dir.placeholderDefault') : t('dialog.new.dir.placeholderSession'),
             onChange: (event) => { setDir(event.target.value) },
             onKeyDown: (event) => { if (event.key === 'Enter') void submit() },
           })),
@@ -334,12 +344,12 @@ export function NewSessionDialog(props: NewSessionDialogProps): ReactElement {
           style: cancelButtonStyle,
           disabled: busy,
           onClick: () => { newSessionDialog.set(false) },
-        }, '取消'),
+        }, t('dialog.new.cancel')),
         createElement('button', {
           style: createButtonStyle,
           disabled: busy,
           onClick: () => { void submit() },
-        }, busy ? phase === 'testing' ? '连接测试…' : '创建中…' : '创建'),
+        }, busy ? phase === 'testing' ? t('dialog.new.testing') : t('dialog.new.creating') : t('dialog.new.create')),
       ),
     ))
 }

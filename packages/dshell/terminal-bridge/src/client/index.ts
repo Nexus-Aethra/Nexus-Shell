@@ -16,6 +16,10 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the sessions service merge (ctx.sessions).
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+// Type-only: pulls the locale service merge (ctx.locale) and this namespace's keys.
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import { en, zh } from './locales.js'
 import {
   TIMELINE_LIMITS,
   loadTimeline,
@@ -40,7 +44,10 @@ export type { PtyTransport } from './channel.js'
 
 export const name = '@nexus-aethra/dshell-terminal-bridge/client'
 
-export const inject = ['sessions'] as const
+export const inject = ['sessions', 'locale'] as const
+
+/** This package's copy namespace. */
+const NS = 'dshellTerminalBridge'
 
 /** One host-defined block: a shell stretch or one agent turn, in order. */
 export interface PtyBlock {
@@ -249,8 +256,12 @@ export class PtyStreamService extends Service {
   /** A reopen was asked for before the socket finished opening. */
   private agentSpawnRequested = false
 
+  /** This package's copy, read at call time so a language switch is picked up. */
+  private readonly t: TranslateNS<typeof NS>
+
   constructor(ctx: Context) {
     super(ctx, 'dshellPtyStream')
+    this.t = ctx.locale.bind(NS)
   }
 
   /** The persisted-and-live PTY text of one session (oldest first). */
@@ -588,7 +599,7 @@ export class PtyStreamService extends Service {
           if (this.agentChannel !== channel) return
           this.agentChannel = undefined
           this.agentChannelSession = undefined
-          const reason = this.agent.getSnapshot().reason ?? '与服务端的连接已断开'
+          const reason = this.agent.getSnapshot().reason ?? this.t('disconnect')
           this.patchAgent({ status: 'closed', reason })
         },
         onError: () => {
@@ -715,7 +726,7 @@ export class PtyStreamService extends Service {
           this.channelSession = undefined
           this.boundId = undefined
           if (this.desiredId === undefined) return
-          const reason = this.state.getSnapshot().reason ?? '与服务端的连接已断开'
+          const reason = this.state.getSnapshot().reason ?? this.t('disconnect')
           this.patch({ status: 'closed', reason })
           this.scheduleRetry()
         },
@@ -925,6 +936,7 @@ export function apply(ctx: Context): void {
   // type is not the client face here. Same cast dsh's own ui-workspace
   // applies at runtime typing.
   const sessions = ctx.get('sessions') as unknown as ISessions
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshell-bridge: dictionaries')
   const stream = new PtyStreamService(ctx)
 
   const reconcile = (): void => {

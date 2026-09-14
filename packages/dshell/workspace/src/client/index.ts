@@ -42,18 +42,25 @@ import type {
 import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 // Type-only: pulls ui-sidebar's SlotMap merge ('sidebar.workspaces' hole).
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+// Type-only: pulls the locale service merge (ctx.locale) and this namespace's keys.
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: pulls the `dshellBuffer` service merge the pipe entry toggles.
 import type {} from '@nexus-aethra/dshell-buffer/client'
 import type { SshSnapshot } from '@nexus-aethra/dshell-ssh/client'
 import { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'
+import { en, zh } from './locales.js'
 import { activeRows, directoryName, presetChoices, type PresetChoice, type SessionRow } from './rows.js'
 import { FlatSessionList, type DeviceSeat, type FlatSessionListProps } from './session-list.js'
 
 export const name = '@nexus-aethra/dshell-workspace/client'
 
-export const inject = ['slots', 'sessions', 'remote', 'remote.agentPresets'] as const
+export const inject = ['slots', 'locale', 'sessions', 'remote', 'remote.agentPresets'] as const
+
+/** This package's copy namespace. */
+const NS = 'dshellWorkspace'
 
 /** The permanent projection of a shell without workspaces. */
 const EMPTY_WORKSPACES: WorkspaceSnapshot = {
@@ -107,6 +114,8 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
     ctx: Context,
     private readonly sessions: ISessions,
     private readonly panel: SessionPanelClient,
+    /** This package's copy, read at call time so a language switch is picked up. */
+    private readonly t: TranslateNS<'dshellWorkspace'>,
   ) {
     super(ctx, 'uiWorkspace')
     ctx.effect(() => this.watchBootNavigation(), 'dshell-workspace: boot navigation')
@@ -193,7 +202,7 @@ class DshellUiWorkspace extends Service implements UiWorkspace {
   async listPresets(): Promise<PresetChoice[]> {
     const result = await this.ctx.remote.agentPresets.list()
     if (!result.ok) return []
-    return presetChoices(result.value.presets)
+    return presetChoices(result.value.presets, this.t)
   }
 
   /**
@@ -286,6 +295,8 @@ export function apply(ctx: Context): void {
   // package compiles both halves at once), so the client contract needs the
   // explicit two-step cast.
   const sessions = ctx.get('sessions') as unknown as ISessions
+  const t = ctx.locale.bind(NS)
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshell-workspace: dictionaries')
   const panel = new SessionPanelClient()
   // The SSH plugin is a sibling row: present in the dshell bundle, absent in a
   // composition that omits it, so the seat is filled by injection rather than
@@ -310,7 +321,7 @@ export function apply(ctx: Context): void {
     }
   })
   const workspaces = new DshellWorkspaces(ctx, panel)
-  const uiWorkspace = new DshellUiWorkspace(ctx, sessions, panel)
+  const uiWorkspace = new DshellUiWorkspace(ctx, sessions, panel, t)
   void panel.load()
 
   // The cross-session pipe entry, filled by injection like the device seat:
@@ -421,6 +432,7 @@ export function apply(ctx: Context): void {
   ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register(
     {
       name: 'sidebar.workspaces',
+      locale: NS,
       inject: (): FlatSessionListProps => ({
         sessions: sessions.list,
         panel,

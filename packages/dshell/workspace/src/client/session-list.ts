@@ -24,6 +24,9 @@ import {
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SshSnapshot } from '@nexus-aethra/dshell-ssh/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { PropsLocale, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: pulls this namespace's key set (PropsLocale<'dshellWorkspace'>).
+import type {} from './locales.js'
 import type { SessionPanelClient } from './archive.js'
 import { newSessionDialog } from './dialog-store.js'
 import { NewSessionDialog } from './new-session-dialog.js'
@@ -90,6 +93,12 @@ export interface FlatSessionListProps {
   open(sessionId: SessionId): void
 }
 
+/**
+ * Composed props of this slot entry: the inject face above plus the
+ * framework-injected locale seat (`locale: NS` on the registration).
+ */
+export type FlatSessionListBodyProps = FlatSessionListProps & PropsLocale<'dshellWorkspace'>
+
 /** Empty device snapshot, so the list renders before the SSH plugin answers. */
 const NO_DEVICES: SshSnapshot = {
   devices: [], bindings: [], testResult: undefined, error: undefined, loaded: false,
@@ -144,6 +153,8 @@ function DeleteDialog(props: {
   error: string | undefined
   onCancel: () => void
   onConfirm: () => void
+  /** This package's bound translate, threaded from the list. */
+  t: TranslateNS<'dshellWorkspace'>
 }): ReactElement {
   return createElement('div', {
     style: backdropStyle,
@@ -152,30 +163,33 @@ function DeleteDialog(props: {
     },
   },
     createElement('div', { style: dialogStyle, onClick: (event: ReactMouseEvent<HTMLDivElement>) => { event.stopPropagation() } },
-      createElement('div', { style: dialogTitleStyle }, props.count === undefined ? '删除会话' : `删除 ${String(props.count)} 个会话`),
+      createElement('div', { style: dialogTitleStyle }, props.count === undefined
+        ? props.t('dialog.delete.title')
+        : props.t('dialog.delete.titleBatch', { count: props.count })),
       createElement('div', { style: dialogBodyStyle },
         props.count === undefined
-          ? `将清除「${props.title}」的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`
-          : `将清除选中的 ${String(props.count)} 个会话的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`,
+          ? props.t('dialog.delete.body', { title: props.title })
+          : props.t('dialog.delete.bodyBatch', { count: props.count }),
         createElement('div', { style: { marginTop: 6, opacity: 0.75 } },
-          '仍然装载在本进程里的会话会先释放终端并移入「待删除」，日志在下次启动 dsh 时清除。')),
+          props.t('dialog.delete.note'))),
       props.error !== undefined ? createElement('div', { style: dialogErrorStyle }, props.error) : null,
       createElement('div', { style: dialogActionsStyle },
         createElement('button', {
           style: cancelButtonStyle,
           disabled: props.busy,
           onClick: props.onCancel,
-        }, '取消'),
+        }, props.t('dialog.delete.cancel')),
         createElement('button', {
           style: dangerButtonStyle,
           disabled: props.busy,
           onClick: props.onConfirm,
-        }, props.busy ? '删除中…' : '删除'),
+        }, props.busy ? props.t('dialog.delete.busy') : props.t('dialog.delete.confirm')),
       ),
     ))
 }
 
-export function FlatSessionList(props: FlatSessionListProps): ReactElement {
+export function FlatSessionList(props: FlatSessionListBodyProps): ReactElement {
+  const t = props.t
   const state = useSyncExternalStore(props.sessions.subscribe, props.sessions.getSnapshot)
   const dialogOpen = useSyncExternalStore(newSessionDialog.subscribe, newSessionDialog.getSnapshot)
   const archive = useSyncExternalStore(props.panel.subscribe, props.panel.getSnapshot)
@@ -296,7 +310,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     }
     setBatchBusy(false)
     if (refusals.length > 0) {
-      setDeleteError(refusals.join('；'))
+      setDeleteError(refusals.join(t('error.separator')))
       return
     }
     setChecked([])
@@ -343,7 +357,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     createElement(
       'div',
       { key: 'header', style: headerStyle },
-      createElement('span', null, `会话 (${active.length})`),
+      createElement('span', null, t('header.sessions', { count: active.length })),
       // The stock shell already offers new-session creation, so this header
       // slot carries the cross-session pipe entry instead. A composition
       // without dshell-buffer keeps the original new-session button.
@@ -351,17 +365,17 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         ? createElement(
           'button',
           { style: newButtonStyle, onClick: () => { newSessionDialog.set(true) } },
-          '＋ 新会话',
+          t('header.new'),
         )
         : createElement(
           'button',
-          { style: newButtonStyle, title: '跨会话管道：建立连接、查看委派与授权', onClick: props.pipe.toggle },
-          '管道',
+          { style: newButtonStyle, title: t('pipe.title'), onClick: props.pipe.toggle },
+          t('pipe.label'),
         ),
     ),
     createElement('div', { key: 'rows', style: scrollStyle },
       active.length === 0
-        ? createElement('div', { key: 'empty', style: emptyStyle }, rows.length === 0 ? '暂无会话' : '所有会话都已归档')
+        ? createElement('div', { key: 'empty', style: emptyStyle }, rows.length === 0 ? t('empty.none') : t('empty.allArchived'))
         : null,
       ...active.map((row) => {
         const selected = state.current === row.id
@@ -375,12 +389,12 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           createElement('span', { 'data-dshell-row-actions': 'archive', style: rowActionsStyle },
             createElement('button', {
               style: rowActionStyle,
-              title: '归档：从主列表移入已归档分组，日志保留',
+              title: t('row.archive.title'),
               onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                 event.stopPropagation()
                 void props.panel.archive(String(row.id))
               },
-            }, '归档'),
+            }, t('row.archive')),
           ),
         )
       }),
@@ -391,40 +405,40 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           onClick: () => { setArchivedOpen(open => !open) },
         },
           createElement(Chevron, { open: archivedOpen }),
-          createElement('span', null, '已归档'),
+          createElement('span', null, t('group.archived')),
           createElement('span', { style: groupCountStyle }, String(archivedRows.length)),
           // Multi-select controls live on the header line. The click handlers
           // stop propagation: the header itself folds the group.
           createElement('span', { style: { ...rowActionsStyle, marginLeft: 6 }, onClick: (event: ReactMouseEvent) => { event.stopPropagation() } },
             multi ? createElement('button', {
               style: rowActionStyle,
-              title: allChecked ? '全不选' : '全选',
+              title: allChecked ? t('multi.selectNone') : t('multi.selectAll'),
               onClick: () => { setChecked(allChecked ? [] : selectable) },
-            }, allChecked ? '全不选' : '全选')
+            }, allChecked ? t('multi.selectNone') : t('multi.selectAll'))
               : null,
             multi ? createElement('button', {
               style: rowActionStyle,
               disabled: batchBusy || checkedRows.length === 0,
-              title: '恢复选中会话到主列表',
+              title: t('multi.restore.title'),
               onClick: () => { void batchRestore() },
-            }, `恢复(${String(checkedRows.length)})`)
+            }, t('multi.restore', { count: checkedRows.length }))
               : null,
             multi ? createElement('button', {
               style: rowActionStyle,
               disabled: batchBusy || checkedRows.length === 0,
-              title: '清除选中会话的全部历史',
+              title: t('multi.delete.title'),
               onClick: () => { setDeleteError(undefined); setBatchTarget(checkedRows.length) },
-            }, `删除(${String(checkedRows.length)})`)
+            }, t('multi.delete', { count: checkedRows.length }))
               : null,
             createElement('button', {
               style: rowActionStyle,
-              title: multi ? '退出多选' : '多选：批量恢复或删除归档会话',
+              title: multi ? t('multi.exit.title') : t('multi.enter.title'),
               onClick: () => {
                 setChecked([])
                 setBatchTarget(undefined)
                 setMulti(current => !current)
               },
-            }, multi ? '取消' : '多选'),
+            }, multi ? t('multi.exit') : t('multi.enter')),
           ),
         ),
         ...archivedOpen
@@ -454,21 +468,21 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
               multi ? null : createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
                 createElement('button', {
                   style: rowActionStyle,
-                  title: '恢复：移回主列表',
+                  title: t('row.restore.title'),
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                     event.stopPropagation()
                     void props.panel.unarchive(id)
                   },
-                }, '恢复'),
+                }, t('row.restore')),
                 createElement('button', {
                   style: rowActionStyle,
-                  title: '删除：清除该会话的全部历史',
+                  title: t('row.delete.title'),
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                     event.stopPropagation()
                     setDeleteError(undefined)
                     setDeleteTarget({ id: row.id, title: row.displayTitle })
                   },
-                }, '删除'),
+                }, t('row.delete')),
               ),
             )
           })
@@ -485,8 +499,8 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           onClick: () => { setPendingOpen(open => !open) },
         },
           createElement(Chevron, { open: pendingOpen }),
-          createElement('span', null, '待删除'),
-          createElement('span', { style: groupNoteStyle }, '重启后清除'),
+          createElement('span', null, t('group.pending')),
+          createElement('span', { style: groupNoteStyle }, t('group.pending.note')),
           createElement('span', { style: groupCountStyle }, String(pendingRows.length)),
         ),
         ...pendingOpen
@@ -505,12 +519,12 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
               createElement('span', { 'data-dshell-row-actions': 'pending', style: rowActionsStyle },
                 createElement('button', {
                   style: rowActionStyle,
-                  title: '取消：撤销删除并移回主列表',
+                  title: t('row.cancel.title'),
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                     event.stopPropagation()
                     void props.panel.unarchive(id)
                   },
-                }, '取消'),
+                }, t('row.cancel')),
               ),
             )
           })
@@ -523,6 +537,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     dialogOpen
       ? createElement(NewSessionDialog, {
         key: 'dialog',
+        t,
         // The most recent real session's directory, but never a device mount:
         // a mount is an empty stand-in for a device tree, and dsh's own default
         // inherits the CURRENT session's directory, so offering one here is how
@@ -551,8 +566,9 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         error: deleteError,
         onCancel: () => { setDeleteTarget(undefined); setDeleteError(undefined) },
         onConfirm: () => { void confirmDelete() },
+        t,
       }),
-    batchTarget === undefined
+      batchTarget === undefined
       ? null
       : createElement(DeleteDialog, {
         key: 'batch-delete',
@@ -562,5 +578,6 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         error: deleteError,
         onCancel: () => { setBatchTarget(undefined); setDeleteError(undefined) },
         onConfirm: () => { void confirmBatchDelete() },
+        t,
       }))
 }

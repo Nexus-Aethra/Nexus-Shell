@@ -14,6 +14,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the plugin-card SlotMap (`settings.plugin.item`).
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+// Type-only: pulls the locale service merge (ctx.locale).
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the `ctx.inputTriggers` service merge; the named types are
 // the frozen source contract (`CommandClaim`/`PickOutcome` re-exported there).
 import type {
@@ -36,6 +39,8 @@ import { DshellComposerStats } from './composer-stats.js'
 import { DshellSettingsCard } from './settings-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
 import { adoptShellHelperSettings, connectShellHelperSettings } from './shell-settings.js'
+import type { DshellModeKey } from './locales.js'
+import { en, zh } from './locales.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
 
 /** The pipe's state before (or without) a buffer service to read it from. */
@@ -43,12 +48,15 @@ const EMPTY_PIPE_STATE = { links: [], tickets: [] } as const
 
 export const name = '@nexus-aethra/dshell-mode/client'
 
-export const inject = ['slots', 'sessions', 'dshellPtyStream', 'modelDirectories', 'uiConversation', 'settingsScope'] as const
+export const inject = ['slots', 'locale', 'sessions', 'dshellPtyStream', 'modelDirectories', 'uiConversation', 'settingsScope'] as const
 
-/** Per-message routing mode for one session. */
-const MODE_MENU_ROWS: readonly { name: 'shell' | 'agent'; description: string }[] = [
-  { name: 'shell', description: '切换到 shell 模式：Enter 直接执行命令' },
-  { name: 'agent', description: '切换到 agent 模式：Enter 发送给 AI' },
+/** This package's copy namespace. */
+const NS = 'dshellMode'
+
+/** Per-message routing mode for one session. The `name` stays the canonical identifier. */
+const MODE_MENU_ROWS: readonly { name: 'shell' | 'agent'; descriptionKey: DshellModeKey }[] = [
+  { name: 'shell', descriptionKey: 'mode.menu.shell' },
+  { name: 'agent', descriptionKey: 'mode.menu.agent' },
 ]
 
 /** Typed aliases → canonical mode. `/terminal` stays an accepted alias. */
@@ -74,7 +82,9 @@ const MODE_ALIASES = new Map<string, SessionMode>([
 function modeSwitchSource(deps: {
   modeFor(sessionId: SessionId): SnapshotStore<SessionMode>
   sendShell(text: string): void
+  t: TranslateNS<'dshellMode'>
 }): InputTriggerSource {
+  const { t } = deps
   /** Resolve a typed/picked name to its canonical mode (`/terminal` → shell). */
   const canonicalOf = (rawName: string): SessionMode | undefined => {
     const canonical = rawName === 'terminal' ? 'shell' : rawName
@@ -85,7 +95,7 @@ function modeSwitchSource(deps: {
     return {
       claim: {
         token: `/${next}`,
-        hint: '切换模式',
+        hint: t('mode.switch.hint'),
         submit: async (args) => {
           deps.modeFor(session.sessionId).set(next)
           const rest = args.trim()
@@ -93,8 +103,8 @@ function modeSwitchSource(deps: {
           return {
             kind: 'success',
             text: next === 'shell'
-              ? '已切换到 shell 模式 · Enter 直接执行命令'
-              : '已切换到 agent 模式 · Enter 发送给 AI',
+              ? t('mode.switch.shell')
+              : t('mode.switch.agent'),
           }
         },
       },
@@ -110,7 +120,7 @@ function modeSwitchSource(deps: {
       const query = req.query.trim().toLowerCase()
       return MODE_MENU_ROWS
         .filter(row => row.name.startsWith(query))
-        .map(row => ({ name: row.name, description: row.description, value: row.name }))
+        .map(row => ({ name: row.name, description: t(row.descriptionKey), value: row.name }))
     },
     // A menu pick is the common path (typing `/agent` opens the menu, Enter
     // picks the highlighted row). Switching in `onPick` and replacing the
@@ -131,10 +141,25 @@ function modeSwitchSource(deps: {
       const token = ws === -1 ? trimmed : trimmed.slice(0, ws)
       const name = token.slice(1).toLowerCase()
       if (canonicalOf(name) === undefined) return undefined
-      if (envelope.attachments > 0) throw new Error(`/${name} 不支持附件`)
+      if (envelope.attachments > 0) throw new Error(t('mode.attachmentsUnsupported', { name }))
       return claimFor(name, session)
     },
   }
+}
+
+/**
+ * Business face the block-view seat receives from this registration. Pinned as
+ * a named type so the slot overload infers it from here rather than from the
+ * component's props (the framework composes the locale `t` seat separately).
+ */
+interface BlockViewSeat {
+  sessionId: SessionId | undefined
+  pty: PtyStreamService
+  sessions: ISessions
+  /** Read at render time, so a plugin that loads after this one is still picked up. */
+  ssh: SshSeat | undefined
+  pipe: PipeSeat
+  loadImage: MessageImageLoader | undefined
 }
 
 /**
@@ -150,6 +175,10 @@ export function apply(ctx: Context): void {
   // tsc program (host SessionStore vs client ISessions); see terminal-bridge.
   const sessions = ctx.get('sessions') as unknown as ISessions
   const pty = ctx.get('dshellPtyStream') as PtyStreamService
+  const t = ctx.locale.bind(NS)
+  // The dictionaries are registered through an effect so a composition that
+  // unloads this plugin takes its copy with it.
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshell-mode: dictionaries')
   // Shell-mode completion's shared state: the Tab interceptor in the composer's
   // left controls writes it, the overlay list reads it, both keep the shell's
   // directory through it (see completion.ts).
@@ -318,6 +347,7 @@ export function apply(ctx: Context): void {
       id: 'dshell-mode-chip',
       name: 'conversation.input.left',
       order: 100,
+      locale: NS,
       inject: (sessionId: SessionId | undefined) => ({
         sessionId,
         mode: sessionId === undefined ? undefined : modeFor(sessionId),
@@ -339,7 +369,7 @@ export function apply(ctx: Context): void {
   // reach. Registered once; each session controller polls it.
   ctx.inject(['inputTriggers'], (scope) => {
     scope.effect(
-      () => scope.inputTriggers.registerSource(modeSwitchSource({ modeFor, sendShell })),
+      () => scope.inputTriggers.registerSource(modeSwitchSource({ modeFor, sendShell, t })),
       'dshell-mode: /shell + /agent source',
     )
   })
@@ -348,7 +378,7 @@ export function apply(ctx: Context): void {
   // edits — the same namespace this package's Host half registers, which is
   // what makes the tab dispatch the card at all.
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register(
-    { name: 'settings.plugin.item', key: DSHELL_SETTINGS_NAMESPACE },
+    { name: 'settings.plugin.item', key: DSHELL_SETTINGS_NAMESPACE, locale: NS },
     DshellSettingsCard,
   ))
   // The block view owns the stock `chat` cell (same id, lower priority
@@ -372,13 +402,12 @@ export function apply(ctx: Context): void {
       id: 'chat',
       name: 'conversation.view',
       priority: -1,
-      label: () => '会话',
-      inject: (sessionId: SessionId | undefined) => ({
+      locale: NS,
+      label: () => t('view.tab'),
+      inject: (sessionId: SessionId | undefined): BlockViewSeat => ({
         sessionId,
         pty,
         sessions,
-        // Read at render time, so a plugin that loads after this one is still
-        // picked up.
         ssh: sshSeat,
         pipe: pipeSeat,
         // Attachments arrive as opaque refs; the conversation service owns the
@@ -399,6 +428,7 @@ export function apply(ctx: Context): void {
       name: 'conversation.input.overlay',
       id: 'dshell-completion',
       order: 10,
+      locale: NS,
       inject: () => ({ completion: shellCompletion }),
     },
     ShellCompletionList,
@@ -413,6 +443,7 @@ export function apply(ctx: Context): void {
       name: 'conversation.input.overlay',
       id: 'dshell-command-hint',
       order: 11,
+      locale: NS,
       inject: () => ({ hints: commandHints }),
     },
     ShellCommandHint,
@@ -425,7 +456,7 @@ export function apply(ctx: Context): void {
   // projections (`sessionStats`, `tokenUsage`) rather than re-enabling a row
   // that would bring the duplicate tab back. See `composer-stats.ts`.
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
-    { name: 'conversation.composer.dock', id: 'dshell-stats', order: 0 },
+    { name: 'conversation.composer.dock', id: 'dshell-stats', order: 0, locale: NS },
     DshellComposerStats,
   ))
   // Hide the dsh local-build product label + version pill that sit to the
@@ -446,7 +477,7 @@ export function apply(ctx: Context): void {
   // package version), and the user only asked to remove them from the
   // sidebar's most prominent row.
   ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register(
-    { name: 'sidebar.brand.name', priority: -1 },
+    { name: 'sidebar.brand.name', priority: -1, locale: NS },
     function DshellBrandNamePlaceholder() { return null },
   ))
 }

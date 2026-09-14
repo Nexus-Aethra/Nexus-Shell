@@ -1,0 +1,143 @@
+/**
+ * `dshellBuffer` namespace dictionaries, and the namespace's declaration.
+ *
+ * The namespace merge lives with its key set so that any module naming
+ * `TranslateNS<'dshellBuffer'>` or `PropsLocale<'dshellBuffer'>` needs only
+ * this file, whichever entry a program loads first.
+ */
+
+import type {} from '@deepseek-ai/dsh-client-ui-slots'
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface LocaleNamespaceMap {
+    /** Pipe dialog, pipe graph, and buffer browser copy. */
+    dshellBuffer: DshellBufferKey
+  }
+}
+
+/** Simplified Chinese dictionary and key-set source of truth. */
+export const zh = {
+  'panel.label': '管道',
+  'panel.title': '跨会话管道',
+  'panel.summary': '{links} 条管道 · {open} 个进行中请求',
+  'panel.close': '关闭',
+  'tab.list': '列表',
+  'tab.graph': '图',
+  'error.clear': '点击清除',
+  'error.missingListing': '响应缺少目录内容',
+  'links.heading': '已建立的管道 ({count})',
+  'links.collapse': '收起',
+  'links.create': '+ 建立管道',
+  'links.empty': '还没有管道。建立之后，两侧的 agent 才能互相委派。',
+  'links.rowTitle': '点击查看这条管道的请求与授权',
+  'links.open': '{count} 个进行中',
+  'form.labelPlaceholder': '标签（可选），例如「部署机」',
+  'form.authorityNote': '只有你能建立管道；agent 没有建连的工具。',
+  'form.submit': '建立管道',
+  'session.withCwd': '{title}（{cwd}）',
+  'action.release': '解除',
+  'action.releasePipe': '解除管道',
+  'action.back': '← 返回',
+  'action.cancel': '取消',
+  'action.detail': '详情',
+  'action.resetLayout': '重置布局',
+  'detail.gone': '这条管道已被解除。',
+  'detail.activeRequests': '进行中的请求 ({count})',
+  'detail.noActiveRequests': '没有进行中的请求。',
+  'detail.settled': '已结束 ({count})',
+  'detail.grants': '生效中的授权 ({count})',
+  'detail.noGrants': '没有生效中的授权。任务结算时授权会自动回收。',
+  'ticket.state.queued': '排队中',
+  'ticket.state.running': '处理中',
+  'ticket.state.done': '已完成',
+  'ticket.state.failed': '已失败',
+  'ticket.state.timeout': '已超时',
+  'ticket.state.cancelled': '已取消',
+  'ticket.expires': '剩约 {minutes} 分钟 · {id}',
+  'grant.remaining': '剩余引用 {count}',
+  'grant.areaUnmapped': '{path}（{rights}，未映射）',
+  'grant.areaMapped': '/{as}/ ← {path}（{rights}）',
+  'rights.read': '读',
+  'rights.write': '写',
+  'rights.none': '无',
+  'browser.heading': '缓冲区',
+  'browser.rootTitle': '缓冲区根',
+  'browser.atRoot': '已在缓冲区根',
+  'browser.up': '上一级',
+  'browser.refresh': '刷新',
+  'browser.loading': '读取中…',
+  'browser.empty': '缓冲区为空。委派任务时带上带 as 名字的授权，映射目录会出现在这里。',
+  'browser.areaTitle': '{name}：{origin}（{rights}）',
+  'browser.emptyDir': '（空目录）',
+  'browser.truncated': '（条目过多，已截断到前 1000 项）',
+  'graph.current': '当前会话',
+  'graph.pipe': '管道',
+  'graph.openUnits': '{count} 单',
+  'graph.selected': '已选中管道',
+  'graph.resetTitle': '清空记忆的节点位置，全部回到环形排布',
+} satisfies Record<string, string>
+
+/** Namespace key union. */
+export type DshellBufferKey = keyof typeof zh
+
+/** English dictionary, checked complete against the Chinese key set. */
+export const en = {
+  'panel.label': 'Pipes',
+  'panel.title': 'Cross-session pipes',
+  'panel.summary': '{links} pipes, {open} active requests',
+  'panel.close': 'Close',
+  'tab.list': 'List',
+  'tab.graph': 'Graph',
+  'error.clear': 'Click to dismiss',
+  'error.missingListing': 'Response is missing the directory contents',
+  'links.heading': 'Established pipes ({count})',
+  'links.collapse': 'Collapse',
+  'links.create': '+ New pipe',
+  'links.empty': 'No pipes yet. Once one is created, the agents on both sides can delegate to each other.',
+  'links.rowTitle': 'View requests and grants for this pipe',
+  'links.open': '{count} active',
+  'form.labelPlaceholder': 'Label (optional), e.g. "deploy host"',
+  'form.authorityNote': 'Only you can create pipes; agents have no tool to connect them.',
+  'form.submit': 'Create pipe',
+  'session.withCwd': '{title} ({cwd})',
+  'action.release': 'Release',
+  'action.releasePipe': 'Release pipe',
+  'action.back': '← Back',
+  'action.cancel': 'Cancel',
+  'action.detail': 'Details',
+  'action.resetLayout': 'Reset layout',
+  'detail.gone': 'This pipe has been released.',
+  'detail.activeRequests': 'Active requests ({count})',
+  'detail.noActiveRequests': 'No active requests.',
+  'detail.settled': 'Settled ({count})',
+  'detail.grants': 'Active grants ({count})',
+  'detail.noGrants': 'No active grants. Grants are reclaimed automatically when a task settles.',
+  'ticket.state.queued': 'Queued',
+  'ticket.state.running': 'Running',
+  'ticket.state.done': 'Done',
+  'ticket.state.failed': 'Failed',
+  'ticket.state.timeout': 'Timed out',
+  'ticket.state.cancelled': 'Cancelled',
+  'ticket.expires': 'About {minutes} min left - {id}',
+  'grant.remaining': '{count} references left',
+  'grant.areaUnmapped': '{path} ({rights}, unmapped)',
+  'grant.areaMapped': '/{as}/ ← {path} ({rights})',
+  'rights.read': 'read',
+  'rights.write': 'write',
+  'rights.none': 'none',
+  'browser.heading': 'Buffer',
+  'browser.rootTitle': 'Buffer root',
+  'browser.atRoot': 'Already at the buffer root',
+  'browser.up': 'Up one level',
+  'browser.refresh': 'Refresh',
+  'browser.loading': 'Reading…',
+  'browser.empty': 'The buffer is empty. Include an `as`-named grant when delegating a task and the mapped directory appears here.',
+  'browser.areaTitle': '{name}: {origin} ({rights})',
+  'browser.emptyDir': '(empty directory)',
+  'browser.truncated': '(too many entries; truncated to the first 1000)',
+  'graph.current': 'Current session',
+  'graph.pipe': 'Pipe',
+  'graph.openUnits': '{count} open',
+  'graph.selected': 'Selected pipe',
+  'graph.resetTitle': 'Forget saved node positions and return to the ring layout',
+} satisfies Record<DshellBufferKey, string>

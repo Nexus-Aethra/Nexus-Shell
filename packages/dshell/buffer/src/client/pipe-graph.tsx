@@ -16,7 +16,9 @@ import {
   type Edge, type Node, type NodeChange, type NodeProps,
 } from '@xyflow/react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from 'react'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BufferLink, BufferTicket } from '../protocol.js'
+import type {} from './locales.js'
 import { FLOW_CSS } from './flow-css.js'
 
 /** One session node's data as the graph renders it. */
@@ -32,6 +34,7 @@ export interface GraphSession {
 
 /** The graph's props: derived data plus the three actions a real surface needs. */
 export interface PipeGraphProps {
+  readonly t: TranslateNS<'dshellBuffer'>
   readonly sessions: readonly GraphSession[]
   readonly links: readonly BufferLink[]
   readonly tickets: readonly BufferTicket[]
@@ -72,13 +75,14 @@ const handleStyle: CSSProperties = {
 function SessionNode(props: NodeProps): ReactElement {
   const data = props.data as {
     label: string; sub: string | undefined; active: boolean; current: boolean
+    t: TranslateNS<'dshellBuffer'>
   }
   return (
     <div style={data.active ? nodeActiveStyle : nodeStyle}>
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {data.current
-          ? <span title="当前会话" style={{
+          ? <span title={data.t('graph.current')} style={{
             width: 7, height: 7, borderRadius: 999, flex: '0 0 auto',
             background: 'var(--dsw-static-deepseek-500, #4f6bed)',
           }} />
@@ -142,6 +146,7 @@ function openCount(tickets: readonly BufferTicket[], linkId: string): number {
 
 /** The graph pane. Wrap with {@link PipeGraphProvider} at the call site. */
 function PipeGraphInner(props: PipeGraphProps): ReactElement {
+  const t = props.t
   const [positions, setPositions] = useState<NodePositions>(loadPositions)
   // Mirror for the drag-stop handler, which needs the live map to persist the
   // merged arrangement without reading state inside a state updater.
@@ -170,9 +175,9 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
       id: session.id,
       type: 'session',
       position: positions[session.id] ?? fallback,
-      data: { label: session.label, sub: session.sub, active: session.active, current: session.current },
+      data: { label: session.label, sub: session.sub, active: session.active, current: session.current, t },
     }
-  }), [props.sessions, positions])
+  }), [props.sessions, positions, t])
 
   const edges = useMemo<Edge[]>(() => props.links.map(link => {
     const open = openCount(props.tickets, link.id)
@@ -182,7 +187,7 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
       target: link.b,
       type: 'straight',
       selected: selected === link.id,
-      label: `${link.label ?? '管道'}${open > 0 ? ` · ${String(open)} 单` : ''}`,
+      label: `${link.label ?? t('graph.pipe')}${open > 0 ? ` · ${t('graph.openUnits', { count: open })}` : ''}`,
       animated: open > 0,
       style: {
         stroke: selected === link.id
@@ -193,7 +198,7 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
       labelStyle: { fill: 'var(--dsw-alias-label-secondary)', fontSize: 11 },
       labelBgStyle: { fill: 'var(--dsw-alias-bg-layer-2)' },
     }
-  }), [props.links, props.tickets, selected])
+  }), [props.links, props.tickets, selected, t])
 
   const onNodesChange = (changes: NodeChange[]): void => {
     // Only drags matter here: the node set is derived from the snapshot, so a
@@ -252,24 +257,24 @@ function PipeGraphInner(props: PipeGraphProps): ReactElement {
       </ReactFlow>
       {selected === undefined ? null : (
         <div style={chipStyle}>
-          <span style={chipDimStyle}>已选中管道</span>
-          <button style={chipButtonStyle} onClick={() => { props.onOpenDetail(selected) }}>详情</button>
+          <span style={chipDimStyle}>{t('graph.selected')}</span>
+          <button style={chipButtonStyle} onClick={() => { props.onOpenDetail(selected) }}>{t('action.detail')}</button>
           <button
             style={chipButtonStyle}
             onClick={() => { props.onUnlink(selected); setSelected(undefined) }}
-          >解除</button>
+          >{t('action.release')}</button>
           <button style={chipButtonStyle} onClick={() => { setSelected(undefined) }}>✕</button>
         </div>
       )}
       <div style={resetStyle}>
         <button
           style={chipButtonStyle}
-          title='清空记忆的节点位置，全部回到环形排布'
+          title={t('graph.resetTitle')}
           onClick={() => {
             try { localStorage.removeItem(POSITIONS_KEY) } catch { /* same as empty */ }
             setPositions({})
           }}
-        >重置布局</button>
+        >{t('action.resetLayout')}</button>
       </div>
     </div>
   )

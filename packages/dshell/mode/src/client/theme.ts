@@ -16,11 +16,13 @@ import { useSyncExternalStore } from 'react'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ITheme } from '@xterm/xterm'
 import { DEFAULT_THEME_ID, isThemeId, type DshellThemeId } from '../settings.js'
+import type { DshellModeKey } from './locales.js'
 import { XTERM_CSS } from './xterm-css.js'
 
 export interface Theme {
   readonly id: DshellThemeId
-  readonly label: string
+  /** Dictionary key of the display name; the id above is the identifier. */
+  readonly labelKey: DshellModeKey
   readonly bg: string
   readonly text: string
   readonly muted: string
@@ -42,7 +44,7 @@ export interface Theme {
 export const THEMES: readonly Theme[] = [
   {
     id: 'midnight',
-    label: '午夜',
+    labelKey: 'theme.midnight',
     bg: 'transparent',
     text: '#e8e8ec',
     muted: '#9d9da6',
@@ -60,7 +62,7 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'solarized',
-    label: '柔和',
+    labelKey: 'theme.solarized',
     bg: 'transparent',
     text: '#93a1a1',
     muted: '#657b83',
@@ -78,7 +80,7 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'dracula',
-    label: '神秘',
+    labelKey: 'theme.dracula',
     bg: 'transparent',
     text: '#f8f8f2',
     muted: '#6272a4',
@@ -96,7 +98,7 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'forest',
-    label: '森林',
+    labelKey: 'theme.forest',
     bg: 'transparent',
     text: '#d0d7c5',
     muted: '#8a9a76',

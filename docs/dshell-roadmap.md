@@ -2401,3 +2401,57 @@ repo directory): the browser listed 19 entries, folders first, with sizes, the
 `..` row and working crumbs; its row measure matched the file navigator's
 exactly (13px name, `4px 8px`, gap 6px, 20px line box, 28px row), and both lists
 answered the same hover colour.
+
+## Phase 10.17 — dshell follows dsh's language setting
+
+dsh ships a language switcher in its General settings (通用设置 → 语言, writing
+the durable `locale.preference` and driving its own browser chrome through
+`ctx.locale`). dshell ignored it: every dshell package hardcoded Chinese, so a
+user who picked English got an English dsh shell wrapped around a Chinese
+dshell. Reproduced before the work — `<html lang="en">`, dsh's own rows in
+English, and the sidebar still reading `归档` / `已归档` / `多选`.
+
+Every browser-face string now belongs to a per-package namespace
+(`dshellMode` 161 keys, `dshellWorkspace` 62, `dshellBuffer` 58, `dshellFiles`
+25, `dshellSsh` 25, `dshellTerminalBridge` 1), following the shape
+`dshell-files` had already established: a `locales.ts` that merges the namespace
+into `LocaleNamespaceMap` and ships `zh` as the key-set source of truth plus an
+`en` whose completeness the compiler checks, dictionaries registered inside
+`ctx.effect`, `locale: NS` on each slot registration to synthesize the `t` seat,
+and `ctx.locale.bind(NS)` at the sites that are not slots. Lookups resolve at
+call time, so switching the language re-renders the whole surface with no reload
+— confirmed by watching the sidebar, the composer legend and the settings card
+change under a pick.
+
+Four things the retrofit turned up:
+
+- **Module-scope label tables cannot be localized in place.** `STATE_LABEL`,
+  `JOB_STATUS_LABEL`, `HELPER_ROWS`, `TOOL_LABEL`, `THEMES[].label`,
+  `SESSION_ROW_LABEL` and `MODE_MENU_ROWS` are all built at import, before any
+  `t` exists. Each became an identifier→key map resolved at render, or a factory
+  taking `t`; the identifiers they key on (`queued`, `midnight`, `shell`) are
+  untouched, which is what keeps the wire values and localStorage keys stable.
+- **A slot registration that CALLS the component discards the injected seat.**
+  `register({ … }, () => Card(props))` drops every prop the renderer composes,
+  `t` included; passing the component itself with the extra face declared as
+  `inject: () => ({ … })` is what lets the synthesized `t` arrive.
+- **Translating a string the code matches on breaks behaviour silently.** The
+  compact rail hid the sidebar's section headings by matching their rendered
+  text (`['会话 (', '已归档']`), so an English UI stopped marking them — and
+  `待删除` had never been in the list at all. It now marks the group headers
+  through `data-dshell-row="archive-header"` / `"pending-header"` and finds the
+  main header structurally, which is language-independent and covers all three
+  sections. The one other text matcher, dshell-ssh's settings-nav lookup, already
+  listed both languages.
+- **Host text is out of scope, and stays that way.** dsh localizes its browser
+  chrome only; dshell's route errors, SSH test results, tool results, pipe
+  notices and system-prompt sections carry no locale, so host-produced strings a
+  client renders verbatim keep their own language. Localizing them needs a
+  message-key protocol across the wire rather than another dictionary — recorded
+  in `dshell-architecture.md` § 10 as the boundary.
+
+Verified in the browser in both languages on every surface: sidebar (including
+the collapsed rail), composer chip and legend, block timeline, status card,
+settings cards (terminal palette names included), the pipe panel, the SSH device
+card, and the new-session dialog — plus a clean `pnpm typecheck` and full
+`pnpm build`.

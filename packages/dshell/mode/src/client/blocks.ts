@@ -8,7 +8,11 @@ import type {
   SessionEventLike,
   SessionEventLikeEntry,
 } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { sanitizeRowText, sessionRowsOf, type SessionRow } from './session-rows.js'
+
+/** The bound translator of this package's namespace. */
+type ModeTranslate = TranslateNS<'dshellMode'>
 
 export const BLOCK_LINES = 3
 
@@ -157,16 +161,17 @@ export function statusOfReason(reason: { kind: string }): TurnBlock['status'] {
  * @param reason - its turn-end reason.
  * @param time - the closing event's timestamp; not the fold's wall clock, so a
  *   replayed session shows when the turn actually ended.
+ * @param t - the bound translator for the notice copy.
  */
-export function noticeOf(block: TurnBlock, reason: { kind: string; error?: { message?: string } }, time: number): string {
+export function noticeOf(block: TurnBlock, reason: { kind: string; error?: { message?: string } }, time: number, t: ModeTranslate): string {
   const at = new Date(time).toTimeString().slice(0, 5)
-  const facts = [`${String(block.steps)} 步`]
+  const facts = [t('notice.steps', { count: block.steps })]
   if (block.tokens > 0) facts.push(`${(block.tokens / 1000).toFixed(1)}k tok`)
   facts.push(at)
-  if (block.status === 'done') return `✓ AI 回答完成 · ${facts.join(' · ')}`
-  if (block.status === 'aborted') return `◼ AI 回答已中断 · ${at}`
-  const detail = reason.error?.message ?? (reason.kind === 'max-tokens' ? '达到输出上限' : reason.kind)
-  return `✗ AI 回答出错 · ${detail} · ${at}`
+  if (block.status === 'done') return t('notice.done', { facts: facts.join(' · ') })
+  if (block.status === 'aborted') return t('notice.aborted', { at })
+  const detail = reason.error?.message ?? (reason.kind === 'max-tokens' ? t('notice.maxTokens') : reason.kind)
+  return t('notice.failed', { detail, at })
 }
 
 /**
@@ -219,8 +224,9 @@ export function clearStream(block: TurnBlock | undefined): boolean {
  * item), and close on `turn/end`. Every other event contributes rows.
  * @param fold - the mutable fold state.
  * @param event - the durable session event, in seq order.
+ * @param t - the bound translator for the row and notice copy.
  */
-export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
+export function foldEvent(fold: BlockFold, event: SessionEventLike, t: ModeTranslate): void {
   const time = event.time
   if (event.type === 'turn/start') {
     const turn = event.data.turn
@@ -281,14 +287,14 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike): void {
         candidate.status = endStatus
       }
     }
-    const text = noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }, time)
+    const text = noticeOf(block, event.data.reason as { kind: string; error?: { message?: string } }, time, t)
     // The block view draws the notice with its block; the canvas keeps the
     // flat notice list because it interleaves them as timeline items.
     block.notice = { time, text }
     fold.notices.push({ time, text })
     return
   }
-  const rows = sessionRowsOf(event, fold.toolNames)
+  const rows = sessionRowsOf(event, fold.toolNames, t)
   if (rows.length === 0) return
   if (event.type === 'command/run') {
     // A new command closes the previous command's block: each switch reads as
