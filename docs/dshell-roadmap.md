@@ -2221,8 +2221,14 @@ Decisions the work forced:
   contenteditable: an injected node would be reconciled away on the next update
   and, until it was, the editor would read its selection offsets out of a tree it
   does not own. The tail is instead a span in the composer's floating overlay,
-  placed from the caret's own rect — which also means it follows a wrap for free,
-  since the caret is where the next character would go.
+  placed from the caret's own rect — so it sits wherever the next character would
+  go, the wrap included.
+- **The place is re-read, never cached.** The ghost is positioned from the caret's
+  rect on every `selectionchange`, on a window resize, AND on the editor's own
+  resize: a re-wrap is the one caret move the selection API does not report, and
+  the window can stay the same size while the composer does not (the sidebar
+  opened, the view split). Without the `ResizeObserver` the ghost kept the line
+  the offset used to be on.
 - **The match is an exact prefix, unlike Tab's.** Tab REWRITES the token under the
   caret, which is why it can fold capitals; the ghost can only append, so a
   case-insensitive match could suggest a command spelled differently from the
@@ -2233,12 +2239,21 @@ Decisions the work forced:
   first cut, which accepted while the ghost was invisible — the same
   visible/state disagreement the completion list's apply-on-move rule exists to
   prevent.)
+- **A hint belongs to the session that asked for it.** The store's entry carries
+  its session id, and both the read and the take test it, so a switch retires the
+  old line at once: a session whose draft coincidentally matches the previous
+  one's command cannot ghost — or take — text from the session it came from.
+  (Also found by review: the id was written down and never read.)
 - **One query per typing pause, sequence-guarded.** The draft changes on every
   keystroke, so the ask is debounced and an answer to a keystroke already
   overtaken is dropped; an empty line asks nothing.
-- The legend names the key while a hint is in hand (`→ 采纳一个词 · 继续 → 补完`)
-  and reverts to the idle line otherwise — the gesture has no affordance of its
-  own, and → is an ordinary caret move the rest of the time.
+- The legend names the key while a ghost is DRAWN — the ghost publishes its own
+  visibility, because "a hint is in hand" and "a hint is on screen" are different
+  claims (the same reason the caret's position gates the take) — and reverts to
+  the idle line otherwise: the gesture has no affordance of its own, and → is an
+  ordinary caret move the rest of the time.
+- A tail of nothing but spaces is no hint at all, so it neither draws nor claims
+  the arrow.
 
 Verified in the browser on a session that had run `echo alpha beta gamma delta`:
 `echo` ghosted ` alpha beta gamma delta` (after a restart, so the persistence path

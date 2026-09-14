@@ -68,9 +68,37 @@ class CommandHintStore {
   }
 }
 
+/**
+ * Whether a ghost is drawn right now.
+ *
+ * The legend names the arrow key only while there is a suggestion to take, and
+ * "the store holds a hint" is not that claim: the ghost is not drawn once the
+ * caret has left the end of the draft, and a key the legend promises has to be a
+ * key that does something (see `accept`).
+ */
+class HintVisibility {
+  private state = false
+  private readonly listeners = new Set<() => void>()
+
+  getSnapshot = (): boolean => this.state
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  set(next: boolean): void {
+    if (this.state === next) return
+    this.state = next
+    for (const listener of this.listeners) listener()
+  }
+}
+
 /** What the interceptor and the ghost share. */
 export interface CommandHints {
   readonly store: CommandHintStore
+  /** Whether the ghost is drawn, for the legend that names its key. */
+  readonly visible: HintVisibility
   /**
    * Offer a draft to the history, debounced.
    *
@@ -83,10 +111,19 @@ export interface CommandHints {
   offer(sessionId: string, draft: string): void
   /** Forget the hint: the mode left shell, the session changed, or the line ran. */
   clear(): void
-  /** The tail to ghost for this draft, or undefined when there is nothing to say. */
-  suffixFor(draft: string): string | undefined
+  /**
+   * The tail to ghost for this session's draft, or undefined when there is
+   * nothing to say.
+   *
+   * The session is an argument and not an assumption because the hint's text is
+   * only ever a suggestion for the line it was asked about: a draft that matches
+   * by coincidence after a switch must not carry another session's command into
+   * this one, and testing that here — rather than only when the switch's effect
+   * runs — leaves not even one frame that could draw or take the wrong tail.
+   */
+  suffixFor(sessionId: string, draft: string): string | undefined
   /** The draft with the hint's next chunk appended, or undefined when there is none. */
-  accept(draft: string): string | undefined
+  accept(sessionId: string, draft: string): string | undefined
 }
 
 /** One route call; the same shape the file navigator uses. */
@@ -117,6 +154,7 @@ export function nextChunk(suffix: string): string {
 /** A session's hint, and the debounced history query behind it. */
 export function createCommandHints(): CommandHints {
   const store = new CommandHintStore()
+  const visible = new HintVisibility()
   let timer: ReturnType<typeof setTimeout> | undefined
   /** Which query's answer is still wanted; anything older is dropped. */
   let sequence = 0
@@ -150,17 +188,27 @@ export function createCommandHints(): CommandHints {
     store.set(null)
   }
 
-  const suffixFor = (draft: string): string | undefined => {
+  const suffixFor = (sessionId: string, draft: string): string | undefined => {
     const hint = store.getSnapshot()
-    if (hint === null || draft.length === 0) return undefined
+    if (hint === null || hint.sessionId !== sessionId || draft.length === 0) return undefined
     if (!hint.command.startsWith(draft)) return undefined
     const suffix = hint.command.slice(draft.length)
-    return suffix.length === 0 ? undefined : suffix
+    // A tail of nothing but spaces is nothing to show and nothing to take: the
+    // command is over, or it is the draft re-typed. Claiming → for an invisible
+    // chunk would move the caret for a line nobody can see.
+    return suffix.trim().length === 0 ? undefined : suffix
   }
 
   return {
     store,
+    visible,
     offer(sessionId, draft) {
+      // The store holds one hint, and it belongs to one session. A switch retires
+      // it here — at the new session's first offer — so the old line is not kept
+      // while the new answer is in flight (suffixFor would refuse it anyway; this
+      // is what keeps it from lingering at all).
+      const held = store.getSnapshot()
+      if (held !== null && held.sessionId !== sessionId) store.set(null)
       // An empty line has nothing to extend, and asking then would be a request
       // per idle keystroke for a suggestion nobody typed towards.
       if (draft.trim().length === 0) { clear(); return }
@@ -171,12 +219,12 @@ export function createCommandHints(): CommandHints {
     },
     clear,
     suffixFor,
-    accept(draft) {
+    accept(sessionId, draft) {
       // What is not on screen must not be taken: the ghost hides whenever the
       // caret leaves the end of the draft, and the arrow must agree with what the
       // reader can see (see caretAtDraftEnd).
       if (caretAtDraftEnd(draft) === undefined) return undefined
-      const suffix = suffixFor(draft)
+      const suffix = suffixFor(sessionId, draft)
       return suffix === undefined ? undefined : draft + nextChunk(suffix)
     },
   }
@@ -256,17 +304,22 @@ export function ShellCommandHint(
   const theme = useDshellTheme()
   const draft = props.useInput(state => state.draft)
   useSyncExternalStore(props.hints.store.subscribe, props.hints.store.getSnapshot)
-  const suffix = props.hints.suffixFor(draft)
+  const sessionId = String(props.sessionId)
+  const suffix = props.hints.suffixFor(sessionId, draft)
   const ref = useRef<HTMLSpanElement>(null)
   const [box, setBox] = useState<CaretBox | undefined>(undefined)
 
   useEffect(() => {
-    if (suffix === undefined) { setBox(undefined); return }
+    if (suffix === undefined) { setBox(undefined); props.hints.visible.set(false); return }
     const place = (): void => {
       const element = ref.current
       if (element === null) return
       const caret = caretBox(draft)
-      if (caret === undefined) { setBox(undefined); return }
+      if (caret === undefined) {
+        setBox(undefined)
+        props.hints.visible.set(false)
+        return
+      }
       // `offsetParent` is the box the span's `left`/`top` are measured from, so
       // the caret converts into the ghost's own coordinates without assuming
       // which ancestor the floating layer was mounted into.
@@ -277,17 +330,29 @@ export function ShellCommandHint(
         left: caret.left - (origin?.left ?? 0),
         top: caret.top - (origin?.top ?? 0),
       })
+      props.hints.visible.set(true)
     }
     place()
     // The caret moves for reasons this component never sees — a click, an arrow
-    // key, a re-wrap — and the ghost is placed from it.
+    // key — and the ghost is placed from it.
     document.addEventListener('selectionchange', place)
     window.addEventListener('resize', place)
+    // A re-wrap is the one move the selection does not report: the window can stay
+    // the size it was while the composer does not (the sidebar opened, the view
+    // split), and the same offset then sits on another line. The editor is what
+    // wraps, so the editor is what is watched — its own box changes when it does.
+    const editor = document.querySelector('[data-composer-input]')
+    const observer = editor instanceof HTMLElement && typeof ResizeObserver === 'function'
+      ? new ResizeObserver(place)
+      : undefined
+    if (observer !== undefined && editor instanceof HTMLElement) observer.observe(editor)
     return () => {
+      observer?.disconnect()
+      props.hints.visible.set(false)
       document.removeEventListener('selectionchange', place)
       window.removeEventListener('resize', place)
     }
-  }, [suffix, draft])
+  }, [suffix, draft, props.hints])
 
   if (suffix === undefined) return null
   return createElement('span', {

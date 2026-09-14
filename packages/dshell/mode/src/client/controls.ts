@@ -96,11 +96,9 @@ export function DshellLeftControls(props: {
     completion.store.subscribe,
     () => completion.store.getSnapshot() !== null,
   )
-  // The legend names the ghost's key only while there is a ghost to take.
-  const hintOpen = useSyncExternalStore(
-    hints.store.subscribe,
-    () => hints.store.getSnapshot() !== null,
-  )
+  // The legend names the ghost's key only while the ghost is actually drawn —
+  // not merely while a hint is in hand, since a caret parked mid-line hides it.
+  const hintVisible = useSyncExternalStore(hints.visible.subscribe, hints.visible.getSnapshot)
   // The ghost follows the draft, wherever the draft came from. Driving it from
   // an effect rather than from the keydown handler is what makes typing work:
   // the handler runs before the composer has taken the character, so it can only
@@ -312,11 +310,12 @@ export function DshellLeftControls(props: {
       }
       // The right arrow takes one word of the ghost hint — the gesture that makes
       // a suggestion usable rather than decoration. It claims the key only when
-      // there IS a chunk to take, so the caret keeps its ordinary behaviour (and
-      // Ctrl/Alt/Shift+→ keep theirs, which the full-mode guard already refused)
-      // whenever the ghost is not showing one.
+      // there IS a chunk to take, so the caret keeps its ordinary behaviour
+      // whenever the ghost is not showing one. (Ctrl+→ and Alt+→ never reach
+      // this handler — the full-mode guard refuses them — while Shift+→ is let
+      // through above as the selection it is.)
       if (key === 'ArrowRight' && !event.shiftKey) {
-        const next = hints.accept(draftRef.current)
+        const next = hints.accept(sessionId, draftRef.current)
         if (next !== undefined) {
           writeDraft(next)
           // The list's offsets assume the caret sits at the end of the draft it
@@ -419,7 +418,7 @@ export function DshellLeftControls(props: {
             // The ghost is the one gesture with no visible affordance of its own,
             // so the legend names its key while a hint is in hand — and only
             // then, since → is an ordinary caret move the rest of the time.
-            : hintOpen
+            : hintVisible
               ? '→ 采纳一个词 · 继续 → 补完 · Tab 补全 · ↑ 历史'
               : '直接输入 · Tab 补全 · ↑ 历史 · Ctrl+C 中断')
         : 'Enter 发送对话 · /agent 切终端'),
