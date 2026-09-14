@@ -903,12 +903,27 @@ export class BufferService {
     // Scratch directories live INSIDE each world's workspace, not /tmp: the
     // slicing and reassembly run through that world's sandboxed shell, and a
     // 工作区内修改 policy refuses writes outside the workspace.
-    const scratchOf = (world: Agent): string => {
+    //
+    // The path is spelled in the world's OWN namespace — its process path — and
+    // not in this machine's. A device-bound session's cwd is a local MOUNT
+    // directory standing in for the device tree, so a command carrying that
+    // spelling would build the scratch at a path the device never had, while
+    // `ctx.fs`, translating the same string, would look for it under the
+    // device's own root: the slices and the reader would name two different
+    // directories and the transfer would die on the chunk count. For a local
+    // session this is the path itself (no change), and for a device one it is
+    // the device's path — the same spelling the file-side paths already use
+    // (`processPath`, as in `writeBytesAs`).
+    const scratchOf = async (world: Agent): Promise<string> => {
       const cwd = world.session.header.cwd
-      return `${(cwd ?? '/tmp').replace(/\/+$/u, '')}/.dshell-xfer-${id.slice(5)}`
+      const local = `${(cwd ?? '/tmp').replace(/\/+$/u, '')}/.dshell-xfer-${id.slice(5)}`
+      return await this.ctx.agents.withInitiator(world, async () => {
+        const target = await this.ctx.fs.resolve(local, this.resolveOptions(world, signal))
+        return this.ctx.fs.processPath(target)
+      })
     }
-    const sourceScratch = scratchOf(sourceWorld)
-    const destinationScratch = scratchOf(destinationWorld)
+    const sourceScratch = await scratchOf(sourceWorld)
+    const destinationScratch = await scratchOf(destinationWorld)
     try {
       // Slice in the source world and pin the whole-file checksum.
       const sourcePath = this.ctx.fs.processPath(source)
