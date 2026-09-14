@@ -25,7 +25,7 @@ import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/clie
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../theme-settings.js'
+import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../settings.js'
 import { BlockView, type SshSeat } from './block-view.js'
 import type { PipeSeat, PipeTicket } from './status-card.js'
 import { injectSidebarCompactCss } from './sidebar-compact.js'
@@ -33,8 +33,9 @@ import { DshellLeftControls } from './controls.js'
 import { createShellCompletion, ShellCompletionList } from './completion.js'
 import { createCommandHints, ShellCommandHint } from './command-hint.js'
 import { DshellComposerStats } from './composer-stats.js'
-import { DshellThemeCard } from './theme-card.js'
+import { DshellSettingsCard } from './settings-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
+import { adoptShellHelperSettings, connectShellHelperSettings } from './shell-settings.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
 
 /** The pipe's state before (or without) a buffer service to read it from. */
@@ -268,23 +269,30 @@ export function apply(ctx: Context): void {
   /** Send one line (or a bare Enter) to the bridge-owned main shell. */
   const sendShell = (text: string): void => { pty.send(text.length === 0 ? '\r' : `${text}\r`) }
 
-  // The palette's durable half. The scope is the Host settings document's
-  // mirror: its value wins over the localStorage pre-paint cache on arrival
-  // (another browser's change, or this user's earlier session), and each local
-  // pick is written back through it. Writing is skipped while the transport
-  // reports the namespace unwritable — the local store has already moved, so
-  // the pick still takes effect for this browser instead of silently failing.
-  const themeScope = ctx.settingsScope.bind<DshellSettings>({ namespace: DSHELL_SETTINGS_NAMESPACE })
+  // The durable half of the dshell settings — the palette and the shell-helper
+  // switches, one document. The scope is the Host settings document's mirror:
+  // its value wins over the localStorage pre-paint caches on arrival (another
+  // browser's change, or this user's earlier session), and each local change is
+  // written back through it. Writing is skipped while the transport reports the
+  // namespace unwritable — the local store has already moved, so the choice
+  // still takes effect for this browser instead of silently failing.
+  const dshellSettings = ctx.settingsScope.bind<DshellSettings>({ namespace: DSHELL_SETTINGS_NAMESPACE })
   connectThemeSettings((id) => {
-    if (!themeScope.getSnapshot().writable) return
-    void themeScope.set('theme', id).catch(() => { /* the scope republishes on failure */ })
+    if (!dshellSettings.getSnapshot().writable) return
+    void dshellSettings.set('theme', id).catch(() => { /* the scope republishes on failure */ })
   })
-  const syncTheme = (): void => {
-    const snapshot = themeScope.getSnapshot()
-    if (snapshot.status === 'ready') adoptTheme(snapshot.value?.theme)
+  connectShellHelperSettings((field, next) => {
+    if (!dshellSettings.getSnapshot().writable) return
+    void dshellSettings.set(field, next).catch(() => { /* the scope republishes on failure */ })
+  })
+  const syncSettings = (): void => {
+    const snapshot = dshellSettings.getSnapshot()
+    if (snapshot.status !== 'ready') return
+    adoptTheme(snapshot.value?.theme)
+    adoptShellHelperSettings(snapshot.value)
   }
-  ctx.effect(() => themeScope.subscribe(syncTheme), 'dshell-mode: theme settings mirror')
-  syncTheme()
+  ctx.effect(() => dshellSettings.subscribe(syncSettings), 'dshell-mode: dshell settings mirror')
+  syncSettings()
 
   // Inject once per page load: the rule that suppresses the workspace
   // sidebar's section labels ("会话 (6)", "已归档") in the compact rail
@@ -340,7 +348,7 @@ export function apply(ctx: Context): void {
   // what makes the tab dispatch the card at all.
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register(
     { name: 'settings.plugin.item', key: DSHELL_SETTINGS_NAMESPACE },
-    DshellThemeCard,
+    DshellSettingsCard,
   ))
   // The block view owns the stock `chat` cell (same id, lower priority
   // shadows it). `chat` is dsh's DEFAULT_VIEW_ID, so taking that cell — not a

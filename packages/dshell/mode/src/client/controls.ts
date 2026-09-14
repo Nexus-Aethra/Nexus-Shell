@@ -12,6 +12,7 @@ import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/clie
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShellCompletion } from './completion.js'
 import type { CommandHints } from './command-hint.js'
+import { useShellHelpers } from './shell-settings.js'
 import { useDshellTheme } from './theme.js'
 import type { SessionMode } from './types.js'
 
@@ -92,6 +93,12 @@ export function DshellLeftControls(props: {
   const clearDraft = props.inputActions?.setDraft
   const completion = props.completion
   const hints = props.hints
+  // The switches the shell helpers are gated by. Held in a ref as well, because
+  // the key interceptor is a DOM-level listener that has to read the current
+  // value without being re-registered on every flip.
+  const helpers = useShellHelpers()
+  const helpersRef = useRef(helpers)
+  helpersRef.current = helpers
   const completeOpen = useSyncExternalStore(
     completion.store.subscribe,
     () => completion.store.getSnapshot() !== null,
@@ -102,11 +109,22 @@ export function DshellLeftControls(props: {
   // The ghost follows the draft, wherever the draft came from. Driving it from
   // an effect rather than from the keydown handler is what makes typing work:
   // the handler runs before the composer has taken the character, so it can only
-  // ever offer the PREVIOUS line.
+  // ever offer the PREVIOUS line. Switched off, it must not even ask: the query
+  // is what would put a hint in hand for the arrow to take.
   useEffect(() => {
-    if (mode !== 'shell' || props.sessionId === undefined) { hints.clear(); return }
+    if (mode !== 'shell' || props.sessionId === undefined || !helpers.commandHint) { hints.clear(); return }
     hints.offer(String(props.sessionId), draft)
-  }, [mode, props.sessionId, draft, hints])
+  }, [mode, props.sessionId, draft, hints, helpers.commandHint])
+  // A gesture switched off mid-flight must not leave its list behind: the list
+  // is the only place its keys are explained, so it goes with them. Which switch
+  // owns the open list is the list's own `source` — Tab opened one and ↑ opened
+  // another, and those two settings are independent.
+  useEffect(() => {
+    const open = completion.store.getSnapshot()
+    if (open === null) return
+    const enabled = open.source === 'history' ? helpers.historyList : helpers.tabCompletion
+    if (!enabled) completion.store.set(null)
+  }, [completion, helpers.tabCompletion, helpers.historyList])
 
   useEffect(() => {
     if (pty === undefined || clearDraft === undefined) return
@@ -298,6 +316,8 @@ export function DshellLeftControls(props: {
       // query: only entries sharing a prefix with it are listed, in the same
       // chronological order, so the bottom row is still the most recent match.
       if (key === 'ArrowUp' && !cycling) {
+        // Switched off, ↑ is the browser's again — a caret move in the line.
+        if (!helpersRef.current.historyList) return false
         const draftNow = draftRef.current
         void completion.requestHistory(sessionId, draftNow).then((state) => {
           if (state === null) { completion.store.set(null); return }
@@ -333,6 +353,9 @@ export function DshellLeftControls(props: {
         return false
       }
       // A fresh Tab: ask the host for the candidates under this token.
+      // Switched off, Tab is the browser's again — which in a composer is what
+      // it always was: the next focusable control below.
+      if (!helpersRef.current.tabCompletion) return false
       const draftNow = draftRef.current
       const { token, argument } = tokenOf(draftNow)
       // dsh's own triggers keep their keys: `@` is its file reference, whose
@@ -404,6 +427,14 @@ export function DshellLeftControls(props: {
     fontFamily: 'inherit',
     transition: 'color 120ms, border-color 120ms',
   }
+  /** The legend, naming each assist only while it is switched on: promising a
+   * key the settings card has turned off is a worse answer than a shorter line. */
+  const legendFor = (...leading: readonly string[]): string => [
+    ...leading,
+    ...helpers.tabCompletion ? ['Tab 补全'] : [],
+    ...helpers.historyList ? ['↑ 历史'] : [],
+    'Ctrl+C 中断',
+  ].join(' · ')
   return createElement('div', { style: chipSeatStyle },
     createElement('button', {
       style: chipStyle,
@@ -416,11 +447,11 @@ export function DshellLeftControls(props: {
           : completeOpen
             ? 'Tab 下一个 · ↑↓ 选择 · Enter 填入 · Esc 关闭'
             // The ghost is the one gesture with no visible affordance of its own,
-            // so the legend names its key while a hint is in hand — and only
-            // then, since → is an ordinary caret move the rest of the time.
+            // so the legend names its key while a ghost is actually drawn — and
+            // only then, since → is an ordinary caret move the rest of the time.
             : hintVisible
-              ? '→ 采纳一个词 · 继续 → 补完 · Tab 补全 · ↑ 历史'
-              : '直接输入 · Tab 补全 · ↑ 历史 · Ctrl+C 中断')
+              ? legendFor('→ 采纳一个词', '继续 → 补完')
+              : legendFor('直接输入'))
         : 'Enter 发送对话 · /agent 切终端'),
   )
 }

@@ -192,6 +192,11 @@ when it contributes to model-visible state.
   second source. The hint's ghost is deliberately not a node inside the
   editor: the composer is a Lexical contenteditable, so the tail is a
   span in the composer's floating overlay placed from the caret's rect.
+  Each of the three is switchable, and those switches live in the
+  `dshell` settings document: the card in the Plugins section edits them
+  beside the palette (`settings-card.ts`), `shell-settings.ts` holds the
+  client store with a pre-paint cache, and the key interceptor reads it
+  through a ref so a flip cannot go stale.
 - dsh services depended on: `ctx.uiSession`, `ctx.agents.inject`,
   `dshell-terminal-bridge` (for main PTY id, the agent stream and
   context buffer read), `ctx.sessions` (the status card's session
@@ -199,7 +204,8 @@ when it contributes to model-visible state.
   rows; optional, reached through a late-binding seat).
 - Introduced in: Phase 5 (state and dispatch); expanded in Phase 7
   (injection), Phase 9.11 (status card), Phase 10.12 (Tab completion
-  folds capitals) and Phase 10.13 (the command hint).
+  folds capitals), Phase 10.13 (the command hint) and Phase 10.14 (the
+  assist switches).
 - Touches decisions: 4.5 (mode state and prefix handling), 4.6
   (injection), 4.10 (status surface).
 
