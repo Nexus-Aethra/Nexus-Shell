@@ -2263,3 +2263,63 @@ left the draft alone; Tab still opened the path list with the ghost showing, and
 accepting closed it; `↑` still opened history; agent mode showed nothing; and a
 screenshot confirmed the tail reads as dimmed continuation text on the same
 baseline, immediately after the caret.
+
+## Phase 10.14 — The shell assists get switches
+
+Three gestures read the composer's line (Tab completion, the `↑` history list,
+the ghost hint) and all three were unconditional. An assist that cannot be turned
+off is in the way for the reader who wants the line to themselves — and each one
+claims a key that means something else: Tab moves the focus out of a composer,
+`↑` and `→` move the caret.
+
+Shipped: a second group in dshell's settings card (`输入辅助`) with one switch per
+gesture, each row naming what its gesture does so the card explains itself, and
+the header summarising the state (`输入辅助：全部开启`, or the names of the ones
+that are off). The switches live in the same `dshell` settings document as the
+palette and in the same card, because a settings namespace is one document and
+the Plugins section dispatches ONE card per namespace — a second card could never
+be reached. That is also why the card is titled `终端与输入辅助` now rather than
+`终端配色`.
+
+Decisions the work forced:
+
+- **The gate is read through a ref.** The interceptor that claims those keys is a
+  DOM-level listener that has to answer synchronously: a value closed over at
+  registration would go stale on the next flip, and re-registering the listeners
+  per flip would re-enter the arbitration this feature exists to stay out of.
+- **"Off" means the browser's behaviour, per key** — Tab walks the focus (verified
+  landing on the composer's attach button), `↑` and `→` move the caret. No
+  substitute binding: an assist that is off but still eats its key would be the
+  worst of both.
+- **A gesture switched off mid-flight takes its list with it**, and which switch
+  owns the open list is the list's own `source` — Tab opened one and `↑` opened
+  another, so clearing on the wrong switch would drop a list the reader may still
+  be using.
+- **An answer that arrives late is dropped.** Both key gestures continue in a
+  promise, and a round trip outlives the keystroke that started it: the answer
+  re-checks the session, the mode, the draft it was asked about, and its own
+  switch before it writes anything. The switch is the case the Host cannot know
+  about — a reply cannot be cancelled from the other side — which is why the
+  gesture is re-checked where the answer lands instead of only where it is claimed.
+  (Review finding: only the hint had this guard.)
+- **The ghost itself reads the switch, not just the store.** The clear that
+  follows a flip runs in the controls' effect, one paint after the render, so the
+  ghost would otherwise flash for a frame after being turned off.
+- **The legend names only what is on.** `直接输入 · Ctrl+C 中断` is what remains
+  with all three off; promising a key the settings card has turned off is a worse
+  answer than a shorter line — and the ghost's own entry appears only while it is
+  DRAWN, since a caret parked mid-line hides it.
+- The document is user data, so a value that is not a boolean reads as the default
+  rather than as off: a hand-edited file or an older document must not silently
+  disable the composer's assists.
+- `theme-settings.ts`/`theme-card.ts` became `settings.ts`/`settings-card.ts`
+  (and the schema `settings-schema.ts`): they now hold switches that are not about
+  the theme, and a file named for the theme would have been a lie.
+
+Verified in the browser end to end. The card opened with all three on. Turning
+`智能提示` off removed the ghost and made `→` a plain caret move, with the write
+landing in `$DSH_HOME/settings.yaml` as `commandHint: false`, and the switch still
+off after the section was reopened. Turning all three off left the legend at
+`直接输入 · Ctrl+C 中断`, with `echo` showing no ghost, `↑` opening nothing, and Tab
+moving the focus to the attach button. Turning them back on restored the ghost,
+`→` acceptance, the `↑` list, and 14 Tab candidates.

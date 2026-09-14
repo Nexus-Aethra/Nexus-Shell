@@ -5,7 +5,7 @@
  * every seat (chips, block view, settings card) without prop drilling.
  *
  * The selected id is authoritative in the Host settings document
- * (`../theme-settings.ts`, namespace `dshell`) and is edited through the card
+ * (`../settings.ts`, namespace `dshell`) and is edited through the card
  * the browser half contributes to the Plugins settings section. localStorage
  * holds the last accepted id ONLY as a pre-paint cache: the first render
  * happens before the settings scope answers, and repainting the default
@@ -15,7 +15,7 @@
 import { useSyncExternalStore } from 'react'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ITheme } from '@xterm/xterm'
-import { DEFAULT_THEME_ID, isThemeId, type DshellThemeId } from '../theme-settings.js'
+import { DEFAULT_THEME_ID, isThemeId, type DshellThemeId } from '../settings.js'
 import { XTERM_CSS } from './xterm-css.js'
 
 export interface Theme {

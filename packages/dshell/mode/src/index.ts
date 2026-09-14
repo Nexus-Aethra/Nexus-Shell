@@ -39,8 +39,8 @@ import type {} from '@deepseek-ai/dsh-settings'
 // Type-only: pulls the bridge service merge (ctx.dshellTerminalBridge).
 import type {} from '@nexus-aethra/dshell-terminal-bridge'
 import type { TerminalCommandRecord, TerminalDelta } from '@nexus-aethra/dshell-terminal-bridge'
-import { DSHELL_SETTINGS_NAMESPACE } from './theme-settings.js'
-import { DshellSettingsSchema } from './theme-settings-schema.js'
+import { DSHELL_SETTINGS_NAMESPACE } from './settings.js'
+import { DshellSettingsSchema } from './settings-schema.js'
 
 export const name = '@nexus-aethra/dshell-mode/host'
 
