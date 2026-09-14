@@ -2,7 +2,7 @@
   "name": "nexus-shell",
   "version": "0.1.0",
   "private": true,
-  "description": "dshell: terminal-first dsh plugin suite. Single xterm.js canvas per session, interleaving PTY bytes with agent turns. See docs/.",
+  "description": "dshell: a terminal-first agent workbench built as dsh plugins. One terminal timeline per session, cross-session pipes with a named buffer, SSH device sessions. See README.md and docs/.",
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "engines": {
