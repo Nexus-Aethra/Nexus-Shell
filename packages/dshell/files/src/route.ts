@@ -339,9 +339,15 @@ async function complete(
   const reading = await readDirectory(ctx, agent, start, base)
   if (!reading.ok) {
     // A directory the reader spelled with the wrong capitals is the same mistake
-    // the trailing segment is repaired for, so the miss is given that one chance
-    // before it is reported.
-    const recovered = await completeDirectorySegment(ctx, agent, token, base, home)
+    // the trailing segment is repaired for, so an ABSENT path is given that one
+    // chance before the miss is reported. A path that exists but is not a
+    // directory gets no such chance: it is not an older spelling of something
+    // else, and the candidate that would replace it is a real name the reader
+    // did not ask for (`ls foo/` must not become `ls foo.d/` just because the
+    // slash was wrong for a file).
+    const recovered = reading.note === '目录不存在'
+      ? await completeDirectorySegment(ctx, agent, token, base, home)
+      : undefined
     return recovered ?? {
       start: token.start, end: before.length, dir: reading.dir, candidates: [], truncated: false, note: reading.note,
     }

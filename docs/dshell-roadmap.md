@@ -2177,9 +2177,11 @@ Shipped:
 - **A directory the reader spelled with the wrong capitals gets one recovery.**
   `ls neXus-shell/<Tab>` cannot list a directory that does not exist by that
   name, so the completion falls back to completing the segment the slash
-  follows — `Nexus-shell/` — after the exact reading misses. Only a miss
-  reaches it, and the answer still owns just that segment, which is what keeps
-  the line correct: the next Tab lists the directory.
+  follows — `Nexus-shell/` — after the exact reading misses. Only an ABSENT
+  path reaches it: a token that exists but is not a directory is not an older
+  spelling of something else, and `ls foo/` must not silently become `ls foo.d/`
+  because a file was given a slash. The answer still owns just that segment,
+  which is what keeps the line correct: the next Tab lists the directory.
 
 Boundaries, both deliberate: a spelling error is not repaired (`nexus-shrll/`
 still reports `目录不存在` — the fold equates case, not letters), and only the
