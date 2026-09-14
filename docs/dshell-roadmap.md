@@ -2323,3 +2323,42 @@ off after the section was reopened. Turning all three off left the legend at
 `直接输入 · Ctrl+C 中断`, with `echo` showing no ghost, `↑` opening nothing, and Tab
 moving the focus to the attach button. Turning them back on restored the ghost,
 `→` acceptance, the `↑` list, and 14 Tab candidates.
+
+## Phase 10.15 — The chunked relay names its scratch in the world's own namespace
+
+A move over 32 MiB between two device sessions died on `分块数量不符`. The
+relay builds a scratch directory from the world's session directory and then
+uses that ONE string in two places that do not accept the same spelling when the
+world is a device: the commands it runs inside that world (`mkdir -p`/`split`/
+`cat` over the shell seam) and `ctx.fs`, which translates a mount path into the
+device's own. A device-bound session's directory is a local MOUNT directory
+standing in for the device tree, so the shell built the scratch at
+`~/.dsh/dshell/mnt/<device>/<remote dir>/.dshell-xfer-…` — a path the device
+never had — while `ctx.fs` read and wrote the chunks at `<remote dir>/…` under
+the device's root. Two directories, one transfer: the slices were never where
+the reader looked.
+
+Provenance: the failure had already happened in the wild before the fix and left
+its signature on the test server — four transfers (2026-09-12) each left an
+EMPTY directory under `~/.dsh/dshell/mnt/43-138-57-105/root/.dshell-xfer-<id>`
+(created by the shell's `mkdir -p`) beside a directory holding the real chunks at
+`/root/.dshell-xfer-<same id>` (written through `ctx.fs` after translation).
+
+The scratch is now spelled as the world's own process path
+(`processPath(resolve(<session dir>/.dshell-xfer-…))`), which is the convention
+`writeBytesAs` already used for the file it writes and the file panel's transfer
+engine uses for its roots. A local session's path is unchanged; a device-bound
+one gets the device's path, so the shell and `ctx.fs` name one directory.
+
+Verified end to end with the two registered devices (the local sshd rig as
+`本地测试机` and `43.138.57.105`), one session on each, a pipe between them, and a
+40 MiB file (>32 MiB, so the relay is the path taken):
+
+- `download` rig → server: three chunks, the server's copy reported 41943040
+  bytes and sha256 `e349a168…127e59` — the source's digest — read back from the
+  device's own shell.
+- `upload` server → rig: the rig's copy matched the server file's digest
+  `d931ab32…33528` byte for byte.
+- Both transfers cleaned their scratch on both sides (nothing left under either
+  device's root), which is the other half of the same fix: cleanup runs through
+  the same naming.
