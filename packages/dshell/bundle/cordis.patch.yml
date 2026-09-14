@@ -43,7 +43,8 @@
     - id: dshell-mode
       name: '@nexus-aethra/dshell-mode'
 
-    # /clear, /new, /compact, plus dshell_get_main_terminal model tool.
+    # /new on ctx.commands, plus the agent-terminal model tools
+    # (dshell_get_agent_terminal, dshell_terminal_read, dshell_terminal_output).
     - id: dshell-commands
       name: '@nexus-aethra/dshell-commands'
 
