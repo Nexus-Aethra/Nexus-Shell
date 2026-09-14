@@ -38,6 +38,9 @@ import { PtyBuffer } from './buffer.js'
 import { closeHistoryStore } from '@nexus-aethra/dshell-storage'
 import { HISTORY_STORE_FILENAME, type HistoryOutputSlice } from '@nexus-aethra/dshell-std'
 import { CommandHistory, commandHistoryPath, forgetSessionHistory, MAX_COMMAND_HISTORY, type PersistedCommand } from './history.js'
+import { hostCopy, type DshellTerminalBridgeHostTranslator } from './host-locales.js'
+import { createHostCopy } from './host-copy.js'
+import { createLocaleRoute } from './locale-route.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
 import { createStreamRoutes } from './stream.js'
@@ -311,8 +314,18 @@ export class DshellTerminalBridge extends Service {
   readonly promptUser = safeShellWord(userInfo().username)
   readonly promptHost = safeShellWord(hostname())
 
+  /**
+   * This package's host copy, bound to the language the browser reported.
+   *
+   * The service is this package's own: `apply` provides it before this class is
+   * plugged, so the accessor is a plain read. It is bound once and read at call
+   * time, so a language switch reaches the next spawn-failure panel or route
+   * refusal without re-binding.
+   */
+  private readonly t: DshellTerminalBridgeHostTranslator = this.ctx.dshellHostCopy.bind(hostCopy)
+
   /** The backend's rich handle (raw push, exit push, resize) for its sessions. */
-  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, ({ sessionId, cwd }) => {
+  private readonly backend = new DshellPtyBackend(DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, this.t, ({ sessionId, cwd }) => {
     // A session bound to a device runs that device's shell, so the user's own
     // terminal is not a local shell stranded in an empty mount directory. The
     // router is reached through the service the SSH plugin publishes, asked
@@ -415,7 +428,7 @@ export class DshellTerminalBridge extends Service {
     ctx.inject(['connection'], (connectionCtx) => {
       // The composer's up-arrow history — the read side of the same subject.
       connectionCtx.effect(
-        () => connectionCtx.connection.fetch.register(createPtyRoute(this)),
+        () => connectionCtx.connection.fetch.register(createPtyRoute(this, this.t)),
         'dshell-bridge: history route',
       )
       for (const route of createStreamRoutes(this)) {
@@ -1403,7 +1416,7 @@ export class DshellTerminalBridge extends Service {
       this.sendFrame(client, {
         kind: 'error',
         stream: 'agent',
-        message: describeSpawnError(error),
+        message: this.describeSpawnError(error),
         sessionId: dshSessionId,
       })
     })
@@ -1483,7 +1496,7 @@ export class DshellTerminalBridge extends Service {
     }, (error: unknown) => {
       // Stay bound: the client's retry is a frame on this very socket.
       this.adopt(client, dshSessionId)
-      this.sendFrame(client, { kind: 'error', message: describeSpawnError(error), sessionId: dshSessionId })
+      this.sendFrame(client, { kind: 'error', message: this.describeSpawnError(error), sessionId: dshSessionId })
     })
   }
 
@@ -1500,8 +1513,23 @@ export class DshellTerminalBridge extends Service {
       this.adopt(client, dshSessionId)
       this.pushSnapshot(client, record)
     }, (error: unknown) => {
-      this.sendFrame(client, { kind: 'error', message: describeSpawnError(error), sessionId: dshSessionId })
+      this.sendFrame(client, { kind: 'error', message: this.describeSpawnError(error), sessionId: dshSessionId })
     })
+  }
+
+  /**
+   * The honest text of a failed spawn for the wire.
+   *
+   * `String(error)` would prefix "Error: ", and an Error with no message would
+   * ship an empty line; the client shows this verbatim in its connection panel,
+   * so it has to be a sentence either way. A real message (the PTY's own
+   * localized failure, or a `dshell-bridge: …` diagnostic that is a contract,
+   * not copy) passes through unchanged; only the empty-message fallback is
+   * composed here.
+   */
+  private describeSpawnError(error: unknown): string {
+    const text = (error instanceof Error ? error.message : String(error)).trim()
+    return text === '' ? this.t('spawn.failed') : text
   }
 
   /** Register one client as a subscriber of one session. */
@@ -1565,18 +1593,6 @@ export class DshellTerminalBridge extends Service {
       if (client.open) client.send(data)
     }
   }
-}
-
-/**
- * The honest text of a failed spawn for the wire.
- *
- * `String(error)` would prefix "Error: ", and an Error with no message would
- * ship an empty line; the client shows this verbatim in its connection panel,
- * so it has to be a sentence either way.
- */
-function describeSpawnError(error: unknown): string {
-  const text = (error instanceof Error ? error.message : String(error)).trim()
-  return text === '' ? '终端启动失败' : text
 }
 
 /** Defensive escape: drop chars that would let a quoted $PS1 leak out. */
@@ -1675,6 +1691,24 @@ function rejectUpgrade(socket: Duplex, status: 401 | 403): void {
 }
 
 export function apply(ctx: Context): void {
+  // The host's copy direction, provided here because this is the earliest
+  // package in the graph that every writer of host copy can wait for.
+  // dshell-mode looks like the natural owner — it owns the presentation
+  // surfaces — but it WAITS for this package's PTY service
+  // (`dshellTerminalBridge`), so a provider it owned would deadlock the
+  // profile's activation: mode pending on the bridge, the bridge pending on
+  // mode. The dependency edge already points this way, so the service lives at
+  // the far end of it.
+  const copy = createHostCopy(ctx)
+  ctx.provide('dshellHostCopy', copy)
+  // The browser reports the language it resolved (boot and every change);
+  // host-composed text can then match the screen instead of guessing.
+  ctx.inject(['connection'], (connectionCtx) => {
+    connectionCtx.effect(
+      () => connectionCtx.connection.fetch.register(createLocaleRoute(copy)),
+      'dshell-bridge: locale report route',
+    )
+  })
   ctx.plugin(DshellTerminalBridge)
 }
 

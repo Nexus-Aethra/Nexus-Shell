@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { en, zh } from './locales.js'
+import { sendLocaleReport } from './locale-report.js'
 import {
   TIMELINE_LIMITS,
   loadTimeline,
@@ -937,6 +938,18 @@ export function apply(ctx: Context): void {
   // applies at runtime typing.
   const sessions = ctx.get('sessions') as unknown as ISessions
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dshell-bridge: dictionaries')
+  // Tell the host which language this browser actually resolved, so the text the
+  // HOST writes — route refusals, device errors, the request a peer's model
+  // reads — matches the screen. dsh's locale service is browser-side only, so
+  // this report is the host's only exact signal; the durable preference is the
+  // fallback the host uses before the first report lands. The route lives in
+  // this package's host half, beside the service it feeds.
+  ctx.effect(() => {
+    const report = (): void => { void sendLocaleReport(ctx.locale.getSnapshot().active) }
+    const dispose = ctx.locale.subscribe(report)
+    report()
+    return dispose
+  }, 'dshell-bridge: report the locale to the host')
   const stream = new PtyStreamService(ctx)
 
   const reconcile = (): void => {

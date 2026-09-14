@@ -28,11 +28,13 @@ import type {
   FsTarget, FsVersion, FsWriteIntent, FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
+import type { HostCopy } from '@nexus-aethra/dshell-std'
 // Type-only: pulls the host agent service merge (ctx.agents).
 import type {} from '@deepseek-ai/dsh-agent'
 // Type-only: pulls the sandbox-policy service merge (ctx.sandboxPolicy).
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import { isUnder, toMountPath, type MountMapping } from './mount.js'
+import { hostCopy, type DshellSshTranslate } from './host-locales.js'
 import { RemoteFileSystem } from './remote-fs.js'
 import { SSH_ROUTING_SERVICE } from './router.js'
 
@@ -53,6 +55,19 @@ export class DshellFileSystem extends SandboxedFileSystem {
   private readonly remoteLocks = new Map<string, Promise<unknown>>()
 
   /**
+   * @param ctx - host context, as the base class takes it.
+   * @param config - base config, as the base class takes it.
+   * @param t - this package's bound host copy, handed to each remote backend.
+   */
+  constructor(
+    ctx: Context,
+    config: ConstructorParameters<typeof SandboxedFileSystem>[1],
+    private readonly t: DshellSshTranslate,
+  ) {
+    super(ctx, config)
+  }
+
+  /**
    * The device backend for the ambient call, or undefined for a local session.
    *
    * A binding without a mount (written before mount directories existed, or
@@ -70,6 +85,7 @@ export class DshellFileSystem extends SandboxedFileSystem {
       device: target.device,
       mapping,
       diffBasisMaxBytes: this.config.diffBasisMaxBytes,
+      t: this.t,
     })
   }
 
@@ -222,14 +238,18 @@ export class DshellFileSystem extends SandboxedFileSystem {
  * `ssh` invocation, and reaching for a service a context did not inject throws
  * in cordis rather than resolving lazily.
  */
-export const inject = ['agents', 'sandboxPolicy', 'subprocess', SSH_ROUTING_SERVICE] as const
+export const inject = ['agents', 'sandboxPolicy', 'subprocess', SSH_ROUTING_SERVICE, 'dshellHostCopy'] as const
 
 /** Config schema, re-exported so the loader applies the base defaults. */
 export const Config = DshellFileSystem.Config
 
 /** Plugin entry: one provider instance per composition. */
 export function apply(ctx: Context, config: ConstructorParameters<typeof DshellFileSystem>[1]): void {
-  new DshellFileSystem(ctx, config)
+  // Structural read: the accessor's declaration lives with the provider
+  // (dshell-mode), which this package's tsc program does not include. The
+  // `inject` above is what guarantees the service is there.
+  const copy = ctx.get('dshellHostCopy') as HostCopy
+  new DshellFileSystem(ctx, config, copy.bind(hostCopy))
 }
 
 export default { name: 'dshell-fs', inject, Config, apply }

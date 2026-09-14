@@ -12,6 +12,7 @@
 
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { DshellSshTranslate } from './host-locales.js'
 import type { DeviceAuth, DeviceInput, DeviceView } from './protocol.js'
 
 /** A stored device record; the secret path is absent when none is stored. */
@@ -139,13 +140,14 @@ export class DeviceStore {
    * Create or update one device. A supplied key replaces the stored one; an
    * empty key removes it; an omitted key leaves it alone.
    * @param input - the submitted device; `id` absent means create.
+   * @param t - this package's bound host copy, for the refusals below.
    * @returns the saved view.
    */
-  async save(input: DeviceInput): Promise<DeviceView> {
+  async save(input: DeviceInput, t: DshellSshTranslate): Promise<DeviceView> {
     await this.ensure()
     const id = input.id ?? this.uniqueId(idFor(input.name))
     const existing = this.records.find(record => record.id === id)
-    if (input.id !== undefined && existing === undefined) throw new Error(`未知设备：${input.id}`)
+    if (input.id !== undefined && existing === undefined) throw new Error(t('error.unknownDevice', { id: input.id }))
     const auth: DeviceAuth = input.auth ?? existing?.auth ?? 'key'
     const record: DeviceRecord = {
       id,
@@ -159,7 +161,7 @@ export class DeviceStore {
       auth,
       ...existing?.secretFile === undefined ? {} : { secretFile: existing.secretFile },
     }
-    if (record.host === '' || record.user === '') throw new Error('host 与 user 不能为空')
+    if (record.host === '' || record.user === '') throw new Error(t('error.hostUserRequired'))
     // Switching the login method retires the other secret: a stored password
     // must not linger on a device that now authenticates by key.
     if (existing !== undefined && existing.auth !== auth) await this.removeSecret(record)

@@ -10,6 +10,7 @@
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
+import type { DshellSshTranslate } from './host-locales.js'
 import { DSHELL_SSH_PATH, type SshRequest, type SshResponse } from './protocol.js'
 import type { SshRouter } from './router.js'
 
@@ -18,6 +19,11 @@ export interface SshRouteDeps {
   readonly router: SshRouter
   /** Host context, so the connection test can spawn a process. */
   readonly ctx: Context
+  /**
+   * This package's host copy, bound to the language the browser reported — the
+   * settings card renders a refusal verbatim, so it must match the screen.
+   */
+  readonly t: DshellSshTranslate
 }
 
 /** JSON response in the shape the device UI parses. */
@@ -71,7 +77,7 @@ export function createSshRoute(deps: SshRouteDeps): ConnectionFetchRoute {
         )
         return await state()
       default:
-        return { ...await state(), error: '未知操作' }
+        return { ...await state(), error: deps.t('error.unknownAction') }
     }
   }
 

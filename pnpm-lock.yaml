@@ -208,6 +208,9 @@ importers:
 
   packages/dshell/commands:
     dependencies:
+      '@nexus-aethra/dshell-std':
+        specifier: workspace:^
+        version: link:../std
       '@nexus-aethra/dshell-terminal-bridge':
         specifier: workspace:^
         version: link:../terminal-bridge
@@ -574,6 +577,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: link:../../../dsh/packages/core/session
         version: link:../../../dsh/packages/core/session
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../../../dsh/packages/settings/settings
+        version: link:../../../dsh/packages/settings/settings
       '@deepseek-ai/dsh-terminal':
         specifier: link:../../../dsh/packages/terminal/terminal
         version: link:../../../dsh/packages/terminal/terminal

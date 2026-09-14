@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import { DeviceStore, type DeviceConnection } from './devices.js'
+import type { DshellSshTranslate } from './host-locales.js'
 import { trustedHostKey } from './host-key.js'
 import { sshDeviceRoot } from './paths.js'
 import { isUnder, mountFor, remoteDirFor } from './mount.js'
@@ -157,12 +158,27 @@ export class SshRouter {
   private readonly bindings: BindingStore
   private connections = new Map<string, DeviceConnection>()
   private ready: Promise<void>
+  /**
+   * This package's host copy, bound to the language service once it is
+   * available (see `bindCopy`). Held on the router because its methods compose
+   * refusals the user reads long after composition — the language is resolved
+   * at call time, so a switch needs no re-binding.
+   */
+  private t!: DshellSshTranslate
 
   /** @param root - device directory (`$DSH_HOME/dshell/ssh`). */
   constructor(root: string) {
     this.devices = new DeviceStore(root)
     this.bindings = new BindingStore(join(root, 'bindings.json'))
     this.ready = this.reload()
+  }
+
+  /**
+   * Bind this package's host dictionaries to the language service.
+   * @param t - translator from `ctx.dshellHostCopy.bind(hostCopy)`.
+   */
+  bindCopy(t: DshellSshTranslate): void {
+    this.t = t
   }
 
   /** Every configured device. */
@@ -202,7 +218,7 @@ export class SshRouter {
     if (deviceId !== null) {
       if (this.connections.get(deviceId) === undefined) {
         await this.refreshDevices()
-        if (this.connections.get(deviceId) === undefined) throw new Error(`未知设备：${deviceId}`)
+        if (this.connections.get(deviceId) === undefined) throw new Error(this.t('error.unknownDevice', { id: deviceId }))
       }
       if (ctx !== undefined) await this.ensureRemoteRoot(ctx, deviceId, remoteRoot)
     }
@@ -214,7 +230,7 @@ export class SshRouter {
    * @param input - submitted device.
    */
   async saveDevice(input: Parameters<DeviceStore['save']>[0]) {
-    const view = await this.devices.save(input)
+    const view = await this.devices.save(input, this.t)
     await this.refreshDevices()
     return view
   }
@@ -291,13 +307,13 @@ export class SshRouter {
         await new Promise(resolve => setTimeout(resolve, PENDING_BIND_WAIT_MS))
         assignment = this.bindings.get(sessionId)
       }
-      if (assignment === undefined) throw new Error(unboundMountMessage(sessionCwd))
+      if (assignment === undefined) throw new Error(unboundMountMessage(sessionCwd, this.t))
     }
     if (assignment === undefined) return undefined
     const device = this.connections.get(assignment.deviceId)
     if (device === undefined) return undefined
     const remoteRoot = assignment.remoteRoot ?? device.remoteRoot
-    return { argv: interactiveShellArgv(device, remoteRoot), env: sshEnv(device) }
+    return { argv: interactiveShellArgv(device, remoteRoot, this.t), env: sshEnv(device) }
   }
 
   /**
@@ -310,7 +326,7 @@ export class SshRouter {
   async mountPath(deviceId: string, remoteRoot: string | null): Promise<string> {
     if (this.connections.get(deviceId) === undefined) {
       await this.refreshDevices()
-      if (this.connections.get(deviceId) === undefined) throw new Error(`未知设备：${deviceId}`)
+      if (this.connections.get(deviceId) === undefined) throw new Error(this.t('error.unknownDevice', { id: deviceId }))
     }
     const device = this.connections.get(deviceId)
     const root = remoteRoot === null || remoteRoot.trim() === '' ? device?.remoteRoot ?? '~' : remoteRoot.trim()
@@ -341,7 +357,7 @@ export class SshRouter {
   async test(deviceId: string, ctx: Context, remoteRoot: string | null = null): Promise<string> {
     await this.refreshDevices()
     const device = this.connections.get(deviceId)
-    if (device === undefined) throw new Error(`未知设备：${deviceId}`)
+    if (device === undefined) throw new Error(this.t('error.unknownDevice', { id: deviceId }))
     const trustedBefore = await trustedHostKey(device.host, device.port)
     const started = Date.now()
     const argv = sshArgv(device, 'printf "%s|%s|%s" "$(hostname)" "$(id -un)" "$(uname -sr)"')
@@ -362,17 +378,22 @@ export class SshRouter {
     const stdout = handle.collected.stdout?.readFrom(0).text.trim() ?? ''
     const stderr = handle.collected.stderr?.readFrom(0).text.trim() ?? ''
     if (outcome.exitCode !== 0) {
-      throw new Error(stderr !== '' ? stderr : `ssh 退出码 ${String(outcome.exitCode ?? 'signal')}`)
+      throw new Error(stderr !== '' ? stderr : this.t('test.exitCode', { code: String(outcome.exitCode ?? 'signal') }))
     }
     const [host, user, system] = stdout.split('|')
-    const line = `已连接 ${user ?? ''}@${host ?? device.host}（${system ?? '未知系统'}） · ${String(Date.now() - started)}ms`
+    const line = this.t('test.connected', {
+      user: user ?? '',
+      host: host ?? device.host,
+      system: system ?? this.t('test.unknownSystem'),
+      ms: Date.now() - started,
+    })
     const trusted = await trustedHostKey(device.host, device.port)
     // Same order the session's own start uses: connect, then make the
     // directory. A refusal here throws with ssh's own words.
     if (remoteRoot !== null) await this.ensureRemoteRoot(ctx, deviceId, remoteRoot)
     return trusted === undefined
       ? line
-      : `${line}\n主机密钥 ${trusted}（${trustedBefore === undefined ? '首次信任，请与服务器管理员核对' : '已信任'}）`
+      : `${line}\n${this.t(trustedBefore === undefined ? 'test.hostKeyFirst' : 'test.hostKeyTrusted', { fingerprint: trusted })}`
   }
 
   /**
@@ -391,7 +412,7 @@ export class SshRouter {
    */
   async ensureRemoteRoot(ctx: Context, deviceId: string, remoteRoot: string | null): Promise<void> {
     const device = this.connections.get(deviceId) ?? (await this.refreshDevices(), this.connections.get(deviceId))
-    if (device === undefined) throw new Error(`未知设备：${deviceId}`)
+    if (device === undefined) throw new Error(this.t('error.unknownDevice', { id: deviceId }))
     const root = remoteRoot === null || remoteRoot.trim() === '' ? device.remoteRoot : remoteRoot.trim()
     if (root.trim() === '' || root.trim() === '~') return
     const handle = ctx.subprocess.spawn({
@@ -404,7 +425,7 @@ export class SshRouter {
     const outcome = await handle.done
     if (outcome.exitCode !== 0) {
       const stderr = handle.collected.stderr?.readFrom(0).text.trim() ?? ''
-      throw new Error(stderr === '' ? `无法在设备上创建 ${root}` : stderr)
+      throw new Error(stderr === '' ? this.t('mount.createFailed', { root }) : stderr)
     }
   }
 
@@ -438,12 +459,11 @@ export class SshRouter {
  * names the two situations that actually produce it.
  *
  * @param sessionCwd - the session's own directory, for the message.
+ * @param t - this package's bound host copy.
  * @returns the refusal text.
  */
-function unboundMountMessage(sessionCwd: string): string {
-  return `该会话没有绑定设备，但它的目录是设备挂载目录（${sessionCwd}）：`
-    + '在这里本机执行只会落在一个空目录里，因此已拒绝。'
-    + '请检查该设备是否已被删除；若设备仍在，请在会话里重试连接或新建会话。'
+function unboundMountMessage(sessionCwd: string, t: DshellSshTranslate): string {
+  return t('mount.unbound', { cwd: sessionCwd })
 }
 
 /**
@@ -462,9 +482,10 @@ function unboundMountMessage(sessionCwd: string): string {
  *
  * @param ctx - host context holding the shell service.
  * @param router - device assignments.
+ * @param t - this package's bound host copy, for the mount refusal below.
  * @returns disposer restoring the original method.
  */
-export function installShellRouting(ctx: Context, router: SshRouter): () => void {
+export function installShellRouting(ctx: Context, router: SshRouter, t: DshellSshTranslate): () => void {
   const shell = ctx.get('shell')
   if (shell === undefined) return () => {}
   // The seam goes on the PROTOTYPE, not on the service object. A service is
@@ -490,7 +511,7 @@ export function installShellRouting(ctx: Context, router: SshRouter): () => void
       // assignment is missing — the device may have been deleted, or a bind may
       // have failed. Running the command here would execute it on this machine
       // inside an empty stand-in directory, so refuse in ssh's place instead.
-      if (isUnder(mountBase(), spec.workdir)) throw new Error(unboundMountMessage(spec.workdir))
+      if (isUnder(mountBase(), spec.workdir)) throw new Error(unboundMountMessage(spec.workdir, t))
       return spec
     }
     const { device, remoteRoot, mount } = target

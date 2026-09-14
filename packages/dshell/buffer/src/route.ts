@@ -9,6 +9,7 @@
 
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
+import type { DshellBufferHostTranslate } from './host-locales.js'
 import { DSHELL_BUFFER_PATH, type BufferRequest, type BufferResponse, type BufferState } from './protocol.js'
 import type { BufferService } from './service.js'
 
@@ -17,6 +18,12 @@ export interface BufferRouteDeps {
   readonly service: BufferService
   /** Host context, kept for parity with the other dshell routes. */
   readonly ctx: Context
+  /**
+   * This package's host copy, bound to the language the browser reported. A
+   * refusal here is rendered verbatim by the panel, so it is written in the
+   * language on screen: the host authors this text, the browser reads it.
+   */
+  readonly t: DshellBufferHostTranslate
 }
 
 /** JSON response in the shape the pipe panel parses. */
@@ -55,7 +62,7 @@ export function createBufferRoute(deps: BufferRouteDeps): ConnectionFetchRoute {
         return { ...state(), listing }
       }
       default:
-        return { ...state(), error: '未知操作' }
+        return { ...state(), error: deps.t('error.unknownAction') }
     }
   }
 
