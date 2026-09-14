@@ -2125,4 +2125,27 @@ was also checked directly against a seeded pipe: `detachSession` reports the id
 in `snapshot().departed` and a freshly constructed service does not inherit it,
 confirming the process-lifetime claim rather than asserting it.
 
+An independent review pass over the change found four more edges, all closed
+here. The confirmation dialog still promised a loaded session would be
+"收进「已归档」" — it now says `待删除`. `多选` could be stranded: the mode's
+only switches live on the `已归档` header, so a batch delete that moved every
+selected session to `待删除` emptied the group and left the mode on with no way
+out — an effect now drops the mode, the selection and the batch target when the
+group empties. The session route's two tag reads are separate awaits, so a
+concurrent `markPending` could report a pending id the archive half lacked, a
+pair the row split cannot represent (the row would appear twice); the response
+now repairs `pendingPurge ⊆ archived`. And the create-pipe form's endpoint
+picks are re-checked against the live list before submitting, because a picker
+value can outlive its option while the form is open — the same orphan edge the
+node filter exists to prevent — with the submit button disabled rather than
+silently failing.
+
+The build is also warning-free again: the preset's deprecated
+`external`/`noExternal` are now `deps.neverBundle`/`deps.alwaysBundle` (plus
+`deps.onlyBundle: false` to silence the bundling hint), and the client entries
+dropped their redundant `export default`, which was the sole source of
+rolldown's `MIXED_EXPORTS` — the loader's `exports.default ?? exports` reaches
+the same `{ name, inject, apply }` either way, and no dsh client entry exports a
+default. Boot was re-verified with every client plugin loading.
+
 

@@ -30,5 +30,3 @@ export function apply(ctx: Context): void {
     () => DshellSshCard({ ssh }),
   ))
 }
-
-export default { name, inject, apply }

@@ -303,7 +303,7 @@ export function registerBufferTool(ctx: Context, service: BufferService): () => 
   }))
 }
 
-/** 
+/**
  * Resolve the file actions' target: a buffer path (/mappedName/sub/file) picks
  * A buffer path is the ONLY addressing: its first segment names the mapping, and
  * the rest is the path inside that mapped area.

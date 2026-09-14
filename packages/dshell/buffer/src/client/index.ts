@@ -57,5 +57,3 @@ export function apply(ctx: Context): void {
     PipePanel,
   ))
 }
-
-export default { name, inject, apply }

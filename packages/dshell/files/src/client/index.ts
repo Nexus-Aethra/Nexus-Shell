@@ -109,5 +109,3 @@ export function apply(ctx: Context): void {
     DshellTransferTitle,
   )), 'dshell-files: transfer tab title')
 }
-
-export default { name, inject, apply }

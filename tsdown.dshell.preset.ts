@@ -24,9 +24,14 @@ interface DshellClientBundleConfig {
   sourcemap: boolean
   clean: false
   define: Record<string, string>
-  external: string[]
-  /** Dependency specifiers to force-inline (rolldown auto-externals deps). */
-  noExternal: string[]
+  deps: {
+    /** Specifiers the loader's `require` answers; never inlined. */
+    neverBundle: string[]
+    /** Dependency specifiers to force-inline (rolldown auto-externals deps). */
+    alwaysBundle: string[]
+    /** `false` silences the unintended-bundling hint; see the call site. */
+    onlyBundle: false
+  }
   outputOptions: {
     entryFileNames: string
     sourcemapExcludeSources: false
@@ -62,32 +67,40 @@ export function dshellClientBundle(
     dts: false,
     sourcemap: true,
     clean: false,
-    // dsh's module table only serves its own PLATFORM_MODULES plus registered
-    // client plugins, so a `require` of one of OUR support packages fails the
-    // plugin load — which is exactly what happened when the contracts moved
-    // into `dshell-std` and the bundler externalized it as a dependency. The
-    // standard layer is contracts and seam helpers: tiny, stateless, and safe
-    // to inline into every face, so it is always inlined rather than listed
-    // per package.
-    noExternal: ['@nexus-aethra/dshell-std', ...inline],
     // Inlined libraries reference Node's `process.env.NODE_ENV` for their
     // dev/prod switches; the closure bundle runs in a browser with no
     // `process`, so the reference is baked to production at build time.
     define: { 'process.env.NODE_ENV': '"production"' },
-    // Module-table specifiers (dsh packages/client/web/src/platform.ts
-    // PLATFORM_MODULES) that dshell client faces resolve through the
-    // injected require instead of inlining. Extend when a face gains
-    // another runtime import; type-only imports are erased by tsc before
-    // this bundler runs.
-    external: [
-      'react',
-      '@deepseek-ai/cordis',
-      '@deepseek-ai/dsh-client-store',
-      // The icon/primitive set dsh's own panes draw with (dshell-files uses it);
-      // present in PLATFORM_MODULES, so the loader serves it rather than us
-      // bundling a second copy.
-      '@deepseek-ai/dsh-client-ui-primitives',
-    ],
+    deps: {
+      // dsh's module table only serves its own PLATFORM_MODULES plus registered
+      // client plugins, so a `require` of one of OUR support packages fails the
+      // plugin load — which is exactly what happened when the contracts moved
+      // into `dshell-std` and the bundler externalized it as a dependency. The
+      // standard layer is contracts and seam helpers: tiny, stateless, and safe
+      // to inline into every face, so it is always inlined rather than listed
+      // per package.
+      alwaysBundle: ['@nexus-aethra/dshell-std', ...inline],
+      // Module-table specifiers (dsh packages/client/web/src/platform.ts
+      // PLATFORM_MODULES) that dshell client faces resolve through the
+      // injected require instead of inlining. Extend when a face gains
+      // another runtime import; type-only imports are erased by tsc before
+      // this bundler runs.
+      neverBundle: [
+        'react',
+        '@deepseek-ai/cordis',
+        '@deepseek-ai/dsh-client-store',
+        // The icon/primitive set dsh's own panes draw with (dshell-files uses
+        // it); present in PLATFORM_MODULES, so the loader serves it rather than
+        // us bundling a second copy.
+        '@deepseek-ai/dsh-client-ui-primitives',
+      ],
+      // `alwaysBundle` above is the intent, and a strict whitelist would have
+      // to enumerate every transitive dependency of the inlined libraries
+      // (@xyflow/react's graph engine alone pulls several); `false` silences
+      // the unintended-bundling hint without turning that list into a chore
+      // that fails the build whenever a library gains a dependency.
+      onlyBundle: false,
+    },
     outputOptions: {
       entryFileNames: 'client.js',
       sourcemapExcludeSources: false,

@@ -3,11 +3,14 @@
  * (design 4.7), plus the archive group and the session actions built on the
  * package's own session-panel route.
  *
- * One list, two sections: ordinary sessions newest-first, then a collapsed
- * `已归档` group holding the sessions carrying the archive tag. Archiving a
+ * Three sections: ordinary sessions newest-first, then a collapsed `已归档`
+ * group holding the sessions carrying the archive tag, then `待删除` for the
+ * ones whose removal is already scheduled (they are archived too, and leave at
+ * the next start because dsh cannot tear a loaded session down). Archiving a
  * session only removes it from the active section — the log stays untouched —
- * so restoring one puts it back exactly where it was. Deleting is the
- * destructive action and always goes through a confirmation dialog.
+ * so restoring one puts it back exactly where it was, and cancelling a
+ * scheduled removal is the same gesture. Deleting is the destructive action and
+ * always goes through a confirmation dialog.
  *
  * The section's chrome is deliberately quiet: rows are plain lines on the
  * background, and the row actions only appear on hover, so the list reads as
@@ -155,7 +158,7 @@ function DeleteDialog(props: {
           ? `将清除「${props.title}」的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`
           : `将清除选中的 ${String(props.count)} 个会话的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`,
         createElement('div', { style: { marginTop: 6, opacity: 0.75 } },
-          '仍然装载在本进程里的会话会先释放终端并收进「已归档」，日志在下次启动 dsh 时清除。')),
+          '仍然装载在本进程里的会话会先释放终端并移入「待删除」，日志在下次启动 dsh 时清除。')),
       props.error !== undefined ? createElement('div', { style: dialogErrorStyle }, props.error) : null,
       createElement('div', { style: dialogActionsStyle },
         createElement('button', {
@@ -259,6 +262,17 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
   const selectable = archivedRows.map(row => String(row.id))
   const checkedRows = selectable.filter(id => checked.includes(id))
   const allChecked = selectable.length > 0 && checkedRows.length === selectable.length
+
+  // The multi-select controls live on the 已归档 header, so they leave with the
+  // group. An emptied group must therefore drop the mode too, or the reader is
+  // left in it with its only exit gone — which is what a batch delete does when
+  // every selected session is loaded and moves to 待删除.
+  useEffect(() => {
+    if (archivedRows.length > 0) return
+    setMulti(false)
+    setChecked([])
+    setBatchTarget(undefined)
+  }, [archivedRows.length])
 
   const toggleChecked = (id: string): void => {
     setChecked(current => current.includes(id) ? current.filter(entry => entry !== id) : [...current, id])

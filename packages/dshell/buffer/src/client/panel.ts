@@ -270,16 +270,24 @@ function ListPane(props: ListSideProps & {
   // left, the first other session on the right. Never overwrites a choice.
   useEffect(() => {
     if (sessionState === undefined) return
-    if (left === '' && sessionState.current !== undefined) setLeft(String(sessionState.current))
+    const current = sessionState.current === undefined ? undefined : String(sessionState.current)
+    if (left === '' && current !== undefined && !snapshot.departed.includes(current)) {
+      setLeft(current)
+    }
     if (right === '') {
-      const current = sessionState.current === undefined ? undefined : String(sessionState.current)
-      const other = sessionState.ids.map(String).find(id => id !== current && !snapshot.departed.includes(id))
+      const other = sessionIds.find(id => id !== current)
       if (other !== undefined) setRight(other)
     }
   }, [sessionState, left, right, snapshot.departed])
 
+  // A pick is re-checked against the current list rather than trusted from the
+  // state that seeded it: a session can be deleted while this form is open, and
+  // its picker value would otherwise outlive the option and still submit — the
+  // orphan edge this panel's filtering exists to prevent.
+  const picksValid = sessionIds.includes(left) && sessionIds.includes(right) && left !== right
+
   const create = (): void => {
-    if (left === '' || right === '') return
+    if (!picksValid) return
     void props.buffer.link(left, right, label).then(() => {
       setLabel('')
       props.setCreating(false)
@@ -311,7 +319,7 @@ function ListPane(props: ListSideProps & {
         createElement('div', { style: dimStyle }, '只有你能建立管道；agent 没有建连的工具。'),
         createElement('button', {
           style: primaryStyle,
-          disabled: left === '' || right === '' || left === right,
+          disabled: !picksValid,
           onClick: create,
         }, '建立管道'),
       ),
