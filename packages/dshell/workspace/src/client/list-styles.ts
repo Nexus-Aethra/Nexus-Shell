@@ -114,6 +114,11 @@ export const groupCountStyle: CSSProperties = {
   fontSize: 11,
   opacity: 0.7,
 }
+/** A quiet qualifier beside a group's name, before the count pushes right. */
+export const groupNoteStyle: CSSProperties = {
+  fontSize: 11,
+  opacity: 0.6,
+}
 export const archivedRowStyle: CSSProperties = {
   ...rowStyle,
   opacity: 0.6,

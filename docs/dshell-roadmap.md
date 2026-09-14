@@ -670,7 +670,9 @@ Shipped:
 
 - Archive is a dshell-owned durable tag (`$DSH_HOME/dshell/tags.json`),
   rendered as the collapsible `已归档` group; dsh's own archive lives on
-  the disabled workspace registry, so it is unusable here.
+  the disabled workspace registry, so it is unusable here. (The
+  scheduled-removal state this phase kept inside that group became its own
+  `待删除` group in Phase 10.11.)
 - Purge removes the session directory, its projection-cache entry and
   the dshell PTY log plus sidecars (`dshell-workspace/src/purge.ts`),
   and frees the session's shell via
@@ -2058,4 +2060,92 @@ should skip lines typed at a prompt that is not a shell prompt, since a secret
 typed at a remote `sudo`/`psql`/passphrase prompt is currently recorded as a
 "command" and injected; and that a live master means a connection *test* cannot
 prove a just-rotated credential within `ControlPersist`.
+
+## Phase 10.11 — The scheduled-removal state gets its own section, and a deleted session leaves the pipe graph
+
+Phase 9.5 left the scheduled-removal state *inside* `已归档`: a pending row was
+an archived row with a ` · 重启后清除` suffix, a `取消` action instead of `恢复`,
+no delete button and no checkbox. That made one list hold two different
+meanings, and the row-level special cases were the only place the distinction
+was visible. Two things were also still wrong about deletion itself:
+
+- **A deleted session stayed in the pipe graph as an edge-less node.** dsh
+  cannot tear a loaded session down (`ctx.sessions` keeps it until the next
+  start), so the raw session list keeps naming it, and the graph drew a node per
+  listed session. Its pipes had already been dropped by
+  `BufferService.detachSession`, which left a peer that looked merely idle.
+  The endpoint pickers in the create-pipe form also still offered it.
+- The sidebar gave no place to see "these are on their way out" as a state,
+  as opposed to a per-row annotation.
+
+Shipped:
+
+- **A third group, `待删除`, after `已归档`.** Its rows are `archive.pending`;
+  `已归档` now lists `archived` minus pending, so a row appears in exactly one
+  group. The header carries the meaning (`待删除` + a quiet `重启后清除`) and the
+  group is hidden while empty; each row's only action is `取消` (drop the
+  scheduled purge and return the session to the active list — the same
+  gesture unarchiving performs). Multi-select stays with `已归档`, where
+  恢复/删除 actually apply, so `selectable` keeps one meaning.
+  No protocol change: `pendingPurge` was already in the session response.
+  Both the count and the visibility of `已归档` derive from the split list,
+  not from `archive.archived`: a pending session is still in the durable tag
+  set, so a raw count kept the header (and its multi-select controls) alive
+  over zero rows.
+- **`BufferState.departed`** — the ids a deletion has taken away, populated
+  only by `detachSession` and never persisted, because after a restart their
+  logs are purged during composition and dsh stops listing them, so there is
+  nothing left to hide. The pipe panel filters them out of the graph nodes and
+  the endpoint pickers. Archiving is deliberately *not* included: an archived
+  session is put away, not gone, and may still be a legitimate end of a pipe.
+- **`restoreSession`** undoes the hiding when a pending deletion is
+  cancelled. `SessionTagStore.unarchive` already cancels the scheduled purge
+  (the two are one gesture from the sidebar), which puts the session back in
+  use — dsh never forgot it and its log is intact — so a permanently hidden
+  graph node would be wrong for the rest of the process. The route's
+  `unarchive` branch calls it after the tag write. Its pipes are not
+  resurrected: those were cut when the deletion was requested, and re-linking
+  is a new gesture.
+
+The two pure derivations are the whole client change (the row split and the node
+filter); the panel learns about a deletion on its next read, which is
+immediate when it is opened and at most one 3 s poll otherwise.
+
+Verified in the running harness on the rebuilt bundle, end to end, with two
+scratch sessions and a real pipe: archiving a row then deleting it moved it to
+`待删除` with `已归档` disappearing entirely (header and multi-select included),
+the confirmation dialog closed instead of sticking, `/api/dshell/buffer`
+listed the session in `departed` with the pipe gone, and the graph went from
+three nodes and one edge to two nodes and no edge — the deleted session's node
+absent, the surviving peer unmarked. `取消` then removed the `待删除` group,
+returned the row to the active list, and brought its graph node back; the
+restored session's shell answered `echo` with the right cwd, so cancelling a
+deletion leaves a usable session rather than a tombstone. The in-memory half
+was also checked directly against a seeded pipe: `detachSession` reports the id
+in `snapshot().departed` and a freshly constructed service does not inherit it,
+confirming the process-lifetime claim rather than asserting it.
+
+An independent review pass over the change found four more edges, all closed
+here. The confirmation dialog still promised a loaded session would be
+"收进「已归档」" — it now says `待删除`. `多选` could be stranded: the mode's
+only switches live on the `已归档` header, so a batch delete that moved every
+selected session to `待删除` emptied the group and left the mode on with no way
+out — an effect now drops the mode, the selection and the batch target when the
+group empties. The session route's two tag reads are separate awaits, so a
+concurrent `markPending` could report a pending id the archive half lacked, a
+pair the row split cannot represent (the row would appear twice); the response
+now repairs `pendingPurge ⊆ archived`. And the create-pipe form's endpoint
+picks are re-checked against the live list before submitting, because a picker
+value can outlive its option while the form is open — the same orphan edge the
+node filter exists to prevent — with the submit button disabled rather than
+silently failing.
+
+The build is also warning-free again: the preset's deprecated
+`external`/`noExternal` are now `deps.neverBundle`/`deps.alwaysBundle` (plus
+`deps.onlyBundle: false` to silence the bundling hint), and the client entries
+dropped their redundant `export default`, which was the sole source of
+rolldown's `MIXED_EXPORTS` — the loader's `exports.default ?? exports` reaches
+the same `{ name, inject, apply }` either way, and no dsh client entry exports a
+default. Boot was re-verified with every client plugin loading.
+
 

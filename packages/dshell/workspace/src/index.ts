@@ -106,6 +106,12 @@ export function apply(ctx: Context): void {
       detach: async (sessionId) => {
         await panelCtx.get('dshellBufferCore')?.detachSession(sessionId)
       },
+      // The mirror of `detach`: a cancelled deletion puts the session back in
+      // the pipe UI. Absent in a composition without dshell-buffer, where
+      // there was nothing to hide in the first place.
+      restore: sessionId => {
+        panelCtx.get('dshellBufferCore')?.restoreSession(sessionId)
+      },
     })
     panelCtx.effect(
       () => panelCtx.connection.fetch.register(route),

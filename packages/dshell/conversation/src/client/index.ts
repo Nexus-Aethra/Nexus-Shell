@@ -102,5 +102,3 @@ export function apply(ctx: Context): void {
     }
   }, 'dshell-conversation: open into terminal view')
 }
-
-export default { name, inject, apply }

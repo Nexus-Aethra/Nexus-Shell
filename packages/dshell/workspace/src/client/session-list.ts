@@ -3,11 +3,14 @@
  * (design 4.7), plus the archive group and the session actions built on the
  * package's own session-panel route.
  *
- * One list, two sections: ordinary sessions newest-first, then a collapsed
- * `已归档` group holding the sessions carrying the archive tag. Archiving a
+ * Three sections: ordinary sessions newest-first, then a collapsed `已归档`
+ * group holding the sessions carrying the archive tag, then `待删除` for the
+ * ones whose removal is already scheduled (they are archived too, and leave at
+ * the next start because dsh cannot tear a loaded session down). Archiving a
  * session only removes it from the active section — the log stays untouched —
- * so restoring one puts it back exactly where it was. Deleting is the
- * destructive action and always goes through a confirmation dialog.
+ * so restoring one puts it back exactly where it was, and cancelling a
+ * scheduled removal is the same gesture. Deleting is the destructive action and
+ * always goes through a confirmation dialog.
  *
  * The section's chrome is deliberately quiet: rows are plain lines on the
  * background, and the row actions only appear on hover, so the list reads as
@@ -28,8 +31,8 @@ import { ordinaryRows, type PresetChoice, type SessionRow } from './rows.js'
 import {
   archivedRowStyle, backdropStyle, cancelButtonStyle, dangerButtonStyle, dialogActionsStyle,
   dialogBodyStyle, dialogErrorStyle, dialogStyle, dialogTitleStyle, emptyStyle, groupCountStyle,
-  groupHeaderStyle, headerStyle, listStyle, newButtonStyle, noticeStyle, rowActionStyle, rowActionsStyle,
-  rowStyle, rowTitleStyle, scrollStyle, sshBadgeStyle,
+  groupHeaderStyle, groupNoteStyle, headerStyle, listStyle, newButtonStyle, noticeStyle, rowActionStyle,
+  rowActionsStyle, rowStyle, rowTitleStyle, scrollStyle, sshBadgeStyle,
 } from './list-styles.js'
 
 /** The device face another plugin provides, when the SSH plugin is composed. */
@@ -155,7 +158,7 @@ function DeleteDialog(props: {
           ? `将清除「${props.title}」的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`
           : `将清除选中的 ${String(props.count)} 个会话的全部历史：agent 对话记录与终端日志一并删除，无法恢复。`,
         createElement('div', { style: { marginTop: 6, opacity: 0.75 } },
-          '仍然装载在本进程里的会话会先释放终端并收进「已归档」，日志在下次启动 dsh 时清除。')),
+          '仍然装载在本进程里的会话会先释放终端并移入「待删除」，日志在下次启动 dsh 时清除。')),
       props.error !== undefined ? createElement('div', { style: dialogErrorStyle }, props.error) : null,
       createElement('div', { style: dialogActionsStyle },
         createElement('button', {
@@ -215,6 +218,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     )
   }
   const [archivedOpen, setArchivedOpen] = useState(true)
+  const [pendingOpen, setPendingOpen] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<{ id: SessionId; title: string } | undefined>(undefined)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | undefined>(undefined)
@@ -234,9 +238,9 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
   const archivedSet = new Set(archive.archived)
   const active = rows.filter(row => !archivedSet.has(String(row.id)))
   const byId = new Map(rows.map(row => [String(row.id), row]))
-  // A tag can outlive the row it names (the log was removed outside dshell),
-  // so the archived section falls back to the bare id instead of dropping it.
-  const archivedRows = archive.archived.map(id => byId.get(id) ?? {
+  // A tag can outlive the row it names (the log was removed outside dshell), so
+  // both tagged sections fall back to the bare id instead of dropping it.
+  const taggedRow = (id: string): SessionRow => byId.get(id) ?? {
     id: id as SessionId,
     cwd: undefined,
     blank: false,
@@ -244,15 +248,31 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
     running: false,
     displayTitle: id,
     updatedAt: 0,
-  } satisfies SessionRow)
+  } satisfies SessionRow
 
   const pendingSet = new Set(archive.pending)
-  // Multi-select operates on what is actually listed and not already scheduled
-  // for purge — a pending row's removal is committed, so deleting it again
-  // would only re-schedule the same purge.
-  const selectable = archivedRows.filter(row => !pendingSet.has(String(row.id))).map(row => String(row.id))
+  // A scheduled row lives in its own section, not in 已归档: its removal is
+  // already committed, so its only remaining action is to cancel it, and mixing
+  // it in with rows that are merely put away made the two behave differently
+  // inside one list.
+  const pendingRows = archive.pending.map(taggedRow)
+  const archivedRows = archive.archived.filter(id => !pendingSet.has(id)).map(taggedRow)
+  // Multi-select covers the rows that are only archived — restore or delete.
+  // A pending row is past both.
+  const selectable = archivedRows.map(row => String(row.id))
   const checkedRows = selectable.filter(id => checked.includes(id))
   const allChecked = selectable.length > 0 && checkedRows.length === selectable.length
+
+  // The multi-select controls live on the 已归档 header, so they leave with the
+  // group. An emptied group must therefore drop the mode too, or the reader is
+  // left in it with its only exit gone — which is what a batch delete does when
+  // every selected session is loaded and moves to 待删除.
+  useEffect(() => {
+    if (archivedRows.length > 0) return
+    setMulti(false)
+    setChecked([])
+    setBatchTarget(undefined)
+  }, [archivedRows.length])
 
   const toggleChecked = (id: string): void => {
     setChecked(current => current.includes(id) ? current.filter(entry => entry !== id) : [...current, id])
@@ -280,6 +300,10 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
       return
     }
     setChecked([])
+    // Clearing the selection does not close this dialog: it renders while
+    // `batchTarget` is set, and the guard at the top then makes the confirm
+    // button a no-op, so the dialog would sit there with nothing to act on.
+    setBatchTarget(undefined)
     await props.refresh()
   }
 
@@ -360,7 +384,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
           ),
         )
       }),
-      archive.archived.length === 0 ? null : createElement('div', { key: 'archive-group' },
+      archivedRows.length === 0 ? null : createElement('div', { key: 'archive-group' },
         createElement('div', {
           'data-dshell-row': 'archive-header',
           style: groupHeaderStyle,
@@ -368,7 +392,7 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         },
           createElement(Chevron, { open: archivedOpen }),
           createElement('span', null, '已归档'),
-          createElement('span', { style: groupCountStyle }, String(archive.archived.length)),
+          createElement('span', { style: groupCountStyle }, String(archivedRows.length)),
           // Multi-select controls live on the header line. The click handlers
           // stop propagation: the header itself folds the group.
           createElement('span', { style: { ...rowActionsStyle, marginLeft: 6 }, onClick: (event: ReactMouseEvent) => { event.stopPropagation() } },
@@ -405,7 +429,6 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
         ),
         ...archivedOpen
           ? archivedRows.map((row) => {
-            const pending = pendingSet.has(String(row.id))
             const id = String(row.id)
             const isChecked = checked.includes(id)
             return createElement('div', {
@@ -414,32 +437,30 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
               style: {
                 ...archivedRowStyle,
                 fontWeight: state.current === row.id ? 600 : 400,
-                ...(multi && !pending ? { background: isChecked ? 'rgba(127,127,127,.18)' : undefined } : {}),
+                ...(multi ? { background: isChecked ? 'rgba(127,127,127,.18)' : undefined } : {}),
               },
               onClick: () => {
                 // Multi-select rows toggle their check instead of opening:
                 // opening mid-selection would both lose the ticked set's
                 // context and surprise a reader aiming at the checkbox.
-                if (multi && !pending) toggleChecked(id)
+                if (multi) toggleChecked(id)
                 else props.open(row.id)
               },
             },
-              multi && !pending
+              multi
                 ? createElement('span', { style: { ...rowTitleStyle, flex: '0 0 auto' } }, isChecked ? '☑' : '☐')
                 : null,
-              rowMain(row, pending ? ' · 重启后清除' : ''),
-              multi && !pending ? null : createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
+              rowMain(row),
+              multi ? null : createElement('span', { 'data-dshell-row-actions': 'archived', style: rowActionsStyle },
                 createElement('button', {
                   style: rowActionStyle,
-                  title: pending ? '取消：撤销删除并移回主列表' : '恢复：移回主列表',
+                  title: '恢复：移回主列表',
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
                     event.stopPropagation()
                     void props.panel.unarchive(id)
                   },
-                }, pending ? '取消' : '恢复'),
-                // A scheduled row's removal is already committed; deleting it
-                // again would only re-schedule the same purge.
-                pending ? null : createElement('button', {
+                }, '恢复'),
+                createElement('button', {
                   style: rowActionStyle,
                   title: '删除：清除该会话的全部历史',
                   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -448,6 +469,48 @@ export function FlatSessionList(props: FlatSessionListProps): ReactElement {
                     setDeleteTarget({ id: row.id, title: row.displayTitle })
                   },
                 }, '删除'),
+              ),
+            )
+          })
+          : [],
+      ),
+      // The scheduled-removal section, last: these sessions are past archiving,
+      // and dsh removes their logs at the next start (it cannot tear a loaded
+      // session down), so the group's meaning has to be on its header rather
+      // than inferred from one row's suffix.
+      pendingRows.length === 0 ? null : createElement('div', { key: 'pending-group' },
+        createElement('div', {
+          'data-dshell-row': 'pending-header',
+          style: groupHeaderStyle,
+          onClick: () => { setPendingOpen(open => !open) },
+        },
+          createElement(Chevron, { open: pendingOpen }),
+          createElement('span', null, '待删除'),
+          createElement('span', { style: groupNoteStyle }, '重启后清除'),
+          createElement('span', { style: groupCountStyle }, String(pendingRows.length)),
+        ),
+        ...pendingOpen
+          ? pendingRows.map((row) => {
+            const id = String(row.id)
+            return createElement('div', {
+              key: `pending-${row.id}`,
+              'data-dshell-row': 'pending',
+              style: { ...archivedRowStyle, fontWeight: state.current === row.id ? 600 : 400 },
+              onClick: () => { props.open(row.id) },
+            },
+              rowMain(row),
+              // Removal is already committed, so cancelling is the only action
+              // left: it drops the scheduled purge and returns the session to
+              // the active list, the same gesture unarchiving performs.
+              createElement('span', { 'data-dshell-row-actions': 'pending', style: rowActionsStyle },
+                createElement('button', {
+                  style: rowActionStyle,
+                  title: '取消：撤销删除并移回主列表',
+                  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => {
+                    event.stopPropagation()
+                    void props.panel.unarchive(id)
+                  },
+                }, '取消'),
               ),
             )
           })

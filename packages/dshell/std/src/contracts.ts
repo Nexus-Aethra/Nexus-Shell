@@ -414,6 +414,19 @@ export interface BufferState {
   readonly grants: readonly BufferGrant[]
   /** Transfers in flight, plus the freshly settled ones (pruned after a beat). */
   readonly transfers: readonly BufferTransfer[]
+  /**
+   * Sessions that have been deleted from dshell but are still in dsh's own
+   * session list, because dsh cannot tear a loaded session down: their log is
+   * removed at the next start. The pipe UI must not draw them — their pipes are
+   * already gone, so they would appear as orphan nodes.
+   *
+   * Process-lifetime, never persisted: after a restart these ids are purged
+   * during composition and leave dsh's list, so there is nothing left to hide.
+   * Populated only by the deletion path (`detachSession`), never by archiving —
+   * and released again by `restoreSession`, because cancelling a scheduled
+   * deletion puts the session back in use while dsh still lists it.
+   */
+  readonly departed: readonly string[]
 }
 
 /**
@@ -704,4 +717,3 @@ export const DSHELL_STREAM_PATH = '/api/dshell/stream'
  * with. Answers with no body; the stream is the only place results appear.
  */
 export const DSHELL_STREAM_SEND_PATH = '/api/dshell/stream/send'
-

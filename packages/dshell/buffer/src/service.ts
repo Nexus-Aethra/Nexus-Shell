@@ -155,6 +155,12 @@ export class BufferService {
   private grants: BufferGrant[] = []
   /** Chunked transfers in flight (and the freshly settled), for progress UI. */
   private readonly transfers = new Map<string, BufferTransfer>()
+  /**
+   * Sessions deleted from dshell that dsh still lists until the next start (see
+   * `detachSession`). Memory only: after a restart their logs are purged during
+   * composition and dsh stops naming them, so there is nothing left to hide.
+   */
+  private readonly departed = new Set<string>()
   private readonly feasibility: Feasibility
   /**
    * A context carrying `subprocess`, for the device probe only.
@@ -216,6 +222,7 @@ export class BufferService {
       tickets: [...this.tickets],
       grants: [...this.grants],
       transfers: [...this.transfers.values()],
+      departed: [...this.departed],
     }
   }
 
@@ -366,16 +373,23 @@ export class BufferService {
 
   /**
    * A session is gone: settle every unsettled ticket it participates in,
-   * revoke every grant it holds or issued, and drop its pipes.
+   * revoke every grant it holds or issued, drop its pipes, and remember that
+   * the pipe UI must not draw it any more.
    *
    * Deleting a session in dshell does not dispose its agent — the delete
    * route only frees dshell's own memory and schedules the log purge — so
    * this must be called explicitly by the deletion path;
    * {@link onAgentDisposed} covers the narrower case of an agent actually
    * being disposed in this process.
+   *
+   * The id is remembered because dsh still lists it: a deleted-but-loaded
+   * session stays in `ctx.sessions` until the next start (dsh cannot tear one
+   * down), so a UI that draws a node per listed session would keep an orphan
+   * node whose pipes are already gone.
    */
   async detachSession(sessionId: string): Promise<void> {
     if (this.disposed) return
+    this.departed.add(sessionId)
     const live = this.tickets.filter(ticket =>
       (ticket.from === sessionId || ticket.to === sessionId)
       && !SETTLED_STATES.includes(ticket.state))
@@ -400,6 +414,21 @@ export class BufferService {
     const linksBefore = this.links.length
     this.links = this.links.filter(link => link.a !== sessionId && link.b !== sessionId)
     if (changed || this.links.length !== linksBefore) await this.save()
+  }
+
+  /**
+   * Undo {@link detachSession}'s hiding when the pending deletion is cancelled.
+   *
+   * A session whose log is scheduled for removal can be restored before the
+   * next start (the sidebar's 取消): dsh never forgot it and the log is intact,
+   * so it is a live session again and must be offered — as a graph node and as
+   * a pipe endpoint — exactly as before. Its pipes are not resurrected: those
+   * were cut when the deletion was requested, and re-linking is a new gesture.
+   *
+   * @param sessionId - the session whose scheduled deletion was cancelled.
+   */
+  restoreSession(sessionId: string): void {
+    this.departed.delete(sessionId)
   }
 
   // -------------------------------------------------------------- delegation

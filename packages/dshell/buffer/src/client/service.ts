@@ -28,6 +28,12 @@ export interface BufferSnapshot {
   readonly grants: readonly BufferGrant[]
   /** Chunked transfers in flight (and the freshly settled), for progress UI. */
   readonly transfers: readonly BufferTransfer[]
+  /**
+   * Sessions dshell deleted that dsh still lists until the next start. The
+   * panel drops their nodes: dsh cannot tear a loaded session down, so the id
+   * outlives its pipes and would otherwise draw as an orphan node.
+   */
+  readonly departed: readonly string[]
   /** The last refusal or transport failure, shown until the next call. */
   readonly error: string | undefined
   /** Whether the host has answered at least once. */
@@ -37,7 +43,8 @@ export interface BufferSnapshot {
 }
 
 const EMPTY: BufferSnapshot = {
-  links: [], tickets: [], grants: [], transfers: [], error: undefined, loaded: false, open: false,
+  links: [], tickets: [], grants: [], transfers: [], departed: [],
+  error: undefined, loaded: false, open: false,
 }
 
 /** How often an open panel re-reads the state, so progress is visible live. */
@@ -189,6 +196,7 @@ export class BufferClientService extends Service {
       tickets: body.tickets,
       grants: body.grants,
       transfers: body.transfers ?? [],
+      departed: body.departed ?? [],
       error: body.error,
       loaded: true,
       open: this.snapshot.open,

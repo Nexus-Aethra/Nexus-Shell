@@ -6,10 +6,16 @@ a fresh machine.
 
 ## Branch model
 
-Development happens on `dev`; `main` holds the released line only.
-Work lands on `dev` and is squash-merged into `main` through a pull
-request once its acceptance check passes. Do not commit directly to
-`main`.
+`main` holds the released line only, and is never committed to directly:
+work reaches it by squash-merging a pull request once its acceptance
+check passes.
+
+`dev` was the branch for the initial development phase, which is over. It
+is kept for history, not for new work. Since then each development
+direction gets **its own branch** — `fix/session-delete` for the session
+deletion work, and so on — so a line of work can be reviewed, paused or
+abandoned without dragging anything else with it. Name a branch after the
+direction it serves, not after the phase number.
 
 ## Required tools
 
@@ -158,12 +164,18 @@ but that preset cannot run outside the dsh repository (its
 - The banner stamps the package id into the `__ModuleLoader__.load`
   handoff; it must match the `name` in the package manifest exactly.
 
-Client-face packages (`conversation`, `terminal-bridge`, `mode`) wrap
-the preset in `tsdown.config.ts` and run it via
-`tsdown --config-loader tsx` — `tsx` is a root devDependency because
-tsdown cannot resolve its own config loader from a foreign workspace.
-The `MIXED_EXPORTS` warning during `build:client` is benign: dsh
-consumes the factory closure, not the CJS `module.exports`.
+Every client-face package wraps the preset in its own
+`tsdown.config.ts` and runs it via `tsdown --config-loader tsx`; `tsx`
+is a root devDependency because tsdown cannot resolve its own config
+loader from a foreign workspace.
+
+A client entry exports **`name`, `inject` and `apply` only** — no
+`export default`, matching dsh's own client entries (0 of 46 carry
+one). The loader normalizes with `exports.default ?? exports`, so both
+shapes reach it as an object with the same three members, but mixing
+them makes the emitted `module.exports` ambiguous and rolldown reports
+`MIXED_EXPORTS` for that entry; the clean shape is the named-only one,
+and the build is expected to be warning-free.
 
 The `dshell-bundle` patch also disables dsh's `client-hmr` row. HMR is
 dev-only but ships in the client roster, and a missing HMR bundle is a

@@ -439,5 +439,3 @@ export function apply(ctx: Context): void {
     FlatSessionList,
   ))
 }
-
-export default { name, inject, apply }

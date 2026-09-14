@@ -421,5 +421,3 @@ export function apply(ctx: Context): void {
     function DshellBrandNamePlaceholder() { return null },
   ))
 }
-
-export default { name, inject, apply }

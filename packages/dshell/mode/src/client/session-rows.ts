@@ -444,4 +444,3 @@ export function renderSessionRow(row: SessionRow, collapsed: boolean, cols: numb
   }
   return out
 }
-
