@@ -182,13 +182,24 @@ when it contributes to model-visible state.
   also carries the status card (Phase 9.11): a permanent one-line head,
   with plan / AI terminal / subagents / breakpoint / pipe-task / link
   rows whose details open on click.
+  In shell mode the composer additionally owns two reading gestures,
+  both in this package's browser face: Tab path completion
+  (`completion.ts`, resolved host-side by `dshell-files`' `complete`)
+  and the command hint (`command-hint.ts`) — the tail of a recent
+  command ghosted at the caret and taken one word at a time with the
+  right arrow, read from the terminal bridge's per-session history.
+  The `↑` history list rides the completion list's own state under a
+  second source. The hint's ghost is deliberately not a node inside the
+  editor: the composer is a Lexical contenteditable, so the tail is a
+  span in the composer's floating overlay placed from the caret's rect.
 - dsh services depended on: `ctx.uiSession`, `ctx.agents.inject`,
   `dshell-terminal-bridge` (for main PTY id, the agent stream and
   context buffer read), `ctx.sessions` (the status card's session
   titles, running bit and subagent catalog), `dshell-buffer` (its pipe
   rows; optional, reached through a late-binding seat).
 - Introduced in: Phase 5 (state and dispatch); expanded in Phase 7
-  (injection), Phase 9.11 (status card).
+  (injection), Phase 9.11 (status card), Phase 10.12 (Tab completion
+  folds capitals) and Phase 10.13 (the command hint).
 - Touches decisions: 4.5 (mode state and prefix handling), 4.6
   (injection), 4.10 (status surface).
 

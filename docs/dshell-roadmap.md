@@ -2200,3 +2200,51 @@ recovery, while `nexus-shrll/`, `zzz/` and `neXus-shell/inner/` still reported
 untouched.
 
 
+
+## Phase 10.13 — The command hint, taken a word at a time
+
+A shell's line editor suggests because it owns the line; here the composer is the
+line and the history is on the host, so re-typing a long command meant recalling
+it by hand or walking the `↑` list back to it.
+
+Shipped: the tail of a recent command is ghosted after the caret, and the **right
+arrow takes it one word per press** — `docker` + → + → walks `docker run nginx a
+word at a time, the last press ending the line. The source is the same
+per-session record the up-arrow list reads (the bridge's command splitter), so
+nothing new is stored, and the ask goes to the host because the host owns the
+index over the WHOLE history — a window filtered in the browser is exactly the
+ceiling that makes an old command unfindable.
+
+Decisions the work forced:
+
+- **The ghost is not inside the editor.** The composer is a Lexical
+  contenteditable: an injected node would be reconciled away on the next update
+  and, until it was, the editor would read its selection offsets out of a tree it
+  does not own. The tail is instead a span in the composer's floating overlay,
+  placed from the caret's own rect — which also means it follows a wrap for free,
+  since the caret is where the next character would go.
+- **The match is an exact prefix, unlike Tab's.** Tab REWRITES the token under the
+  caret, which is why it can fold capitals; the ghost can only append, so a
+  case-insensitive match could suggest a command spelled differently from the
+  draft and then append a tail continuing the wrong word.
+- **What is not on screen is not taken.** The ghost hides whenever the caret
+  leaves the end of the draft, and the arrow agrees with what the reader can see:
+  a mid-line → moves the caret instead of accepting. (Found by testing the
+  first cut, which accepted while the ghost was invisible — the same
+  visible/state disagreement the completion list's apply-on-move rule exists to
+  prevent.)
+- **One query per typing pause, sequence-guarded.** The draft changes on every
+  keystroke, so the ask is debounced and an answer to a keystroke already
+  overtaken is dropped; an empty line asks nothing.
+- The legend names the key while a hint is in hand (`→ 采纳一个词 · 继续 → 补完`)
+  and reverts to the idle line otherwise — the gesture has no affordance of its
+  own, and → is an ordinary caret move the rest of the time.
+
+Verified in the browser on a session that had run `echo alpha beta gamma delta`:
+`echo` ghosted ` alpha beta gamma delta` (after a restart, so the persistence path
+is part of the proof); each → appended one word plus its space, with the ghost
+shrinking to match and vanishing on the last; a mid-line caret hid the ghost and
+left the draft alone; Tab still opened the path list with the ghost showing, and
+accepting closed it; `↑` still opened history; agent mode showed nothing; and a
+screenshot confirmed the tail reads as dimmed continuation text on the same
+baseline, immediately after the caret.

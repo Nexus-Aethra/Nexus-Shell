@@ -31,6 +31,7 @@ import type { PipeSeat, PipeTicket } from './status-card.js'
 import { injectSidebarCompactCss } from './sidebar-compact.js'
 import { DshellLeftControls } from './controls.js'
 import { createShellCompletion, ShellCompletionList } from './completion.js'
+import { createCommandHints, ShellCommandHint } from './command-hint.js'
 import { DshellComposerStats } from './composer-stats.js'
 import { DshellThemeCard } from './theme-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
@@ -152,6 +153,10 @@ export function apply(ctx: Context): void {
   // left controls writes it, the overlay list reads it, both keep the shell's
   // directory through it (see completion.ts).
   const shellCompletion = createShellCompletion()
+  // The command hint's store and its debounced history query. The left controls
+  // offer drafts to it, the ghost beside the completion list reads it, and the
+  // right arrow accepts a chunk of it (see command-hint.ts).
+  const commandHints = createCommandHints()
   const uiConversation = ctx.get('uiConversation') as unknown as {
     imageUrl: (sessionId: SessionId, attachment: Parameters<MessageImageLoader>[0]) => Promise<string>
   }
@@ -311,6 +316,7 @@ export function apply(ctx: Context): void {
         sessions,
         pty,
         completion: shellCompletion,
+        hints: commandHints,
         setMode: (next: SessionMode) => {
           if (sessionId !== undefined) modeFor(sessionId).set(next)
         },
@@ -387,6 +393,20 @@ export function apply(ctx: Context): void {
       inject: () => ({ completion: shellCompletion }),
     },
     ShellCompletionList,
+  ))
+  // The command hint, in the same floating layer. The seat is a `list`, so a
+  // second occupant is additive rather than a collision, and the two readings
+  // stay separate components: the list floats above the card, the hint sits at
+  // the caret. The left controls offer drafts to it and the right arrow accepts
+  // one word of it (see command-hint.ts).
+  ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register(
+    {
+      name: 'conversation.input.overlay',
+      id: 'dshell-command-hint',
+      order: 11,
+      inject: () => ({ hints: commandHints }),
+    },
+    ShellCommandHint,
   ))
   // The composer dock's readings — turn/step counts with output speed, token
   // total with cache-hit share — ride `conversation.composer.dock`, the row
