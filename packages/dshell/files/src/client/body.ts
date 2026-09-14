@@ -70,11 +70,17 @@ export function orderEntries(entries: readonly DshellFileEntry[]): DshellFileEnt
  * row is most of what tells a reader which line the pointer is on, so one
  * packaged style element carries it. Scoped to the navigator's own data
  * attributes, so it cannot affect stock chrome.
+ *
+ * The rows' resting background lives here too rather than in `rowStyle`: a
+ * stylesheet `:hover` rule cannot override an inline declaration, and with
+ * `background: transparent` inline the highlight matched `:hover` and painted
+ * nothing.
  */
 function injectHoverCss(): () => void {
   const style = document.createElement('style')
   style.dataset.dshell = 'files-nav'
   style.textContent = [
+    '[data-dshell-file-row] { background: transparent; }',
     '[data-dshell-file-row]:hover { background: rgba(127,127,127,.09); border-radius: 6px; }',
     '[data-dshell-file-row][aria-expanded="true"] { background: rgba(127,127,127,.06); border-radius: 6px; }',
     '[data-dshell-file-path]::-webkit-scrollbar { display: none; }',

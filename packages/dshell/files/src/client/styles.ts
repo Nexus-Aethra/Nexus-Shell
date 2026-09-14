@@ -102,7 +102,9 @@ export const rowStyle: CSSProperties = {
   width: '100%',
   boxSizing: 'border-box',
   border: 'none',
-  background: 'transparent',
+  // No `background` here on purpose: the resting colour and the `:hover`
+  // highlight both live in the stylesheet `injectHoverCss` installs, because an
+  // inline declaration would win over the `:hover` rule and kill the highlight.
   color: 'inherit',
   cursor: 'pointer',
   textAlign: 'left',

@@ -18,6 +18,9 @@ import {
   createElement, useEffect, useMemo, useRef, useState, useSyncExternalStore,
   type CSSProperties, type ReactElement,
 } from 'react'
+import {
+  FileTypeIcon, IconChevronLeftOutline14, IconFolderClose16, IconRefreshOutline16, classifyFileType,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { BufferGrant, BufferTicket, BufferUserEntry } from '../protocol.js'
 import type { BufferClientService, SessionSeat } from './service.js'
 import { PipeGraph, type GraphSession } from './pipe-graph.js'
@@ -475,16 +478,87 @@ interface BrowserLocation {
   readonly realPath: string | undefined
 }
 
-const browserHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }
-const crumbStyle: CSSProperties = {
+/**
+ * The browser draws its walk the way the file navigator does — a quiet row of
+ * controls and a crumb strip over plain rows on the background — because that
+ * is the list the reader already knows: the same 13px rows, the same 16px file
+ * and folder icons, the same hover highlight, the same `..` row for going up.
+ * Two lists over different worlds should not ask for two different habits.
+ */
+const browserNavStyle: CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 2, padding: '0 0 2px', minWidth: 0,
+}
+const navButtonStyle: CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto',
   border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer',
-  fontSize: 12, padding: '2px 4px', borderRadius: 6, opacity: 0.85,
+  padding: 3, borderRadius: 5, opacity: 0.8,
 }
+const navButtonOffStyle: CSSProperties = { ...navButtonStyle, opacity: 0.28, cursor: 'default' }
+/** The crumb strip: one line, scrolled rather than wrapped when it runs long. */
+const crumbStripStyle: CSSProperties = {
+  display: 'flex', alignItems: 'center', flex: '1 1 auto', minWidth: 0,
+  overflowX: 'auto', whiteSpace: 'nowrap', fontSize: 12, scrollbarWidth: 'none',
+}
+const crumbStyle: CSSProperties = {
+  flex: '0 0 auto', border: 'none', background: 'transparent', color: 'inherit',
+  cursor: 'pointer', font: 'inherit', fontSize: 12, padding: '1px 3px',
+  borderRadius: 4, opacity: 0.72,
+}
+const crumbCurrentStyle: CSSProperties = {
+  ...crumbStyle, opacity: 1, cursor: 'default', fontWeight: 600,
+}
+const crumbSeparatorStyle: CSSProperties = { flex: '0 0 auto', opacity: 0.4, margin: '0 1px' }
+const browserListStyle: CSSProperties = { listStyle: 'none', margin: 0, padding: 0 }
 const browserRowStyle: CSSProperties = {
-  ...clickableRowStyle, padding: '3px 6px', fontFamily: 'ui-monospace, monospace', fontSize: 12,
+  display: 'flex', alignItems: 'center', gap: 6, width: '100%', boxSizing: 'border-box',
+  // No `background` here on purpose: the resting colour and the hover highlight
+  // both live in `injectBrowserCss`, because an inline declaration would win
+  // over its `:hover` rule and leave the highlight painted but invisible.
+  border: 'none', color: 'inherit', cursor: 'pointer',
+  textAlign: 'left', font: 'inherit', fontSize: 13, padding: '4px 8px',
+  // The file navigator's rows are 28px because its name sits in the sidebar's
+  // 20px line box; the dialog's own line box is shorter, so the same padding
+  // gives a 24px row. Matching the measure keeps the two lists feeling alike.
+  lineHeight: '20px',
 }
-const glyphStyle: CSSProperties = { flex: '0 0 auto', opacity: 0.55, width: 12 }
-const sizeStyle: CSSProperties = { ...dimStyle, flex: '0 0 auto', fontVariantNumeric: 'tabular-nums' }
+/** A row the reader cannot act on: the same shape, no pointer affordance. */
+const browserIdleRowStyle: CSSProperties = { ...browserRowStyle, cursor: 'default' }
+const rowIconStyle: CSSProperties = { flex: '0 0 auto', display: 'flex' }
+const rowNameStyle: CSSProperties = {
+  flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+}
+/** The `..` row: the same shape as a folder row, monospaced so it reads as a token. */
+const parentNameStyle: CSSProperties = {
+  ...rowNameStyle, fontFamily: 'monospace', letterSpacing: 1, opacity: 0.85,
+}
+const rowMetaStyle: CSSProperties = {
+  ...dimStyle, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+}
+const sizeStyle: CSSProperties = { ...rowMetaStyle, flex: '0 0 auto' }
+/** Notes line up under the names, not under the icons. */
+const noteStyle: CSSProperties = { padding: '3px 10px 4px 30px', fontSize: 12, opacity: 0.5 }
+const browserErrorStyle: CSSProperties = {
+  padding: '3px 10px 4px 30px', fontSize: 12, color: '#f87171',
+}
+
+/**
+ * Row-hover treatment, the same one the file navigator installs: inline styles
+ * cannot express `:hover`, and a highlighted row is most of what tells a
+ * reader which line the pointer is on. Scoped to this browser's own data
+ * attributes, so it cannot affect stock chrome.
+ */
+function injectBrowserCss(): () => void {
+  const style = document.createElement('style')
+  style.dataset.dshell = 'buffer-browser'
+  style.textContent = [
+    '[data-dshell-buffer-row] { background: transparent; }',
+    '[data-dshell-buffer-row]:hover { background: rgba(127,127,127,.09); border-radius: 6px; }',
+    '[data-dshell-buffer-crumbs]::-webkit-scrollbar { display: none; }',
+  ].join('\n')
+  document.head.appendChild(style)
+  return () => { style.remove() }
+}
 
 /**
  * Walk the pipe's buffer namespace: at `/` the mapped roots (with rights and
@@ -503,6 +577,8 @@ function BufferBrowser(props: {
   // Races one-liner: only the newest request may land, so a slow deep listing
   // cannot overwrite the view the user has since navigated away from.
   const seq = useRef(0)
+  // The one treatment inline styles cannot carry (see injectBrowserCss).
+  useEffect(() => injectBrowserCss(), [])
 
   useEffect(() => {
     // A new pipe's detail starts at `/`; the old view must not leak through.
@@ -572,58 +648,130 @@ function BufferBrowser(props: {
 
   const root = location?.root
   const relSegments = location === undefined || location.rel === '' ? [] : location.rel.split('/')
+  const atNamespaceRoot = root === undefined
+  /** Jump to one crumb's directory: `/`, a mapped root, or a directory below it. */
+  const goto = (target: BufferUserEntry, rel: string): void => {
+    if (target.grantId === undefined) return
+    open(target, rel)
+  }
+  // The crumbs read like the file list's: the namespace root is itself a `/`,
+  // so the separator starts after it rather than doubling it.
+  const crumbs: ReactElement[] = [    createElement('button', {
+      key: '__root__', type: 'button', style: atNamespaceRoot ? crumbCurrentStyle : crumbStyle,
+      disabled: atNamespaceRoot, title: '缓冲区根', 'data-dshell-buffer-crumb': 'namespace',
+      onClick: () => { back() },
+    }, '/'),
+  ]
+  if (root !== undefined) {
+    crumbs.push(createElement('button', {
+      key: '__area__', type: 'button', style: relSegments.length === 0 ? crumbCurrentStyle : crumbStyle,
+      disabled: relSegments.length === 0, title: root.origin ?? root.name, 'data-dshell-buffer-crumb': 'area',
+      onClick: () => { goto(root, '') },
+    }, root.name))
+    relSegments.forEach((segment, index) => {
+      const last = index === relSegments.length - 1
+      const rel = relSegments.slice(0, index + 1).join('/')
+      crumbs.push(createElement('span', { key: `sep:${rel}`, style: crumbSeparatorStyle }, '/'))
+      crumbs.push(createElement('button', {
+        key: rel, type: 'button', style: last ? crumbCurrentStyle : crumbStyle,
+        disabled: last, title: rel, 'data-dshell-buffer-crumb': last ? 'current' : 'ancestor',
+        onClick: () => { goto(root, rel) },
+      }, segment))
+    })
+  }
 
   return createElement('div', null,
-    createElement('div', { style: sectionTitleStyle }, `缓冲区 (${root === undefined ? '/' : `/${root.name}/${relSegments.length === 0 ? '' : String(location?.rel)}`})`),
-    createElement('div', { style: cardStyle },
-      createElement('div', { style: browserHeaderStyle },
-        root === undefined ? null : createElement('span', { style: dimStyle }, String(location?.realPath)),
-        createElement('span', { style: { flex: '1 1 auto' } }),
-        createElement('button', { style: smallButtonStyle, onClick: refresh, disabled: loading }, '⟳ 刷新'),
+    createElement('div', { style: sectionTitleStyle }, '缓冲区'),
+    createElement('div', null,
+      createElement('div', { style: browserNavStyle },
+        createElement('button', {
+          type: 'button',
+          style: atNamespaceRoot || loading ? navButtonOffStyle : navButtonStyle,
+          disabled: atNamespaceRoot || loading,
+          title: atNamespaceRoot ? '已在缓冲区根' : '上一级',
+          'data-dshell-buffer-nav': 'up',
+          onClick: back,
+        }, createElement(IconChevronLeftOutline14, { size: 14 })),
+        createElement('button', {
+          type: 'button',
+          style: loading ? navButtonOffStyle : navButtonStyle,
+          disabled: loading,
+          title: '刷新',
+          'data-dshell-buffer-nav': 'refresh',
+          onClick: refresh,
+        }, createElement(IconRefreshOutline16, { size: 16 })),
+        createElement('div', {
+          style: crumbStripStyle,
+          'data-dshell-buffer-crumbs': '',
+          // The real path is provenance, not navigation: it is what the two
+          // agents' own `ls` answers, and it belongs on hover rather than
+          // taking a line of its own.
+          title: location?.realPath ?? '/',
+        }, crumbs),
       ),
-      createElement('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2, marginBottom: 4 } },
-        createElement('button', { style: crumbStyle, onClick: back }, '/'),
-        root === undefined ? null : createElement('button', {
-          style: crumbStyle, onClick: () => { if (root.grantId !== undefined) open(root, '') },
-        }, `/${root.name}`),
-        ...relSegments.map((segment, index) => {
-          const target = relSegments.slice(0, index + 1).join('')
-          return createElement('button', {
-            key: target,
-            style: crumbStyle,
-            onClick: () => { if (root?.grantId !== undefined) open(root, target) },
-          }, `/${segment}`)
-        }),
-      ),
-      error === undefined ? null : createElement('div', { style: { ...dimStyle, color: '#f87171' } }, error),
-      loading && location === undefined ? createElement('div', { style: emptyStyle }, '读取中…') : null,
+      error === undefined ? null : createElement('div', { style: browserErrorStyle, 'data-dshell-buffer-note': 'error' }, error),
+      loading && location === undefined ? createElement('div', { style: noteStyle, 'data-dshell-buffer-note': 'loading' }, '读取中…') : null,
       !loading && location === undefined && error === undefined
-        ? createElement('div', { style: emptyStyle }, '缓冲区为空。委派任务时带上带 as 名字的授权，映射目录会出现在这里。')
+        ? createElement('div', { style: noteStyle, 'data-dshell-buffer-note': 'empty' },
+          '缓冲区为空。委派任务时带上带 as 名字的授权，映射目录会出现在这里。')
         : null,
-      location === undefined ? null : location.entries.length === 0
-        ? createElement('div', { style: emptyStyle }, '（空目录）')
-        : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 1 } },
-          ...location.entries.map(entry => {
-            const isRoot = entry.grantId !== undefined
-            const childRel = location.rel === '' ? entry.name : `${location.rel}/${entry.name}`
-            return createElement('div', {
-              key: `${entry.grantId ?? ''}:${entry.name}`,
-              style: entry.kind === 'directory' || isRoot ? browserRowStyle : rowStyle,
-              title: isRoot ? `${entry.origin}（${rightsLabel(entry.rights ?? [])}）` : entry.kind === 'directory' ? '进入' : undefined,
-              onClick: entry.kind === 'directory' || isRoot
-                ? () => { if (isRoot) open(entry, ''); else if (root !== undefined && root.grantId !== undefined) open(root, childRel) }
-                : undefined,
+      location === undefined ? null : createElement('ul', { style: browserListStyle },
+        ...(atNamespaceRoot ? [] : [createElement('li', { key: '__up__', style: browserListStyle },
+          createElement('button', {
+            type: 'button', style: browserRowStyle, 'data-dshell-buffer-row': 'parent',
+            'data-dshell-buffer-entry': 'parent', title: '上一级',
+            onClick: back, onDoubleClick: back,
+          },
+            createElement('span', { style: rowIconStyle }, createElement(IconFolderClose16, { size: 16 })),
+            createElement('span', { style: parentNameStyle }, '..'),
+          ),
+        )]),
+        ...location.entries.map(entry => {
+          const isRoot = entry.grantId !== undefined
+          const childRel = location.rel === '' ? entry.name : `${location.rel}/${entry.name}`
+          const enterable = isRoot || entry.kind === 'directory'
+          const meta = isRoot
+            ? `← ${entry.origin ?? ''} · ${rightsLabel(entry.rights ?? [])} · ${shortLabel(props.sessions, entry.from ?? '')} → ${shortLabel(props.sessions, entry.to ?? '')}`
+            : entry.size === undefined ? undefined : fmtSize(entry.size)
+          return createElement('li', {
+            key: `${entry.grantId ?? ''}:${entry.name}`,
+            style: browserListStyle,
+            'data-dshell-buffer-entry': isRoot ? 'area' : entry.kind,
+          },
+            createElement('button', {
+              type: 'button',
+              style: enterable ? browserRowStyle : entry.kind === 'other' ? { ...browserIdleRowStyle, opacity: 0.5 } : browserIdleRowStyle,
+              'data-dshell-buffer-row': isRoot ? 'area' : entry.kind,
+              title: isRoot ? `${entry.name}：${entry.origin ?? ''}（${rightsLabel(entry.rights ?? [])}）` : entry.name,
+              ...enterable
+                ? {
+                  onClick: () => { if (isRoot) open(entry, ''); else if (root !== undefined) open(root, childRel) },
+                  // The file list enters a directory on a double click; here a
+                  // single click already does, so both gestures land the same way.
+                  onDoubleClick: () => { if (isRoot) open(entry, ''); else if (root !== undefined) open(root, childRel) },
+                }
+                : {},
             },
-              createElement('span', { style: glyphStyle }, isRoot || entry.kind === 'directory' ? 'd' : entry.kind === 'file' ? '-' : '?'),
-              createElement('span', { style: growStyle }, isRoot ? `/${entry.name}/` : entry.name),
-              isRoot
-                ? createElement('span', { style: dimStyle },
-                  `← ${entry.origin} · ${rightsLabel(entry.rights ?? [])} · ${shortLabel(props.sessions, entry.from ?? '')} → ${shortLabel(props.sessions, entry.to ?? '')}`)
-                : entry.size === undefined ? null : createElement('span', { style: sizeStyle }, fmtSize(entry.size)),
-            )
-          }),
-          location.truncated ? createElement('div', { style: emptyStyle }, '（条目过多，已截断到前 1000 项）') : null,
-        ),
+              // 'other' is the one kind the file navigator draws without an
+              // icon too: it is neither a directory nor a file to open.
+              entry.kind === 'other' && !isRoot
+                ? null
+                : createElement('span', { style: rowIconStyle },
+                  isRoot || entry.kind === 'directory'
+                    ? createElement(IconFolderClose16, { size: 16 })
+                    : createElement(FileTypeIcon, { kind: classifyFileType(entry.name), size: 16 })),
+              createElement('span', { style: rowNameStyle }, entry.name),
+              meta === undefined ? null : createElement('span', { style: isRoot ? rowMetaStyle : sizeStyle }, meta),
+            ),
+          )
+        }),
+        location.entries.length === 0
+          ? createElement('li', { style: noteStyle, 'data-dshell-buffer-note': 'empty-dir' }, '（空目录）')
+          : null,
+        location.truncated
+          ? createElement('li', { style: noteStyle, 'data-dshell-buffer-note': 'truncated' }, '（条目过多，已截断到前 1000 项）')
+          : null,
+      ),
     ),
   )
 }
