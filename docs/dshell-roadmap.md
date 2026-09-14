@@ -2362,3 +2362,42 @@ Verified end to end with the two registered devices (the local sshd rig as
 - Both transfers cleaned their scratch on both sides (nothing left under either
   device's root), which is the other half of the same fix: cleanup runs through
   the same naming.
+
+## Phase 10.16 — The pipe's buffer browser reads like the file list
+
+The pipe detail page's 缓冲区 view was a minimal debug listing: plain rows, a
+`d`/`-`/`?` glyph for the kind, a crumb row that wrapped, and a `⟳ 刷新` text
+button. It showed the namespace, but not as a place to walk — and the list a
+reader already walks for exactly this job is the right sidebar's file navigator.
+
+The browser is now drawn the way that navigator is: a quiet header (back
+chevron, refresh icon, a one-line crumb strip that scrolls instead of wrapping,
+its current crumb bold and inert), then rows of the same measure — 13px names in
+a 20px line box, 16px folder and file-type icons, `4px 8px` padding, the size
+(or a mapping's provenance) right-aligned in dim tabular figures — with a
+monospaced `..` row on top for going up, and the notes (loading, empty,
+truncated, error) indented to the names' column. Mapped roots keep their
+`← origin · 读 · ui-a → ui-b` detail as the right-hand column, and the real path
+moved into the crumb strip's tooltip: it is provenance, not navigation. A row is
+entered on a single click, and a double click lands the same way, as the file
+list's own rows do. The browser stays read-only — every mutation is still a tool
+call.
+
+Two things the work turned up:
+
+- **The file navigator's row hover had never painted.** Its `rowStyle` set
+  `background: transparent` inline, and an inline declaration wins over the
+  packaged `:hover` rule — so the rule matched, the radius applied, and the
+  colour did not. Both lists now keep the resting background in the same
+  stylesheet as the highlight; the hovered row's computed colour is
+  `rgba(127,127,127,.09)` in each.
+- **A dshell client package that draws dsh's icon set has to declare it.**
+  `@deepseek-ai/dsh-client-ui-primitives` is in PLATFORM_MODULES and therefore
+  never bundled, but the buffer package still needed the dependency entry — with
+  the hoisted store alone, tsc cannot resolve `FileTypeIcon`/`classifyFileType`.
+
+Verified in the browser against a real grant (a 60-minute read mapping of the
+repo directory): the browser listed 19 entries, folders first, with sizes, the
+`..` row and working crumbs; its row measure matched the file navigator's
+exactly (13px name, `4px 8px`, gap 6px, 20px line box, 28px row), and both lists
+answered the same hover colour.
