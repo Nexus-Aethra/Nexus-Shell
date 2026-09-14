@@ -28,6 +28,17 @@ All dsh references in this repo resolve to the local checkout under
 sources, prefer the package README over deep source files; the
 READMEs are where dsh's contract is stated.
 
+## The user-facing README comes in two languages
+
+`README.md` (English) and `README.zh-CN.md` (简体中文) are the same document for people who *use*
+dshell, as opposed to the four docs above, which are for people changing it. They are the front page
+GitHub renders.
+
+Both open with a one-line switcher (`**English** · [简体中文](./README.zh-CN.md)`), and both share the
+screenshots and diagrams under `docs/images/` — so a change to either one must be mirrored in the
+other **in the same commit**. The mermaid diagrams are duplicated per language rather than shared,
+because the labels are prose; keep the diagram shapes identical when you translate one.
+
 ## How to update these documents
 
 1. Editing a decision: update `dshell-design.md` first, then
@@ -40,3 +51,5 @@ READMEs are where dsh's contract is stated.
    shape.
 3. Renaming or removing anything: search all four docs for the old
    name and update in the same commit.
+4. Changing user-visible behaviour: update both READMEs, and refresh the
+   screenshots if the affected screen changed.
