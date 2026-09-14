@@ -305,13 +305,22 @@ when it contributes to model-visible state.
 - Role: the right sidebar's file navigator, roaming without bound, plus
   the two-pane file transfer beside it. Two-faced Cordis package:
   - **Host face** registers two connection routes. `/api/dshell/files`
-    has two actions: `list` resolves the session's agent, then inside
+    has four actions. `list` resolves the session's agent, then inside
     `withInitiator` resolves `stat` (must be a directory) and `listDir`
     and answers with the canonical absolute path in that session's own
-    execution world; `cd` sends the session's main shell into one such
+    execution world. `cd` sends the session's main shell into one such
     directory, through the terminal bridge's own input path — the same
     one a keystroke takes, so the command is tracked and rendered like
-    any typed command. The route exists because dsh's own
+    any typed command. `complete` answers one line's Tab: it splits the
+    token under the cursor, reads the directory it names in that world,
+    and returns the span plus the candidates — **matched with ASCII
+    capitals folded**, because the comparison is a guess about what the
+    reader meant while every path it looks up stays exact, and a
+    candidate keeps its real spelling so choosing it (or being the only
+    one, which applies it) corrects the line. `resolve` canonicalizes one
+    path, which is how the composer learns what a `cd` did; it answers
+    only for a directory, so a `cd` that failed cannot move that mirror.
+    The route exists because dsh's own
     `workspaceFiles.list` is fenced to the workspace root; `ctx.fs` is
     the same seam, just without that fence, and the sandbox only fences
     writes, so listing is at the same trust level as `read`.
