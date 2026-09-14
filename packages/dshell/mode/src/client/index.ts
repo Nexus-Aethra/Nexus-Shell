@@ -274,8 +274,9 @@ export function apply(ctx: Context): void {
   // its value wins over the localStorage pre-paint caches on arrival (another
   // browser's change, or this user's earlier session), and each local change is
   // written back through it. Writing is skipped while the transport reports the
-  // namespace unwritable — the local store has already moved, so the choice
-  // still takes effect for this browser instead of silently failing.
+  // namespace unwritable — the store has already moved, so the choice works for
+  // this browser until the mirror next publishes, at which point the Host's value
+  // wins, the same precedence the cache has everywhere else.
   const dshellSettings = ctx.settingsScope.bind<DshellSettings>({ namespace: DSHELL_SETTINGS_NAMESPACE })
   connectThemeSettings((id) => {
     if (!dshellSettings.getSnapshot().writable) return

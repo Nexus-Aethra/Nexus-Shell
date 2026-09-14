@@ -62,9 +62,11 @@ function cacheHelpers(value: ShellHelperSettings): void {
 export const shellHelperStore = createSnapshotStore<ShellHelperSettings>(cachedHelpers())
 
 /**
- * Write the settings namespace, when one is bound. `null` means this client has
- * no settings transport: the switch then stays browser-local rather than
- * silently dropping the user's choice.
+ * Write the settings namespace, when one is bound. Null only before the plugin
+ * body binds it: the sink is bound during `apply`, which runs before any card
+ * that could flip a switch is registered, so this is module-order insurance
+ * rather than a state a running client reaches — the case that really has no
+ * destination is an unwritable namespace, which the caller checks.
  */
 let persistHelper: ((field: DshellShellHelper, next: boolean) => void) | null = null
 

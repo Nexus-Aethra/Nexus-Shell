@@ -92,7 +92,9 @@ export function isThemeId(value: unknown): value is DshellThemeId {
  * The document is user data: a hand-edited file, an older version, or another
  * browser's write can carry anything. A value that is not a boolean therefore
  * falls back to the default rather than to "off" — a switch is only off when
- * the document says so.
+ * the document says so. (On the Host path a document that fails the schema is
+ * refused as a whole, so this per-field reading is what the localStorage cache
+ * and a partial mirror value go through.)
  *
  * @param value - the bound settings value, possibly partial or absent.
  * @param field - which switch to read.

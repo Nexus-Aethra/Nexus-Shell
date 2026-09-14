@@ -241,6 +241,25 @@ export function DshellLeftControls(props: {
         window.setTimeout(dismissStock, 0)
       }
       /**
+       * Whether an answer that has just arrived is still the one being waited for.
+       *
+       * A round trip outlives the keystroke that started it. In that window the
+       * session can be switched, the mode flipped, the draft typed on, or the
+       * assist switched off — and an answer landing then would rewrite a line
+       * nobody asked about (or, with the session changed, write into the wrong
+       * one). The switch is the case the Host cannot know about, which is why
+       * the gesture is re-checked here rather than only where it is claimed.
+       */
+      const stillWanted = (
+        sid: string,
+        draftNow: string,
+        gesture: 'tabCompletion' | 'historyList',
+      ): boolean =>
+        sessionIdRef.current === sid
+        && modeRef.current === 'shell'
+        && draftRef.current === draftNow
+        && helpersRef.current[gesture]
+      /**
        * Ask the host for the candidates under `token` and put the answer up.
        *
        * Shared by a fresh Tab and by Enter descending into a directory, so both
@@ -251,6 +270,7 @@ export function DshellLeftControls(props: {
       const ask = (sid: string, draftNow: string, token: string): void => {
         dismissStock()
         void completion.request(sid, draftNow, draftNow.length).then((state) => {
+          if (!stillWanted(sid, draftNow, 'tabCompletion')) return
           if (state === null) { completion.store.set(null); return }
           // A bare word with no match is more likely a non-path argument
           // (`echo hi<Tab>`) than a failed path completion, so it stays quiet:
@@ -320,6 +340,7 @@ export function DshellLeftControls(props: {
         if (!helpersRef.current.historyList) return false
         const draftNow = draftRef.current
         void completion.requestHistory(sessionId, draftNow).then((state) => {
+          if (!stillWanted(sessionId, draftNow, 'historyList')) return
           if (state === null) { completion.store.set(null); return }
           const next = completion.apply(state, state.index, draftNow)
           if (next === undefined) { completion.store.set(state); return }

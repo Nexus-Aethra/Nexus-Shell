@@ -2295,9 +2295,20 @@ Decisions the work forced:
   owns the open list is the list's own `source` — Tab opened one and `↑` opened
   another, so clearing on the wrong switch would drop a list the reader may still
   be using.
+- **An answer that arrives late is dropped.** Both key gestures continue in a
+  promise, and a round trip outlives the keystroke that started it: the answer
+  re-checks the session, the mode, the draft it was asked about, and its own
+  switch before it writes anything. The switch is the case the Host cannot know
+  about — a reply cannot be cancelled from the other side — which is why the
+  gesture is re-checked where the answer lands instead of only where it is claimed.
+  (Review finding: only the hint had this guard.)
+- **The ghost itself reads the switch, not just the store.** The clear that
+  follows a flip runs in the controls' effect, one paint after the render, so the
+  ghost would otherwise flash for a frame after being turned off.
 - **The legend names only what is on.** `直接输入 · Ctrl+C 中断` is what remains
   with all three off; promising a key the settings card has turned off is a worse
-  answer than a shorter line.
+  answer than a shorter line — and the ghost's own entry appears only while it is
+  DRAWN, since a caret parked mid-line hides it.
 - The document is user data, so a value that is not a boolean reads as the default
   rather than as off: a hand-edited file or an older document must not silently
   disable the composer's assists.

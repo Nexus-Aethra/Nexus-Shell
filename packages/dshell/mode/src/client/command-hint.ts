@@ -24,6 +24,7 @@ import { DSHELL_PTY_PATH } from '@nexus-aethra/dshell-std'
 // the SessionStandardProps that hand a slot its `useInput`/`inputActions`.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { useShellHelpers } from './shell-settings.js'
 import { useDshellTheme } from './theme.js'
 
 /** How long typing pauses before the history is asked. */
@@ -302,6 +303,7 @@ export function ShellCommandHint(
   props: { readonly hints: CommandHints } & PropsRuntime<'conversation.input.overlay'>,
 ): ReactElement | null {
   const theme = useDshellTheme()
+  const helpers = useShellHelpers()
   const draft = props.useInput(state => state.draft)
   useSyncExternalStore(props.hints.store.subscribe, props.hints.store.getSnapshot)
   const sessionId = String(props.sessionId)
@@ -310,7 +312,15 @@ export function ShellCommandHint(
   const [box, setBox] = useState<CaretBox | undefined>(undefined)
 
   useEffect(() => {
-    if (suffix === undefined) { setBox(undefined); props.hints.visible.set(false); return }
+    // Switched off, the ghost is not drawn even for a hint already in hand: the
+    // clear that follows the flip runs in the controls' effect, which is a paint
+    // later than this render, and a suggestion that flickers after being turned
+    // off is exactly what the switch promised would not happen.
+    if (!helpers.commandHint || suffix === undefined) {
+      setBox(undefined)
+      props.hints.visible.set(false)
+      return
+    }
     const place = (): void => {
       const element = ref.current
       if (element === null) return
@@ -352,9 +362,9 @@ export function ShellCommandHint(
       document.removeEventListener('selectionchange', place)
       window.removeEventListener('resize', place)
     }
-  }, [suffix, draft, props.hints])
+  }, [suffix, draft, props.hints, helpers.commandHint])
 
-  if (suffix === undefined) return null
+  if (!helpers.commandHint || suffix === undefined) return null
   return createElement('span', {
     ref,
     'data-dshell-hint': '',
