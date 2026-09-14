@@ -2148,4 +2148,53 @@ rolldown's `MIXED_EXPORTS` — the loader's `exports.default ?? exports` reaches
 the same `{ name, inject, apply }` either way, and no dsh client entry exports a
 default. Boot was re-verified with every client plugin loading.
 
+## Phase 10.12 — Tab completion folds capitals
+
+The composer's Tab matched a path prefix byte for byte, so `ls nexus-sh` found
+nothing while `Nexus-shell` sat in the directory being listed — the shell's
+filesystem is case-sensitive and the completion inherited that, even though the
+reader's mistake is only a missed shift and the name is right in front of them.
+
+Shipped:
+
+- **The comparison folds ASCII capitals; nothing else changes.** Every path the
+  route looks up stays exact and stays in the session's own world — the fold is
+  on the reader's side of the comparison only, because a completion is a guess
+  about what was meant, not a lookup. Candidates keep the spelling the
+  filesystem stores, which is what makes the correction happen: the client
+  replaces the token's span with the candidate, so `nexus-sh` + Tab becomes
+  `Nexus-shell/`, and a unique candidate applies itself, so the key that opens
+  the list is the key that fixes the line.
+- **Ambiguity is listed, never guessed.** `nexus-` with `nexus-study` beside
+  `Nexus-shell` opens the list with both, each spelled as stored — the fold
+  widens the candidate set rather than picking a winner. A name that exists
+  exactly is still used exactly: folding can only turn a miss into a match.
+- **Only A–Z fold**, deliberately. The mistake being repaired is a Latin
+  letter; a locale-aware fold would start equating names that are not the same
+  name in other scripts (a Turkish dotless i, the Kelvin sign), and could
+  change the string length the candidate offsets are measured in. Chinese
+  names complete exactly as before.
+- **A directory the reader spelled with the wrong capitals gets one recovery.**
+  `ls neXus-shell/<Tab>` cannot list a directory that does not exist by that
+  name, so the completion falls back to completing the segment the slash
+  follows — `Nexus-shell/` — after the exact reading misses. Only a miss
+  reaches it, and the answer still owns just that segment, which is what keeps
+  the line correct: the next Tab lists the directory.
+
+Boundaries, both deliberate: a spelling error is not repaired (`nexus-shrll/`
+still reports `目录不存在` — the fold equates case, not letters), and only the
+segment being completed is folded, so a wrong case *earlier* in the path
+(`neXus-shell/inner/`) still reports the miss — correcting that would have to
+rewrite text the candidate does not own, which the completion's span-only
+protocol cannot express.
+
+Verified in the browser against a fixture directory holding `nexus-study`,
+`Nexus-shell`, `Solo-Dir` and `中文目录`: `nexus-` listed both spellings,
+`nexus-sh` and `NEXUS-SH` both completed to `Nexus-shell/`, `nexus-st` to
+`nexus-study/`, `SOLO-` to `Solo-Dir/`, `中` to `中文目录/`, `rea` to
+`readme.md`, and `neXus-shell/` (relative and absolute) corrected through the
+recovery, while `nexus-shrll/`, `zzz/` and `neXus-shell/inner/` still reported
+`目录不存在`. `ls Nexus-shell/inner` completing normally shows the exact path is
+untouched.
+
 
