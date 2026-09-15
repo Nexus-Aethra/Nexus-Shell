@@ -22,6 +22,13 @@ export interface SessionRow {
   readonly collapsible: boolean
   /** Starts collapsed unless the user has explicitly expanded it. */
   readonly defaultCollapsed: boolean
+  /**
+   * Whether the human sent this in the middle of a running turn instead of
+   * starting one. The turn's own block holds the row either way; the flag is
+   * what lets the card say so, since an interjection lands under work that was
+   * already on screen.
+   */
+  readonly steering?: true | undefined
   /** Header label override (a tool's own name). */
   readonly label?: string | undefined
   /** `tool-call` correlation id, so a later result can name its tool. */

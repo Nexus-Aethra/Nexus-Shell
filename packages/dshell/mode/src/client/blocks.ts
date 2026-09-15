@@ -96,10 +96,25 @@ export interface BlockFold {
   seq: number
   /** The todo item the open block is working on. */
   phase: string | undefined
+  /**
+   * Prompt ids the host parked in the running turn's next-step inbox, oldest
+   * first, and the ids that have left it because the turn picked them up.
+   *
+   * A prompt admitted into a RUNNING turn is an interjection, not a new
+   * request, and the durable `user/message` carries no marker of its own to say
+   * which it was. The splices say it: dsh's own client reconstructs steering
+   * identity from exactly these events (ui-chat's `SteeringHistory`), which is
+   * what keeps this view's shape the same as the trajectory's.
+   */
+  readonly nextStep: string[]
+  readonly steering: Set<string>
 }
 
 export function createFold(): BlockFold {
-  return { toolNames: new Map(), blocks: [], notices: [], open: undefined, seq: 0, phase: undefined }
+  return {
+    toolNames: new Map(), blocks: [], notices: [], open: undefined, seq: 0, phase: undefined,
+    nextStep: [], steering: new Set(),
+  }
 }
 
 export function emptyBlock(key: string, time: number, title: string): TurnBlock {
@@ -218,6 +233,46 @@ export function clearStream(block: TurnBlock | undefined): boolean {
   return true
 }
 
+/** Identity of each entry one inbox splice inserted. */
+function splicedIds(inserted: readonly unknown[]): string[] {
+  const ids: string[] = []
+  for (const raw of inserted) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const id = (raw as { id?: unknown }).id
+    if (typeof id === 'string') ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * Follow one validated inbox splice for the steering mirror.
+ *
+ * A prompt starts in the next-turn queue and is moved to the running turn's
+ * next-step list when the reader interjects. Cancelled means it went back to
+ * the queue; any other removal from that list is the turn taking it, and the
+ * ids it took are the ones the durable messages will carry.
+ */
+function noteSplice(fold: BlockFold, data: unknown): void {
+  const splice = data as {
+    target?: unknown
+    start?: unknown
+    removedCount?: unknown
+    inserted?: readonly unknown[]
+    outcome?: unknown
+  }
+  if (splice.target !== 'next-step') return
+  const start = typeof splice.start === 'number' ? splice.start : 0
+  const count = typeof splice.removedCount === 'number' ? splice.removedCount : 0
+  const removed = fold.nextStep.splice(start, count, ...splicedIds(splice.inserted ?? []))
+  if (splice.outcome === 'canceled') return
+  for (const id of removed) fold.steering.add(id)
+}
+
+/** Whether this message was claimed from the running turn's next-step inbox. */
+function claimedByTurn(fold: BlockFold, data: { id?: unknown; source?: { kind?: unknown } }): boolean {
+  return typeof data.id === 'string' && fold.steering.delete(data.id) && data.source?.kind === 'user'
+}
+
 /**
  * Fold one durable event into the block model. Blocks open on a user request
  * or a turn start, split on a supervised phase change (a new in-progress todo
@@ -228,6 +283,14 @@ export function clearStream(block: TurnBlock | undefined): boolean {
  */
 export function foldEvent(fold: BlockFold, event: SessionEventLike, t: ModeTranslate): void {
   const time = event.time
+  // Read and consume the inbox splices first: they are what tells a message
+  // that steered the running turn from one that opened a turn of its own.
+  if (event.type === 'agent/inbox/spliced') {
+    noteSplice(fold, event.data)
+    return
+  }
+  const steering = event.type === 'user/message'
+    && claimedByTurn(fold, event.data as { id?: unknown; source?: { kind?: unknown } })
   if (event.type === 'turn/start') {
     const turn = event.data.turn
     const block = fold.open
@@ -326,6 +389,18 @@ export function foldEvent(fold: BlockFold, event: SessionEventLike, t: ModeTrans
   }
   if (event.type === 'user/message') {
     const title = firstLineOf(rows[0]?.text ?? '')
+    // An interjection continues the task it steered: it is appended where it
+    // arrived — which is before the answer it produced — and the card keeps its
+    // title, its turn and its running state. A card of its own would carry no
+    // turn number, so it would be placed among the shell regions by timestamp
+    // rather than by turn and adopted by whichever turn starts next, while
+    // dsh's trajectory keeps the message inside the turn it steered: the two
+    // views of one session would disagree about its shape.
+    if (steering && fold.open !== undefined) {
+      fold.open.rows.push(...rows.map(row => ({ ...row, steering: true as const, label: t('row.steering') })))
+      noteStep(fold.open, event)
+      return
+    }
     // `turn/start` usually opens the block first; a request adopts that empty
     // block instead of leaving a stray running one behind.
     const open = fold.open
