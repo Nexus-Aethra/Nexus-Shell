@@ -574,7 +574,11 @@ The position then picks the source, in the session's own world:
 | `argument`, after `cd`/`pushd`/`popd` | directories only — a file in that list is a candidate the shell would refuse. What is NOT expressible this way is "files only": a path is completed a segment at a time, so `> logs/app.log<Tab>` must pass through `logs/`. |
 | `redir` | the same path listing, files and directories, for the same reason. |
 | `flag` | **the shell's answer.** `-la` cannot come from a directory at all, so this position is asked of the world's own shell (below) and answered with nothing until that answer arrives. |
-| `argument`, a bare word | the path listing first — and then the shell, which is where subcommands, targets and branches live (`git ch<Tab>`, `systemctl sta<Tab>`). A word with a path in it, or after `cd`, is not asked: those are the file system's questions and this side already knows more. |
+| `argument`, a bare word | the shell first, exactly as for a flag — that is where subcommands, targets and branches live (`git ch<Tab>`, `systemctl sta<Tab>`) — and the path listing only as the fallback for a shell that turns out to have nothing. A word with a path in it, or after `cd`, is not asked at all: those are the file system's questions and this side already knows more. |
+
+The two shell-first rows are why a Tab is cheap on a device. The listing they
+*used* to take before asking is three round trips in that world, and on a device
+a round trip is not a network packet — see "Why a device Tab was slow" below.
 
 Nothing to complete — a blank line, or an operator under the caret that names no
 word — is a definite answer too, and the client swallows the Tab rather than
@@ -604,11 +608,12 @@ Five things make that safe and usable rather than clever:
   policy (honest for a local session; for a device the command runs under the
   device's own policy, because the only process here is `ssh`).
 - **The answer is asked for AFTER the fast one.** Two phases: the host answers
-  from what it knows and says `pending` when the shell might know more, the browser
-  draws that answer at once and asks again with `refine`. A late refine is applied
-  only while the store still holds the very state it was asked about — Escape, a
-  cycled candidate, a keystroke or another Tab all drop it — so a slow world can
-  never rewrite a line the reader has moved on from.
+  from what it already knows — memory, not a fresh round trip, when the line is
+  one the shell will answer (see below) — and says `pending` when the shell might
+  know more, the browser draws that answer at once and asks again with `refine`.
+  A late refine is applied only while the store still holds the very state it was
+  asked about — Escape, a cycled candidate, a keystroke or another Tab all drop it
+  — so a slow world can never rewrite a line the reader has moved on from.
 - **A blank answer keeps the fast one.** `NOSPEC` (no completion registered),
   an empty list, a world that will not answer: all of them leave the file
   system's answer standing. A refine can only ever give more, never take away.
@@ -616,10 +621,52 @@ Five things make that safe and usable rather than clever:
 Answers are cached per WORLD and line context (the world, the command, the word
 before the caret), each entry under the prefix it was asked for; a request that
 extends a cached prefix is filtered locally, which is what makes the second Tab
-free (13 ms against 436 ms cold locally, 1.8 s on a device). The world is part of
-the key because two sessions are not always the same machine. A flag the shell
-does not answer stays silent, as it does in a real terminal: the reader is typing
-a spelling there, not asking about the world.
+free. The world is part of the key because two sessions are not always the same
+machine. A flag the shell does not answer stays silent, as it does in a real
+terminal: the reader is typing a spelling there, not asking about the world.
+
+### Why a device Tab was slow, and what makes it fast
+
+A device Tab used to be **1.2–1.6 s** where the same Tab on this machine was
+6 ms, and the network was not the reason. Measured against the SSH device this
+project tests with:
+
+| what | cost |
+| --- | --- |
+| one `ssh` command over the shared control master | 23 ms |
+| the oracle probe (a `bash` that sources bash-completion) | 125 ms |
+| **one call through dsh's subprocess seam** | **0.39 s** |
+| a path completion: three of those calls (`realpath`, `stat`, `find`) | 1.17 s |
+| a flag or bare-word Tab: the same three, then the probe | 1.6 s |
+
+The 0.39 s is not the wire: every command dsh runs locally is wrapped as
+`systemd-run --user --scope … node --import tsx …/subprocess-local/src/bin.ts --
+ssh …`, so each call pays a transient systemd scope, a Node process and tsx
+transpiling dsh's runner. That price belongs to the harness, not to dshell, and
+the only thing this side controls is **how many calls a keystroke makes**.
+
+So, three rules:
+
+- **The fast pass stops reading when the shell is going to answer.** For a flag
+  or a bare word, the directory listing is the *fallback* for a shell that turns
+  out to have nothing, so it is deferred to the refine pass that discovers that —
+  and paid for only then. The answer the reader sees first is the shell's.
+- **A reading is remembered for a few seconds** (`files/src/readings.ts`), which
+  is what turns "Tab, Tab, Tab" in one directory into one read; the life is short
+  because a listing is the answer a reader compares against their own screen.
+- **The host is sent to look BEFORE the key is pressed.** While the reader types,
+  the browser sends `warm` — the same question `complete` would ask with the
+  answer thrown away — debounced by 250 ms and keyed by everything before the
+  word being typed, so a word costs one warm rather than one per character. The
+  host warms both halves (the shell probe AND the directory this side would answer
+  from), because the fallback is one of them. A Tab that arrives while a warm is
+  still on the wire JOINS it: both caches are single-flight, so the keystroke
+  waits for the answer already on its way instead of buying a second one.
+
+Measured after the change, same device: a cold path Tab still costs 1.2 s (the
+price of a first look), and every Tab the reader actually feels — type, pause,
+Tab — costs **2–6 ms**. On this machine nothing regressed: the same requests are
+6 ms as before, and a warm is a no-op nobody waits for.
 
 An empty answer carries a **reason code**, not a sentence
 (`DshellCompletionNote`): the route knows why and the browser knows the language,
@@ -658,8 +705,13 @@ rig that fits the feature rather than a copy of dsh's:
   would".
 - `packages/dshell/files/tests/shell-completion.spec.ts` drives the oracle's
   edges without a shell: the probe's quoting invariant, the markers a completion
-  function's own stdout must not be able to forge, and the cache's reuse, expiry
-  and boundedness.
+  function's own stdout must not be able to forge, and the cache's reuse, expiry,
+  boundedness, and the single probe two overlapping askers share.
+- `packages/dshell/files/tests/readings.spec.ts` drives the caches the warm path
+  fills: that a reading lives for seconds and not forever, that two callers of one
+  key are answered by ONE read, that a failure is not remembered, and that the
+  world is part of the key — the mistake that once served a device's directory out
+  of this machine's memory.
 
 Both specs are about RULES. The route's dispatch, the two-phase timing and the
 client's silence rule are verified by hand — a `fetch` against

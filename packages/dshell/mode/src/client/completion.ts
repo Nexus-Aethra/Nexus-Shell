@@ -127,6 +127,20 @@ export interface ShellCompletion {
    */
   request(sessionId: string, line: string, cursor: number, phase?: 'fast' | 'refine'): Promise<CompletionState | null>
   /**
+   * Get the host's caches ready for the Tab this line is heading towards.
+   *
+   * Nothing is returned and nothing is drawn: this asks the same question
+   * {@link request} would and throws the answer away, so that the host already
+   * holds the pieces when a Tab arrives a moment later. It exists because
+   * asking a DEVICE for them costs a process per piece, which is a price worth
+   * paying while the reader is still typing and not worth paying on the key.
+   *
+   * @param oracle - whether the session's own shell may be asked too. The
+   *   switch that governs the shell oracle is this side's (like every other
+   *   dshell switch), so this side is the only one that can say.
+   */
+  warm(sessionId: string, line: string, cursor: number, oracle: boolean): void
+  /**
    * The session's command history, as the up-arrow list.
    *
    * `draft` is the query: only commands *starting with* it — compared
@@ -240,6 +254,22 @@ export function createShellCompletion(): ShellCompletion {
         note: value.note,
         draft: line,
       }
+    },
+
+    warm(sessionId, line, cursor, oracle) {
+      const cwd = cwds.get(sessionId)
+      // Deliberately not awaited and deliberately silent: the answer is the
+      // host's caches, this side never reads the reply, and a warm that failed
+      // has cost the reader nothing — the Tab that follows simply pays what it
+      // would have paid anyway.
+      void post(FILES_PATH, {
+        action: 'warm',
+        sessionId,
+        line,
+        cursor,
+        oracle,
+        ...cwd === undefined ? {} : { cwd },
+      }).catch(() => { /* see above */ })
     },
 
     async requestHistory(sessionId, draft) {

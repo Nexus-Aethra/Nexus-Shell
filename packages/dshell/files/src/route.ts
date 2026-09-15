@@ -2,7 +2,7 @@
  * The file navigator's route: one exact `/api` endpoint behind dsh's existing
  * trust and authentication fence, mirroring the other dshell routes.
  *
- * Four actions, all against ONE directory, in the session's own execution
+ * Five actions, all against ONE directory, in the session's own execution
  * world. The world is chosen by the filesystem seam itself, not here: every call
  * runs inside `ctx.agents.withInitiator`, and `ctx.fs` resolves the ambient
  * session — a device-bound session's tree is read over its own SSH route, this
@@ -23,6 +23,10 @@
  *  - `complete` answers the composer's shell line: which source answers is
  *    decided by the LINE itself (`./shell-line.ts` in the standard layer), so
  *    the command position is a position rather than "the first word".
+ *  - `warm` asks the same questions in the background, so that a Tab pressed a
+ *    moment later finds the answers in memory. It exists because a device world
+ *    answers each of them with a process of its own, and paying for three of
+ *    those on the keystroke is what made Tab feel slow there; see `./readings.ts`.
  *
  * Listing is a read, and every sandbox mode permits reads (the policy fence
  * covers mutations only), so this route adds no gate the session did not
@@ -34,7 +38,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
 import type { DshellTerminalBridge } from '@nexus-aethra/dshell-terminal-bridge'
-import type { FsDirEntry, FsTarget } from '@deepseek-ai/dsh-fs'
+import type { FsTarget } from '@deepseek-ai/dsh-fs'
 // Type-only: pulls the shell service merge (`ctx.shell`), which the command
 // list uses to ask a device world for its PATH.
 import type {} from '@deepseek-ai/dsh-shell'
@@ -51,6 +55,7 @@ import {
 // re-exported through `./protocol.js` — that module exists to hold the shapes
 // this route answers with.
 import { readShellCaret, type ShellCaret } from '@nexus-aethra/dshell-std'
+import { readingKey, ReadingCache, type DirectoryReading } from './readings.js'
 import { askShell, OracleCache } from './shell-completion.js'
 import { quote } from './shell-quote.js'
 import { runInWorld } from './world-shell.js'
@@ -178,6 +183,23 @@ function worldHome(routing: () => TransferRoutingSeat | undefined, sessionId: st
 }
 
 /**
+ * Which machine a session's answers come from.
+ *
+ * Part of every cache key that holds an answer about a world: two sessions on
+ * this machine may share one, and a session bound to a device is another machine
+ * with its own bash-completion, installed packages and files. A device answer
+ * served out of this machine's cache is the mistake this key exists to prevent —
+ * it happened once, to the oracle.
+ *
+ * @param routing - the ssh routing seat, when one is composed.
+ * @param sessionId - the session whose world to name.
+ * @returns the device id, or `local` for a session that runs here.
+ */
+function worldOf(routing: () => TransferRoutingSeat | undefined, sessionId: string): string {
+  return routing()?.targetForSession(sessionId)?.device.id ?? 'local'
+}
+
+/**
  * Expand a leading `~` against that home. The filesystem seam does not do it —
  * `resolve('~')` answers `<cwd>/~` — so both the completion and the `cd` mirror
  * have to, in the session's own world rather than this process's.
@@ -210,17 +232,22 @@ function foldAscii(value: string): string {
 }
 
 /**
+ * The directory readings the completion path asks its world for, kept briefly.
+ *
+ * Why a completion remembers them at all, and why for seconds rather than
+ * minutes, is the whole argument in `./readings.ts`: a device answers one of
+ * these with a process of its own (~0.4 s), a Tab used to need three of them,
+ * and the listing is the one answer a reader compares against their own screen.
+ */
+const readingCache = new ReadingCache();
+
+/**
  * One directory reading inside the session's world.
  *
  * The two misses are kept apart because the reader is told which one happened:
  * an absent path and a path that is a file are different mistakes, and only the
  * first is worth recovering from capitals.
  */
-type DirectoryReading =
-  | { readonly ok: true; readonly dir: string; readonly children: readonly FsDirEntry[] }
-  | { readonly ok: false; readonly dir: string; readonly note: 'noDirectory' | 'notDirectory' }
-
-/** Read one directory as the session that owns the world it lives in. */
 async function readDirectory(
   ctx: Context,
   agent: Agent,
@@ -235,6 +262,27 @@ async function readDirectory(
   if (info.type !== 'directory') return { ok: false, dir, note: 'notDirectory' }
   const children = await ctx.agents.withInitiator(agent, () => ctx.fs.listDir(target))
   return { ok: true, dir, children }
+}
+
+/**
+ * The same reading, once per key per few seconds.
+ *
+ * @param world - the world the path lives in, which is part of the cache key:
+ *   two sessions on this machine share their readings, and a session bound to a
+ *   device is another machine whose directories must never be answered from
+ *   this one's cache.
+ */
+async function readDirectoryCached(
+  ctx: Context,
+  agent: Agent,
+  path: string,
+  base: string | undefined,
+  world: string,
+): Promise<DirectoryReading> {
+  return await readingCache.read(
+    readingKey(world, path, base),
+    () => readDirectory(ctx, agent, path, base),
+  )
 }
 
 /**
@@ -263,6 +311,7 @@ async function completeDirectorySegment(
   token: ShellCaret,
   base: string | undefined,
   home: string,
+  world: string,
 ): Promise<DshellCompletion | undefined> {
   // `dirPart` ends AT the last slash, so its own last segment is the name to
   // complete and everything before it is the directory to complete it in.
@@ -277,7 +326,7 @@ async function completeDirectorySegment(
   const rawParent = expandHome(parentPart, home)
   const parent = rawParent.length === 0 ? base : rawParent
   if (parent === undefined) return undefined
-  const reading = await readDirectory(ctx, agent, parent, base)
+  const reading = await readDirectoryCached(ctx, agent, parent, base, world)
   if (!reading.ok) return undefined
   const needle = foldAscii(segment)
   const matched = reading.children
@@ -333,20 +382,84 @@ async function complete(
   // `~` resolves against that world's home either way.
   const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
   const home = worldHome(routing, sessionId)
+  const world = worldOf(routing, sessionId)
   const refine = phase === 'refine'
   const refinable = shellCouldKnowMore(caret)
-  // The fast answer, which is also the refine's fallback: everything this side
-  // can say, marked provisional when the session's own shell is about to be
-  // asked for more (see `DshellCompletion.pending`).
-  const fast = await completeFast(ctx, routing, sessionId, agent, caret, base, home, !refine && refinable)
-  if (!refine || !refinable) return fast
+  if (!refine) {
+    // The fast pass. It is EMPTY on purpose whenever the session's own shell is
+    // about to be asked about this line, and — on a device — that is also the
+    // difference between a Tab and a second of waiting: a directory read is
+    // three round trips there (see `./readings.ts`), and it is the fallback for a
+    // shell that turns out to have nothing, not the answer. The refine branch
+    // below pays for it in exactly that case, and only then.
+    return await completeFast(
+      ctx, routing, sessionId, agent, caret, base, home, refinable, !refinable, world,
+    )
+  }
+  if (!refinable) {
+    return await completeFast(ctx, routing, sessionId, agent, caret, base, home, false, true, world)
+  }
   const asked = await completeByShell(ctx, routing, sessionId, agent, caret, line, cursor, base, home)
   // The shell's answer REPLACES the fast one when it has one; when it does not,
-  // the fast answer stands, no longer provisional. A blank refine must never take
-  // a candidate away: a path listing the reader is already looking at is a real
-  // answer even if the shell has nothing to add to it.
+  // the file system's is the answer — read now rather than earlier, so the
+  // ordinary case never paid for it. A miss must never take a candidate away: a
+  // path listing the reader is already looking at is a real answer even if the
+  // shell has nothing to add to it.
   if (asked !== undefined) return asked
-  return fast === undefined ? undefined : { ...fast, pending: false }
+  return await completeFast(ctx, routing, sessionId, agent, caret, base, home, false, true, world)
+}
+
+/**
+ * Fill this process's caches for the line the reader is typing.
+ *
+ * The whole point is that nobody waits for it: a warm answers with nothing, and
+ * what it fetches sits in the caches the next Tab reads (see `./readings.ts`).
+ * What it warms is exactly what a Tab on that line would ask for, decided by the
+ * same dispatch `complete` uses — so it cannot warm something a Tab would not
+ * have wanted, and a Tab that arrives while a warm is still on the wire JOINS it
+ * rather than starting a second one (the single-flight in both caches).
+ *
+ * Nothing here may surface. A warm is a guess about what the reader does next,
+ * and a guess that fails must cost them nothing: every failure is a failure to
+ * have something ready, never an error on a line they are still typing.
+ *
+ * @param oracle - whether the session's own shell may be asked as well. The
+ *   switch for that lives in the browser (like every other dshell switch), so
+ *   the browser is the side that has to say: a warm that probed anyway would run
+ *   a process per context for a reader who turned the oracle off.
+ */
+async function warm(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  line: string,
+  cursor: number,
+  cwd: string | undefined,
+  shellCwd: string | undefined,
+  oracle: boolean,
+): Promise<void> {
+  const caret = readShellCaret(line, cursor)
+  if (caret === undefined) return
+  const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
+  if ('error' in resolved) return
+  const agent = resolved.agent
+  const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
+  const home = worldHome(routing, sessionId)
+  const world = worldOf(routing, sessionId)
+  const refinable = shellCouldKnowMore(caret)
+  // Both halves of what a Tab on this line asks for, and both started before
+  // either is awaited: the shell's own vocabulary (the answer the reader is
+  // waiting for on a flag or a bare word), and the directory this side answers
+  // from — which a Tab reads twice, once to have something on screen and again
+  // as the fallback when the shell turns out to have nothing to add. The second
+  // read is why this is not simply "warm whatever the fast pass warms": on a
+  // device the fallback is three round trips, and the whole point is that the
+  // reader never waits for them.
+  const probed = refinable && oracle
+    ? completeByShell(ctx, routing, sessionId, agent, caret, line, cursor, base, home)
+    : Promise.resolve(undefined)
+  await completeFast(ctx, routing, sessionId, agent, caret, base, home, refinable, true, world)
+  await probed
 }
 
 /**
@@ -404,7 +517,7 @@ async function completeByShell(
   // share one world and may share one answer; a session bound to a device is a
   // different machine with its own bash-completion, its own installed packages
   // and its own paths, so its answer must never come out of this one's cache.
-  const world = routing()?.targetForSession(sessionId)?.device.id ?? 'local'
+  const world = worldOf(routing, sessionId)
   const names = await askShell(ctx, agent, {
     line,
     cursor,
@@ -441,6 +554,12 @@ async function completeByShell(
  *
  * @param pending - whether a refine is already on its way for this line, which
  *   the browser has to know before it draws an empty answer.
+ * @param allowRead - whether this side may go and READ its world when the
+ *   directory is not already in memory. False on a fast pass whose line the
+ *   session's own shell is about to answer: the file system is the fallback
+ *   there, and on a device a fallback that costs three round trips is worth
+ *   asking for only once the shell has actually declined (see `complete`).
+ * @param world - the machine the path's answers come from, for the cache key.
  */
 async function completeFast(
   ctx: Context,
@@ -451,6 +570,8 @@ async function completeFast(
   base: string | undefined,
   home: string,
   pending: boolean,
+  allowRead: boolean,
+  world: string,
 ): Promise<DshellCompletion | undefined> {
   // The command position completes from the commands the session's world offers
   // rather than from the directory the shell stands in — which is now decided by
@@ -485,7 +606,9 @@ async function completeFast(
   // redirection's target — is a path, and a path is walked a segment at a time,
   // so directories answer there too (`> logs/app.log<Tab>` passes through `logs/`).
   const directoryOnly = caret.command !== undefined && CD_COMMANDS.has(caret.command)
-  return await completePath(ctx, agent, caret, base, home, directoryOnly ? 'directory' : 'any', pending)
+  return await completePath(
+    ctx, agent, caret, base, home, directoryOnly ? 'directory' : 'any', pending, allowRead, world,
+  )
 }
 
 /**
@@ -495,6 +618,9 @@ async function completeFast(
  *   (`cd`), `any` everywhere else.
  * @param pending - whether the shell is still going to be asked about this
  *   line, which every answer here carries through (see `DshellCompletion.pending`).
+ * @param allowRead - whether a cold reading may be taken from the world; false
+ *   answers the cache or says nothing (see `completeFast`).
+ * @param world - the machine this path's answers come from, for the cache key.
  */
 async function completePath(
   ctx: Context,
@@ -504,6 +630,8 @@ async function completePath(
   home: string,
   want: 'any' | 'directory',
   pending: boolean,
+  allowRead: boolean,
+  world: string,
 ): Promise<DshellCompletion | undefined> {
   // A lonely `~` names a directory, and nothing is named "~": the answer is the
   // tilde itself, so the composer writes `~/` and the next Tab lists it.
@@ -521,7 +649,18 @@ async function completePath(
   const rawDir = expandHome(caret.dirPart, home)
   const start = rawDir.length === 0 ? base : rawDir
   if (start === undefined) throw new Error('这个会话没有工作目录，无法补全相对路径')
-  const reading = await readDirectory(ctx, agent, start, base)
+  // A cold reading is a round trip this process may not want to spend: when a
+  // refine is on its way, the answer here is only a fallback, and the world is
+  // asked for it once the shell has declined (see `complete`). What this side
+  // already holds is still served — a warm usually put it there — so the reader
+  // who typed and then pressed Tab gets their list without waiting for anything.
+  if (!allowRead && readingCache.peek(readingKey(world, start, base)) === undefined) {
+    return {
+      start: caret.start, end: caret.end, dir: start, candidates: [], truncated: false,
+      position: caret.position, ...pending ? { pending: true } : {},
+    }
+  }
+  const reading = await readDirectoryCached(ctx, agent, start, base, world)
   if (!reading.ok) {
     // A directory the reader spelled with the wrong capitals is the same mistake
     // the trailing segment is repaired for, so an ABSENT path is given that one
@@ -531,7 +670,7 @@ async function completePath(
     // did not ask for (`ls foo/` must not become `ls foo.d/` just because the
     // slash was wrong for a file).
     const recovered = reading.note === 'noDirectory'
-      ? await completeDirectorySegment(ctx, agent, caret, base, home)
+      ? await completeDirectorySegment(ctx, agent, caret, base, home, world)
       : undefined
     return recovered ?? {
       start: caret.start, end: caret.end, dir: reading.dir, candidates: [], truncated: false,
@@ -819,6 +958,14 @@ export function createFilesRoute(
             bridge?.shellCwd(input.sessionId), input.phase === 'refine' ? 'refine' : 'fast',
           ),
         }
+      case 'warm':
+        // Fire and forget, deliberately: the work IS the answer, and a warm the
+        // reader had to wait for would be a slower Tab rather than a faster one.
+        void warm(
+          ctx, routing, input.sessionId, input.line ?? '', input.cursor ?? 0, input.cwd,
+          bridge?.shellCwd(input.sessionId), input.oracle === true,
+        ).catch(() => { /* a warm nobody asked for must never surface */ })
+        return { warmed: true }
       default:
         return { error: '未知操作' }
     }

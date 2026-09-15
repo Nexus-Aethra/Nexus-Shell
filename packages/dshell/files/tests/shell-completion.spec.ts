@@ -143,4 +143,22 @@ describe('OracleCache', () => {
     expect(cache.lookup(context, 'x', 1_000)).toBeUndefined()
     expect(cache.lookup(context, 'xxxxxxxxxx', 1_000)).toEqual(['xxxxxxxxxx-cmd'])
   })
+
+  it('runs one probe when a warm and the Tab it was warming for overlap', async () => {
+    const cache = new OracleCache()
+    let probes = 0
+    const probe = async (): Promise<readonly string[]> => {
+      probes += 1
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return ['run']
+    }
+    // This is the case the warm exists for: the reader typed, the warm went out,
+    // and the key landed while it was still on the wire. The keystroke must wait
+    // for that answer rather than pay for a second one — on a device a probe is a
+    // process of its own.
+    const [warm, tab] = await Promise.all([cache.probe('k', probe), cache.probe('k', probe)])
+    expect(probes).toBe(1)
+    expect(warm).toEqual(['run'])
+    expect(tab).toEqual(warm)
+  })
 })
