@@ -54,6 +54,7 @@ import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-shell'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
+import { quote } from './shell-quote.js'
 import {
   type TransferEntry, type TransferJobState, type TransferJobView, type TransferListing,
   type TransferSetup, type TransferSide,
@@ -176,11 +177,6 @@ function joinPath(dir: string, name: string): string {
 function relativeUnder(root: string, path: string): string | undefined {
   const base = root.endsWith('/') ? root : `${root}/`
   return path.startsWith(base) ? path.slice(base.length) : undefined
-}
-
-/** One shell argument, safely: single quotes, closed and reopened around each quote. */
-function quote(value: string): string {
-  return `'${value.replaceAll('\'', '\'\\\'\'')}'`
 }
 
 /** The message of a thrown value, for a job's `error`. */

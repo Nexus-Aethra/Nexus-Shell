@@ -158,6 +158,11 @@ const HELPER_ROWS: readonly { field: DshellShellHelper; labelKey: DshellModeKey;
     labelKey: 'settings.helper.commandHint.label',
     detailKey: 'settings.helper.commandHint.detail',
   },
+  {
+    field: 'completionShellOracle',
+    labelKey: 'settings.helper.completionShellOracle.label',
+    detailKey: 'settings.helper.completionShellOracle.detail',
+  },
 ]
 
 /**

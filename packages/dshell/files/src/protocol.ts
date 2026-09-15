@@ -18,4 +18,4 @@
 // package's, and both halves of every plugin read the same declaration there.
 // Re-exported so existing importers keep one import site per package.
 export { DSHELL_FILES_PATH } from '@nexus-aethra/dshell-std'
-export type { DshellFileKind, DshellFileEntry, DshellFilesListing, DshellFilesRequest, DshellCompletionCandidate, DshellCompletion, DshellFilesResponse } from '@nexus-aethra/dshell-std'
+export type { DshellFileKind, DshellFileEntry, DshellFilesListing, DshellFilesRequest, DshellCompletionCandidate, DshellCompletionKind, DshellCompletion, DshellFilesResponse } from '@nexus-aethra/dshell-std'

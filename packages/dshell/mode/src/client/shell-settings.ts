@@ -32,6 +32,7 @@ const DEFAULTS: ShellHelperSettings = {
   tabCompletion: SHELL_HELPER_DEFAULT,
   historyList: SHELL_HELPER_DEFAULT,
   commandHint: SHELL_HELPER_DEFAULT,
+  completionShellOracle: SHELL_HELPER_DEFAULT,
 }
 
 /** Read the whole set from a value of unknown shape, field by field. */

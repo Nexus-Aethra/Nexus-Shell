@@ -340,8 +340,11 @@ when it contributes to model-visible state.
     name, an argument, a flag, or a redirection's target), the route
     picks the source accordingly — the world's `PATH` plus builtins for a
     command, one directory read in that world for a path, directories
-    only after `cd` — and returns the span, the position and the
-    candidates — **matched with ASCII
+    only after `cd`, and, in a second `refine` pass, the session's own
+    shell (`shell-completion.ts`: a `bash -c` probe in that world, whose
+    line travels as an argument and never as script text) for the flags
+    and subcommands only bash-completion knows — and returns the span,
+    the position and the candidates — **matched with ASCII
     capitals folded**, because the comparison is a guess about what the
     reader meant while every path it looks up stays exact, and a
     candidate keeps its real spelling so choosing it (or being the only

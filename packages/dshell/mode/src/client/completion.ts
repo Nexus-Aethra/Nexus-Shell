@@ -64,6 +64,14 @@ export interface CompletionState {
    * whole command from the past.
    */
   readonly position: ShellPosition | undefined
+  /**
+   * Whether a better answer is still on its way (see the wire contract, and
+   * `controls.ts` where the second request is made). The list must not draw an
+   * EMPTY answer while this is true: the host is saying the shell has not
+   * answered yet, and a "no matches" note now would be a lie the reader has to
+   * unsee.
+   */
+  readonly pending: boolean
   /** Offsets in the draft the candidates replace (the basename, not the prefix). */
   readonly start: number
   readonly end: number
@@ -111,10 +119,13 @@ export interface ShellCompletion {
   /**
    * One completion for the draft's line at the caret.
    *
+   * @param phase - `fast` answers from what the host already knows, `refine`
+   *   asks the session's own shell for the words only it has. A fast answer
+   *   carries `pending: true` when the second pass is worth making.
    * @returns the state to show, or null when the host had nothing (no request
    *   was possible, or the token is not a path).
    */
-  request(sessionId: string, line: string, cursor: number): Promise<CompletionState | null>
+  request(sessionId: string, line: string, cursor: number, phase?: 'fast' | 'refine'): Promise<CompletionState | null>
   /**
    * The session's command history, as the up-arrow list.
    *
@@ -190,7 +201,7 @@ export function createShellCompletion(): ShellCompletion {
         .catch(() => { /* the shell still moved; only our mirror is stale */ })
     },
 
-    async request(sessionId, line, cursor) {
+    async request(sessionId, line, cursor, phase) {
       const cwd = cwds.get(sessionId)
       const body = await post(FILES_PATH, {
         action: 'complete',
@@ -198,6 +209,7 @@ export function createShellCompletion(): ShellCompletion {
         line,
         cursor,
         ...cwd === undefined ? {} : { cwd },
+        ...phase === undefined ? {} : { phase },
       })
       const completion = body.completion
       if (completion === null || typeof completion !== 'object') return null
@@ -206,6 +218,7 @@ export function createShellCompletion(): ShellCompletion {
         end: number
         dir: string
         position: ShellPosition
+        pending?: boolean
         candidates: readonly CompletionCandidate[]
         note?: DshellCompletionNote
       }
@@ -218,6 +231,7 @@ export function createShellCompletion(): ShellCompletion {
         // commands — and it is no longer the client's business either way.
         source: value.position === 'command' ? 'command' : 'path',
         position: value.position,
+        pending: value.pending === true,
         start: value.start,
         end: value.end,
         dir: value.dir,
@@ -253,6 +267,7 @@ export function createShellCompletion(): ShellCompletion {
         sessionId,
         source: 'history',
         position: undefined,
+        pending: false,
         // A command replaces the whole line, so the span is all of it.
         start: 0,
         end: draft.length,
@@ -268,18 +283,20 @@ export function createShellCompletion(): ShellCompletion {
     apply(state, index, draft) {
       const item = state.items[index]
       if (item === undefined) return undefined
-      // A directory lands with the slash that opens it; a command lands with the
-      // space that ends it, the way a shell's own Tab writes both — the next
-      // word is what the reader is about to type. The span covers what was
-      // written, so cycling from `dock⇥ ` to the next candidate still replaces
-      // the whole word rather than appending to it.
+      // What follows a taken candidate is the shell's own rhythm: a directory
+      // opens with the slash that walks into it, and every other kind of word —
+      // a command, a flag, a word only the shell could name — is finished, so
+      // the next word starts after a space. The span covers what was written, so
+      // cycling from `dock⇥ ` to the next candidate still replaces the whole
+      // word rather than appending to it.
       const name = item.kind === 'directory'
         ? `${item.name}/`
-        : item.kind === 'command' ? `${item.name} ` : item.name
+        : item.kind === 'command' || item.kind === 'flag' || item.kind === 'word' ? `${item.name} `
+          : item.name
       const text = draft.slice(0, state.start) + name + draft.slice(state.end)
       return {
         text,
-        state: { ...state, index, end: state.start + name.length, draft: text },
+        state: { ...state, index, pending: false, end: state.start + name.length, draft: text },
       }
     },
   }
@@ -316,7 +333,7 @@ function listStyle(theme: ReturnType<typeof useDshellTheme>, maxHeight: number):
   }
 }
 
-/** One row: name left, hint right, the highlighted row washed. */
+/** One row: a glyph, the name, and a hint, with the highlighted row washed. */
 function row(
   item: CompletionCandidate,
   active: boolean,
@@ -344,21 +361,29 @@ function row(
     },
   },
     createElement('span', { style: { display: 'flex', alignItems: 'center', flex: '0 0 auto', opacity: 0.85 } },
+      // One glyph per kind, and none of them borrowed: `$` says "a name this
+      // shell can run", `-` says a flag (its own spelling already starts with
+      // one), `·` says a word the shell offered — a subcommand, a target, a
+      // branch — whose nature this side does not know and must not pretend to.
+      // A file's icon would lie for all three.
       item.kind === 'command'
-        // A command is not a file: a prompt glyph says "something this shell can
-        // run", where any file icon would lie about it.
         ? createElement('span', {
           style: { width: 14, textAlign: 'center', fontSize: 11, opacity: 0.6 },
         }, '$')
-        : createElement(FileTypeIcon, {
-          kind: item.kind === 'directory' ? 'folder' : classifyFileType(item.name),
-          size: 14,
-        })),
+        : item.kind === 'flag' || item.kind === 'word'
+          ? createElement('span', {
+            style: { width: 14, textAlign: 'center', fontSize: 11, opacity: 0.6 },
+          }, item.kind === 'flag' ? '-' : '·')
+          : createElement(FileTypeIcon, {
+            kind: item.kind === 'directory' ? 'folder' : classifyFileType(item.name),
+            size: 14,
+          })),
     createElement('span', {
       style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
     }, item.kind === 'directory' ? `${item.name}/` : item.name),
-    // A command's kind is what its `$` already said, so the hint column is left
-    // to files (their size) and to directories (which the slash says).
+    // A command's kind is what its `$` already said, and the shell's own words
+    // say theirs with their glyph: the hint column is left to files (their size)
+    // and to directories (which the slash says).
     item.kind === 'command'
       ? createElement('span', { style: { opacity: 0.6, flex: '0 0 auto' } }, t('completion.command'))
       : item.kind !== 'directory' && item.hint !== undefined && item.hint !== ''
@@ -398,6 +423,10 @@ export function ShellCompletionList(
     activeRef.current?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex])
   if (state === null) return null
+  // An empty answer that is still on its way somewhere is not drawn: the shell
+  // has not answered yet, and "no matches" now would be replaced by a list a
+  // moment later (see `CompletionState.pending`).
+  if (state.pending && state.items.length === 0) return null
   const pick = (index: number): void => {
     const next = props.completion.apply(state, index, draft)
     if (next === undefined) return
