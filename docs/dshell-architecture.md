@@ -501,7 +501,42 @@ Within a card, rows are cut into one **segment** per human message: the request,
 then the work and the answers it produced. A card with one request cuts into one
 segment and renders exactly as it always has.
 
-## 13. Test layout
+## 13. Completing the shell line
+
+The composer IS the session's input line (the block view's terminal is a
+read-only mirror), so `Tab` is dshell's to answer: dsh's own menu only fires on
+the `/` and `@` triggers, and the browser cannot resolve anything itself, because
+a path means one thing on this machine and another on a device.
+
+Two sources, decided by WHERE the token sits in the line:
+
+- **The first word is the command.** It completes from the names the session's
+  WORLD offers — the directories on that world's `PATH`, plus the shell's
+  interactive builtins, which are builtins precisely because no directory holds
+  them. A local session's shell is spawned by the terminal bridge as a child of
+  this process with `--noprofile --norc`, so its `PATH` IS the harness's and is
+  read directly. A device session's `PATH` belongs to the device and is derivable
+  from nothing here, so that world is asked once, through the same shell seam
+  (fenced read-only) the transfer writes through.
+- **Everything after it is an argument,** so it names a path in the same world
+  even without a slash (`ls comp<Tab>`), resolved against the shell's own
+  directory. A first token spelled like a path (`./build.sh`) is one too, which
+  is why the host, not the client, decides which source answers.
+
+The command list is per session and cached, holding the in-flight PROMISE rather
+than the answer: a device world pays a probe plus a round trip per directory, and
+a background warm started from a path completion means the first command `Tab`
+usually finds the list already built. The directories are listed concurrently for
+the same reason — a sequential walk takes the sum of a dozen round trips.
+
+An empty answer carries a **reason code**, not a sentence
+(`DshellCompletionNote`): the route knows why and the browser knows the language,
+so the same division the rest of the wire uses decides who writes the line. The
+two sources are silent about different things, and the client decides that too: a
+non-path ARGUMENT with no match is usually not a path at all (`echo hi<Tab>`),
+while a command with no match is a real answer about the world.
+
+## 14. Test layout
 
 Each package follows dsh's three-tier model (data / host / GUI):
 
@@ -518,7 +553,7 @@ Each package follows dsh's three-tier model (data / host / GUI):
 Coverage gate follows the client `100%` rule on browser halves and
 the standard Node-side target on host halves.
 
-## 14. What dshell does not introduce
+## 15. What dshell does not introduce
 
 - No changes to dsh source. No fork.
 - No new model-facing tool *other than* the two terminal tools
@@ -531,7 +566,7 @@ the standard Node-side target on host halves.
 
 These mirror `dshell-design.md` § 2 and are normative.
 
-## 15. Phase plan
+## 16. Phase plan
 
 See [`dshell-roadmap.md`](./dshell-roadmap.md). The architecture above
 fully specifies what each phase's plugins must produce. The next

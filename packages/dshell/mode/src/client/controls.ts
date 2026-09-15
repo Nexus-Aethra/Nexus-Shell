@@ -267,9 +267,16 @@ export function DshellLeftControls(props: {
        * Shared by a fresh Tab and by Enter descending into a directory, so both
        * land the same way: one candidate is applied and closes the list (a
        * directory with its slash, which is how the shell's rhythm resumes), and
-       * a bare word with no match stays silent rather than showing a card.
+       * a bare ARGUMENT word with no match stays silent rather than showing a
+       * card.
+       *
+       * @param wanted - whether the reader asked about a command or a path. The
+       *   two sources are silent about different things: `echo hi<Tab>` is not a
+       *   failed completion and says nothing, while a command that matched
+       *   nothing is a real answer ("this world has no such command") and is
+       *   worth the card.
        */
-      const ask = (sid: string, draftNow: string, token: string): void => {
+      const ask = (sid: string, draftNow: string, token: string, wanted: 'path' | 'command'): void => {
         dismissStock()
         void completion.request(sid, draftNow, draftNow.length).then((state) => {
           if (!stillWanted(sid, draftNow, 'tabCompletion')) return
@@ -277,7 +284,7 @@ export function DshellLeftControls(props: {
           // A bare word with no match is more likely a non-path argument
           // (`echo hi<Tab>`) than a failed path completion, so it stays quiet:
           // the shell's own answer to "no matches" is silence, not a card.
-          if (state.items.length === 0 && !pathLike(token)) { completion.store.set(null); return }
+          if (state.items.length === 0 && wanted === 'path' && !pathLike(token)) { completion.store.set(null); return }
           if (state.items.length === 1) {
             const next = completion.apply(state, 0, draftNow)
             if (next !== undefined) writeDraft(next.text)
@@ -385,12 +392,15 @@ export function DshellLeftControls(props: {
       // menu the stock pipeline arbitrates (a leading slash never reaches here —
       // see stockCommand).
       if (token.startsWith('@')) return false
-      // A token after the command word is an argument, so it names a path even
-      // without a slash (`ls comp<Tab>` completes against the tracked cwd) — and
-      // an EMPTY token there is the start of one, which is `ls <Tab>` listing
-      // the directory. A lone first token could be a command name, which this
-      // does not do yet.
-      if (!argument && !pathLike(token)) {
+      // The line's first word is the COMMAND, and the host completes it from the
+      // commands the session's world offers; a token after it is an argument, so
+      // it names a path even without a slash (`ls comp<Tab>` completes against
+      // the tracked cwd). A first token that is spelled like a path is still a
+      // path (`./build.sh<Tab>`), and an empty one is an empty line — nothing to
+      // complete. An empty token AFTER the command word is the start of an
+      // argument, which is `ls <Tab>` listing the directory.
+      const command = !argument && token.length > 0 && !pathLike(token)
+      if (!argument && token.length === 0) {
         // Nothing here to complete, but Tab still must not leave the input:
         // the composer IS the terminal's input line, and a terminal's Tab never
         // moves focus — letting it fall through is what landed the user on the
@@ -402,7 +412,7 @@ export function DshellLeftControls(props: {
       // overlays never share the seat.
       event.preventDefault()
       event.stopImmediatePropagation()
-      ask(sessionId, draftNow, token)
+      ask(sessionId, draftNow, token, command ? 'command' : 'path')
       return true
     }
     const onKeyDownFull = (event: KeyboardEvent): void => {

@@ -37,6 +37,25 @@ export const DSHELL_FILES_PATH = '/api/dshell/files'
 /** One entry's kind, in the filesystem seam's own vocabulary. */
 export type DshellFileKind = 'file' | 'directory' | 'other'
 
+/**
+ * A completion row's kind: a filesystem entry, or the shell's first word.
+ *
+ * `command` is not a filesystem kind — a command is a name the shell's world
+ * offers, found on its PATH — but it belongs in the same union because it is
+ * the same list: the completion menu draws one glyph per kind, and a command
+ * must not borrow a file's.
+ */
+export type DshellCompletionKind = DshellFileKind | 'command'
+
+/**
+ * Why a completion came back with nothing, as a code rather than a sentence.
+ *
+ * The route knows the reason; the browser owns the language the reader chose.
+ * Sending the reason as one of these and writing the line in the client is the
+ * same division the rest of dshell's wire uses.
+ */
+export type DshellCompletionNote = 'noMatch' | 'noDirectory' | 'notDirectory' | 'noCommand'
+
 /** One directory entry, with only the facts a row draws. */
 export interface DshellFileEntry {
   readonly name: string
@@ -87,7 +106,7 @@ export interface DshellFilesRequest {
 /** One candidate for the shell line's last token. */
 export interface DshellCompletionCandidate {
   readonly name: string
-  readonly kind: DshellFileKind
+  readonly kind: DshellCompletionKind
   /** Byte size for a regular file, when the backend reports one. */
   readonly size?: number | undefined
   /** A short right-hand hint (kind, size) the list draws. */
@@ -104,13 +123,17 @@ export interface DshellCompletionCandidate {
 export interface DshellCompletion {
   readonly start: number
   readonly end: number
-  /** The directory the candidates came from, in the session's world. */
+  /**
+   * Where the candidates came from: the directory in the session's world for a
+   * path, the literal `PATH` for a command (whose names come from every
+   * directory the world's shell searches, not from one).
+   */
   readonly dir: string
   readonly candidates: readonly DshellCompletionCandidate[]
   /** The listing hit the route's cap, so candidates are missing. */
   readonly truncated: boolean
   /** Why there are no candidates, when the reason is worth showing. */
-  readonly note?: string | undefined
+  readonly note?: DshellCompletionNote | undefined
 }
 
 /** One browser face response: whichever subject was asked for, or why none was produced. */

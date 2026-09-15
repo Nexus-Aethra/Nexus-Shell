@@ -30,6 +30,9 @@ import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
 import type { DshellTerminalBridge } from '@nexus-aethra/dshell-terminal-bridge'
 import type { FsDirEntry, FsTarget } from '@deepseek-ai/dsh-fs'
+// Type-only: pulls the shell service merge (`ctx.shell`), which the command
+// list uses to ask a device world for its PATH.
+import type {} from '@deepseek-ai/dsh-shell'
 // Type-only: pulls the session-controller service merge (`ctx.sessionController`).
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -55,6 +58,17 @@ const MAX_ENTRIES = 1000
  * was cut.
  */
 const MAX_COMPLETIONS = 60
+
+/**
+ * How long a session's command list is trusted.
+ *
+ * Long enough that typing is never blocked by a PATH walk, short enough that an
+ * install shows up in the same working session.
+ */
+const COMMAND_CACHE_MS = 300_000
+
+/** A PATH probe reads one variable; it must not outlive a blink. */
+const COMMAND_PROBE_TIMEOUT_MS = 5_000
 
 /** JSON response in the shape the browser face parses. */
 function respond(body: DshellFilesResponse, status = 200): Response {
@@ -214,7 +228,7 @@ function foldAscii(value: string): string {
  */
 type DirectoryReading =
   | { readonly ok: true; readonly dir: string; readonly children: readonly FsDirEntry[] }
-  | { readonly ok: false; readonly dir: string; readonly note: '目录不存在' | '不是目录' }
+  | { readonly ok: false; readonly dir: string; readonly note: 'noDirectory' | 'notDirectory' }
 
 /** Read one directory as the session that owns the world it lives in. */
 async function readDirectory(
@@ -227,8 +241,8 @@ async function readDirectory(
   const target = await ctx.agents.withInitiator(agent, () => ctx.fs.resolve(path, options))
   const info = await ctx.agents.withInitiator(agent, () => ctx.fs.stat(target))
   const dir = String(target.targetKey)
-  if (info === undefined) return { ok: false, dir, note: '目录不存在' }
-  if (info.type !== 'directory') return { ok: false, dir, note: '不是目录' }
+  if (info === undefined) return { ok: false, dir, note: 'noDirectory' }
+  if (info.type !== 'directory') return { ok: false, dir, note: 'notDirectory' }
   const children = await ctx.agents.withInitiator(agent, () => ctx.fs.listDir(target))
   return { ok: true, dir, children }
 }
@@ -322,6 +336,23 @@ async function complete(
   // `~` resolves against that world's home either way.
   const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
   const home = worldHome(routing, sessionId)
+  // The line's FIRST word is the command, so it completes from the commands the
+  // session's world offers rather than from the directory the shell stands in.
+  // Everything else is an argument and names a path: a token with a slash is one
+  // wherever it sits (`./build.sh<Tab>`, `src/<Tab>`), and an empty first token
+  // is an empty line, which completes nothing.
+  if (token.dirPart === '' && token.prefix.length > 0
+    && before.slice(0, token.start).trim().length === 0) {
+    return await completeCommand(ctx, routing, sessionId, agent, token, before.length)
+  }
+  // Build this session's command list in the background, whoever asked for what.
+  // A device world answers each directory over its own route, so the FIRST
+  // command completion there costs a probe plus a round trip per directory —
+  // seconds, where every later one is a cache hit. Starting the walk from a path
+  // completion (which is what a reader does first) usually has the list ready by
+  // the time a Tab asks for it. Fire and forget: a world that cannot be read
+  // answers nothing, and the Tab that needs the list reports its own miss.
+  void commandNames(ctx, routing, sessionId, agent).catch(() => { /* see above */ })
   // A lonely `~` names a directory, and nothing is named "~": the answer is the
   // tilde itself, so the composer writes `~/` and the next Tab lists it.
   if (token.dirPart === '' && token.prefix === '~') {
@@ -345,7 +376,7 @@ async function complete(
     // else, and the candidate that would replace it is a real name the reader
     // did not ask for (`ls foo/` must not become `ls foo.d/` just because the
     // slash was wrong for a file).
-    const recovered = reading.note === '目录不存在'
+    const recovered = reading.note === 'noDirectory'
       ? await completeDirectorySegment(ctx, agent, token, base, home)
       : undefined
     return recovered ?? {
@@ -375,7 +406,180 @@ async function complete(
     dir: reading.dir,
     candidates,
     truncated: matched.length > MAX_COMPLETIONS,
-    ...candidates.length === 0 ? { note: '无匹配' } : {},
+    ...candidates.length === 0 ? { note: 'noMatch' as const } : {},
+  }
+}
+
+/**
+ * The commands a session's world offers, as the list the first token completes
+ * against: PATH's own directories plus the shell's interactive builtins.
+ *
+ * Cached per session for {@link COMMAND_CACHE_MS}. A PATH holds a few thousand
+ * names across a dozen directories, and listing them is a filesystem walk — a
+ * device session pays an SSH round trip per directory — so a Tab that re-walked
+ * would be unusable. Installed software changes on the scale of a session, not
+ * of a keystroke; the cache expires rather than being invalidated, and a miss
+ * costs one stale list, never a wrong one.
+ */
+interface CommandList {
+  readonly names: readonly string[]
+  /** The directories that were searched, for the list's provenance line. */
+  readonly dirs: readonly string[]
+}
+
+const commandCache = new Map<string, { at: number; list: Promise<CommandList> }>()
+
+/**
+ * Interactive builtins, which PATH cannot answer for.
+ *
+ * `cd`, `exit`, `export` and friends are shell builtins: they have no file in
+ * any PATH directory, and a reader who types one is asking the shell, not the
+ * filesystem. This is bash's interactive set (`compgen -b`), trimmed to the
+ * words a person types at a prompt — the declaring and job-control builtins
+ * would only crowd the list.
+ */
+const SHELL_BUILTINS: readonly string[] = [
+  'alias', 'bg', 'cd', 'declare', 'dirs', 'disown', 'echo', 'eval', 'exec', 'exit',
+  'export', 'fg', 'hash', 'help', 'history', 'jobs', 'kill', 'local', 'popd', 'printf',
+  'pushd', 'pwd', 'read', 'readonly', 'set', 'shopt', 'source', 'time', 'times', 'trap',
+  'type', 'ulimit', 'umask', 'unalias', 'unset', 'wait',
+]
+
+/** Where a Linux world keeps its commands, when its own PATH cannot be read. */
+const FALLBACK_PATH_DIRS: readonly string[] = [
+  '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin',
+]
+
+/** Split one PATH string into directories, dropping empty entries. */
+function pathDirs(value: string | undefined): string[] {
+  return (value ?? '').split(':').map(part => part.trim()).filter(part => part.length > 0)
+}
+
+/**
+ * The PATH of the shell that runs in a session's world.
+ *
+ * A local session's shell is spawned by the terminal bridge as a child of this
+ * process with `--noprofile --norc`, so its PATH IS this process's — no probe
+ * is needed and none could be more exact. A device session's shell is an `ssh`
+ * on the device, whose PATH belongs to that machine and is not derivable from
+ * anything here, so that world is asked once, through the same shell seam the
+ * transfer writes through (fenced read-only: this command reads one variable).
+ *
+ * @returns the directories to search. Empty means the world could not be asked
+ *   and the caller should fall back rather than report "no commands".
+ */
+async function worldPathDirs(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  agent: Agent,
+): Promise<string[]> {
+  const target = routing()?.targetForSession(sessionId)
+  if (target === undefined) return pathDirs(process.env.PATH)
+  try {
+    const spec = await ctx.agents.withInitiator(agent, () => ctx.shell.resolve({
+      command: 'printf %s "$PATH"',
+      workdir: target.remoteRoot,
+      sandboxPolicy: { mode: 'read-only', workspaceRoot: target.remoteRoot },
+      timeoutMs: COMMAND_PROBE_TIMEOUT_MS,
+    }))
+    const result = await ctx.shell.run(spec)
+    return result.exitCode === 0 ? pathDirs(result.stdout.text) : []
+  } catch {
+    // A composition without `ctx.shell`, a device that will not answer, or a
+    // policy that refuses: the caller falls back to the standard directories.
+    return []
+  }
+}
+
+/**
+ * Every command name one session's world offers, cached.
+ *
+ * The cache holds the PROMISE, not the answer: a background warm (see
+ * `complete`) and a Tab that arrives while it is still walking share one walk
+ * instead of starting a second. A failure is not cached — the next Tab may find
+ * a world that answers.
+ */
+async function commandNames(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  agent: Agent,
+  signal?: AbortSignal,
+): Promise<CommandList> {
+  const cached = commandCache.get(sessionId)
+  if (cached !== undefined && Date.now() - cached.at < COMMAND_CACHE_MS) return await cached.list
+  // One entry per session, so the map only grows with the sessions this process
+  // has completed in; expired ones are dropped as they are passed over.
+  for (const [key, entry] of commandCache) {
+    if (Date.now() - entry.at >= COMMAND_CACHE_MS) commandCache.delete(key)
+  }
+  const list = buildCommandNames(ctx, routing, sessionId, agent, signal)
+  const guarded = list.catch((error: unknown) => {
+    commandCache.delete(sessionId)
+    throw error
+  })
+  commandCache.set(sessionId, { at: Date.now(), list: guarded })
+  return await guarded
+}
+
+/** The walk itself: the world's PATH, then one listing per directory, at once. */
+async function buildCommandNames(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  agent: Agent,
+  signal?: AbortSignal,
+): Promise<CommandList> {
+  const probed = await worldPathDirs(ctx, routing, sessionId, agent)
+  const dirs = probed.length > 0 ? probed : [...FALLBACK_PATH_DIRS]
+  // Every directory at once. Each listing is a round trip in that world (an SSH
+  // exec on a device), so a walk that awaited them one by one would take the
+  // SUM of a dozen — the difference between a Tab that answers and one that
+  // looks broken. An absent PATH entry is ordinary (per-user directories usually
+  // are), so a refused or missing listing contributes nothing.
+  const listings = await Promise.all(dirs.map(async (dir) => {
+    try {
+      const target = await ctx.agents.withInitiator(agent, () => ctx.fs.resolve(dir))
+      return await ctx.agents.withInitiator(agent, () => ctx.fs.listDir(target, signal))
+    } catch {
+      return []
+    }
+  }))
+  const names = new Set<string>(SHELL_BUILTINS)
+  for (const children of listings) {
+    // A directory on the PATH is not a command; a file, a symlink and a
+    // socket-to-be all are, and the seam only separates the first.
+    for (const child of children) if (child.type !== 'directory') names.add(child.name)
+  }
+  return { names: [...names].sort((left, right) => left.localeCompare(right)), dirs }
+}
+
+/**
+ * Complete the line's first word as a command name.
+ *
+ * The names come from the session's own world, so a device session completes
+ * the device's commands — the same rule the path side follows (see the module
+ * header). Only a prefix match is offered; a candidate lands as the bare name,
+ * and the composer appends the space the next word needs.
+ */
+async function completeCommand(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  agent: Agent,
+  token: { start: number; prefix: string },
+  end: number,
+): Promise<DshellCompletion> {
+  const list = await commandNames(ctx, routing, sessionId, agent)
+  const matches = list.names.filter(name => name.startsWith(token.prefix))
+  return {
+    start: token.start,
+    end,
+    dir: 'PATH',
+    candidates: matches.slice(0, MAX_COMPLETIONS).map(name => ({ name, kind: 'command' as const })),
+    truncated: matches.length > MAX_COMPLETIONS,
+    ...matches.length === 0 ? { note: 'noCommand' as const } : {},
   }
 }
 

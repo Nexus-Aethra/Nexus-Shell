@@ -15,6 +15,7 @@
  */
 
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type { DshellCompletionNote } from '@nexus-aethra/dshell-std'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -198,9 +199,17 @@ export const zh = {
   'stats.title.cacheWrite': ' · 缓存写入 {written}',
   'stats.title.output': ' · 输出 {output}',
 
-  // Shell path completion.
+  // Shell completion: the path side (a file or a directory in the session's
+  // world) and the command side (a name the world's shell can run). The four
+  // empty answers arrive from the host as CODES (`DshellCompletionNote`) rather
+  // than sentences, because the host knows the reason and this file owns the
+  // language.
   'completion.historyCount': '{count} 条历史命令',
   'completion.noMatch': '无匹配',
+  'completion.noDirectory': '目录不存在',
+  'completion.notDirectory': '不是目录',
+  'completion.noCommand': '本会话的世界里没有以这个前缀开头的命令',
+  'completion.command': '命令',
 
   // The bookmark rail.
   'bookmark.empty': '(空消息)',
@@ -225,6 +234,21 @@ export const zh = {
 
 /** Mode dictionary key union. */
 export type DshellModeKey = keyof typeof zh
+
+/**
+ * The key each empty-completion reason is written with.
+ *
+ * The host answers with a reason code (`DshellCompletionNote`) so the line the
+ * reader sees is chosen here, where the language is known. Typed as a total
+ * map, so a reason added to the wire cannot be silently rendered as "no
+ * matches".
+ */
+export const NOTE_KEYS: Record<DshellCompletionNote, DshellModeKey> = {
+  noMatch: 'completion.noMatch',
+  noDirectory: 'completion.noDirectory',
+  notDirectory: 'completion.notDirectory',
+  noCommand: 'completion.noCommand',
+}
 
 /** English dictionary, checked exactly against the Chinese key set. */
 export const en = {
@@ -383,6 +407,10 @@ export const en = {
 
   'completion.historyCount': '{count} command history entries',
   'completion.noMatch': 'No matches',
+  'completion.noDirectory': 'No such directory',
+  'completion.notDirectory': 'Not a directory',
+  'completion.noCommand': 'No command in this session\'s world starts with that',
+  'completion.command': 'command',
 
   'bookmark.empty': '(empty message)',
 
