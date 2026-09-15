@@ -2832,6 +2832,27 @@ Measured on the device afterwards: `cd <Tab>` = 2.9 ms (was 1.07 s), and a Tab
 observed to send the warm itself (an empty-line request, answered in 76 ms) —
 which is the whole trigger, verified where it fires rather than at the route.
 
+**And the first Tab of a directory, which still stuttered.** Reported after that:
+"第一次 tab 还是会卡手". Correct — nothing had pre-answered the reader who `cd`s
+somewhere new and completes there, which is the most ordinary flow there is. Two
+more pre-warms, aimed at exactly that:
+
+- **A `cd` that RESOLVES warms the directory it landed in.** The composer already
+  routes every `cd` line through the route's `resolve` to learn where the shell
+  went; the route now reads that directory's listing behind the answer. This is
+  the only trigger that can cover the case, because the keystroke comes before
+  this side knows the directory exists.
+- **Taking a directory warms what is inside it.** All three ways a candidate is
+  applied (auto-applied, cycled, clicked) run through one function, so a landed
+  directory is read at once — the Tab-Tab walk into a tree, which was otherwise
+  the slow one.
+
+Measured after: a Tab inside a directory a `cd` just entered is 34 ms, then
+2.5 ms; the contrast case — a directory nobody resolved, read or completed in —
+is still 1.15 s cold. In the browser, a real `cd /tmp` in a scratch device session
+sent `resolve` (770 ms) with `/tmp`'s warm behind it; that session and the earlier
+scratch sessions were deleted afterwards and the user's session restored.
+
 **Still open:** a first look at a directory still costs three calls because the
 route asks the seam for `resolve`, `stat` and `listDir` separately; folding those
 into one device command would cut a cold Tab to ~0.4 s, and it belongs in

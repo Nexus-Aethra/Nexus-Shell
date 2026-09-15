@@ -174,6 +174,16 @@ async function post(path: string, body: Record<string, unknown>): Promise<Record
 /** Candidates one history answer lists. */
 const MAX_HISTORY_ITEMS = 60
 
+/**
+ * How long a directory that a completion just landed in stays "already warmed".
+ *
+ * Tab-Tab-Tab through a candidate list is one gesture, and every stop on a
+ * directory is a place the reader might continue from — so the landing is worth
+ * a warm, but cycling back and forth over the same few names is not worth a read
+ * each time.
+ */
+const WARM_INSIDE_MS = 2_000
+
 /** A `cd` argument the composer can hand to the host, or undefined for none. */
 export function cdTargetOf(line: string): string | undefined | null {
   const trimmed = line.trim()
@@ -193,6 +203,38 @@ export function cdTargetOf(line: string): string | undefined | null {
 export function createShellCompletion(): ShellCompletion {
   const store = new CompletionStore()
   const cwds = new Map<string, string>()
+  // Directories this face has already sent a warm for, so cycling a list does not
+  // read the same name again (see WARM_INSIDE_MS).
+  const warmedDirs = new Map<string, number>()
+
+  /**
+   * Warm the directory a taken candidate just landed the reader inside.
+   *
+   * Taking a directory is a promise about the NEXT keystroke: the composer now
+   * holds `logs/`, and the next Tab asks what is inside it. On a device that
+   * question is three round trips, and it used to be exactly the one nobody had
+   * pre-answered — the reader walked into a directory and the following Tab paid
+   * for the privilege. The shell is not asked here: a caret inside a path is a
+   * question for the directory, which is the half being warmed.
+   */
+  const warmInside = (state: CompletionState, index: number, text: string): void => {
+    const item = state.items[index]
+    if (item === undefined || item.kind !== 'directory') return
+    const key = `${state.sessionId}\u0000${state.dir}\u0000${item.name}`
+    const now = Date.now()
+    for (const [other, at] of warmedDirs) if (now - at >= WARM_INSIDE_MS) warmedDirs.delete(other)
+    if (warmedDirs.has(key)) return
+    warmedDirs.set(key, now)
+    const cwd = cwds.get(state.sessionId)
+    void post(FILES_PATH, {
+      action: 'warm',
+      sessionId: state.sessionId,
+      line: text,
+      cursor: text.length,
+      oracle: false,
+      ...cwd === undefined ? {} : { cwd },
+    }).catch(() => { /* the Tab that follows pays what it would have paid */ })
+  }
 
   return {
     store,
@@ -324,6 +366,10 @@ export function createShellCompletion(): ShellCompletion {
         : item.kind === 'command' || item.kind === 'flag' || item.kind === 'word' ? `${item.name} `
           : item.name
       const text = draft.slice(0, state.start) + name + draft.slice(state.end)
+      // Every path that takes a candidate comes through here — the auto-applied
+      // single one, the cycled one, the clicked one — so this is the one place a
+      // landed directory can be warmed without three copies of the rule.
+      warmInside(state, index, text)
       return {
         text,
         state: { ...state, index, pending: false, end: state.start + name.length, draft: text },

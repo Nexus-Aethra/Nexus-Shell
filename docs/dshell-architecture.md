@@ -672,16 +672,33 @@ So, four rules:
   while a warm is still on the wire JOINS it: both caches are single-flight, so
   the keystroke waits for the answer already on its way instead of buying a
   second one.
+- **A `cd` that resolves warms the directory it landed in.** The composer routes
+  every `cd` line through the route's `resolve` to learn where the shell went,
+  and that answer is the earliest moment the next Tab's question is knowable: the
+  reader is standing somewhere new and will complete inside it. So the route
+  reads that listing behind the answer — the "first Tab in a directory I just
+  entered" case, which no keystroke can cover, because the key comes before this
+  side knows the directory exists.
+- **Taking a directory warms what is inside it.** Every way a candidate is
+  applied (the auto-applied single one, the cycled one, the clicked one) goes
+  through one function, and a directory landing there is a promise about the next
+  keystroke: the composer holds `logs/` and the next Tab asks what is inside it.
+  So the directory just entered is read at once, which is what keeps a Tab-Tab
+  walk down a tree from being the slow one.
 
-Measured after the change, same device: a cold path Tab for a directory nobody
-has read still costs 1.1 s, and every Tab the reader actually feels costs
-**2–3 ms** — including `cd <Tab>`, which was the case the keystroke warm alone
-could not cover (that warm fires 250 ms after the last key, so a reader who types
-and presses Tab inside that window still waited for the read: measured warm
-34 ms, the Tab behind it 1.07 s; with the settle warm the same Tab is 2.9 ms). A
-Tab 12 s after the last read answers in 35 ms with the re-read landing behind it,
-and 2.4 ms after that. On this machine nothing regressed: the same requests are
-6 ms as before, and a warm is a no-op nobody waits for.
+Measured after all of it, same device: a Tab for a directory nobody has read
+still costs 1.1 s — and with these triggers that is now a directory the reader has
+not `cd`-ed into, has not completed inside, and has not been standing in when a
+command settled. Everything they actually feel is **2–3 ms**: `cd <Tab>` 2.9 ms
+(was 1.07 s, the case the keystroke warm alone could not cover — that warm fires
+250 ms after the last key, so a reader who types and presses Tab inside that
+window still waited: measured warm 34 ms, the Tab behind it 1.07 s); a Tab inside
+a directory a `cd` just entered 34 ms, then 2.5 ms; a Tab 12 s after the last read
+35 ms, with the re-read landing behind it. In the browser, a real `cd /tmp` was
+observed to send `resolve` (770 ms) with the warm for `/tmp` behind it, so the
+directory the shell moved into was already read before the next key. On this
+machine nothing regressed: the same requests are 6 ms as before, and a warm is a
+no-op nobody waits for.
 
 An empty answer carries a **reason code**, not a sentence
 (`DshellCompletionNote`): the route knows why and the browser knows the language,

@@ -475,6 +475,32 @@ async function warm(
 }
 
 /**
+ * Read one directory into the cache, in the world it belongs to.
+ *
+ * This is the pre-warm the feature leans on hardest, because it is the earliest
+ * moment the next Tab's answer is knowable: a reader cannot complete inside a
+ * directory before they are standing in it, so a `cd` that RESOLVES is the
+ * promise. Reading it then costs them nothing — they are looking at a prompt —
+ * and it is the only trigger that can cover `cd /var/log` followed by a Tab,
+ * which no keystroke warm can (the key comes before the directory exists as
+ * something this side knows about).
+ *
+ * @param dir - the directory, canonical, in the session's own world.
+ */
+async function warmDirectory(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  dir: string,
+): Promise<void> {
+  const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
+  if ('error' in resolved) return
+  // The base is the directory itself: a completion inside it resolves a relative
+  // word against where the shell stands, which is exactly this.
+  await readDirectoryCached(ctx, resolved.agent, dir, dir, worldOf(routing, sessionId))
+}
+
+/**
  * Whether the session's own shell could answer better than this side can.
  *
  * Two positions, and each is here for its own reason. A FLAG cannot be answered
@@ -961,8 +987,18 @@ export function createFilesRoute(
         if (bridge === undefined) return { error: '本次组合没有终端桥，无法把终端切换到该目录' }
         return { cdTo: await cd(ctx, bridge, input.sessionId, input.path) }
       }
-      case 'resolve':
-        return { resolved: await resolvePath(ctx, routing, input.sessionId, input.path ?? '.', input.cwd) }
+      case 'resolve': {
+        const resolved = await resolvePath(ctx, routing, input.sessionId, input.path ?? '.', input.cwd)
+        // A path that resolved is a place the reader is about to stand in — the
+        // composer asks this after a `cd`, and the file navigator asks it while
+        // walking. Reading the listing now is what makes the FIRST Tab in that
+        // directory cheap; see `warmDirectory`.
+        if (resolved !== undefined) {
+          void warmDirectory(ctx, routing, input.sessionId, resolved)
+            .catch(() => { /* a warm that failed costs the reader nothing */ })
+        }
+        return { resolved }
+      }
       case 'complete':
         return {
           completion: await complete(
