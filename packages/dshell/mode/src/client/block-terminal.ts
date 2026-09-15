@@ -96,6 +96,31 @@ export function regionMetrics(text: string): RegionMetrics {
   }
   /** The cursor is about to move back over the line it is already on. */
   const rewind = (): void => { closeStretch() }
+  /**
+   * The DISPLAY was erased (`ESC[2J`): every row measured so far is gone.
+   *
+   * This is a respawn's shape, not an exotic one. The bridge reprints its
+   * startup line and runs `clear` on every respawn — a harness restart, an ssh
+   * reconnect — and the persisted log keeps those bytes, so a region cut from
+   * the log carries several copies of a banner that is not on screen at all.
+   * Counting their rows renders the region as tall as all of them and leaves a
+   * wall of empty rows under its last real line, one banner taller with every
+   * reconnect. What the pre-wipe bytes still are is history: they stay in the
+   * text (and in the region's own scrollback) — they just are not HEIGHT.
+   *
+   * `ESC[3J` alone deliberately does not do this. It erases the scrollback,
+   * which does not touch the display: the rows on screen are still on screen.
+   */
+  const wipe = (): void => {
+    widths.length = 0
+    redraw = 0
+    x = 0
+    saved = 0
+    widest = 0
+    stretch = 0
+    first = 0
+    second = 0
+  }
   const reach = (column: number): void => {
     if (column > widest) widest = column
     if (column > stretch) stretch = column
@@ -115,10 +140,17 @@ export function regionMetrics(text: string): RegionMetrics {
           if (byte >= 0x40 && byte <= 0x7e) break
         }
         const final = body[end - 1] ?? ''
+        const params = body.slice(index + 2, end - 1).split(';')
         // Only the sequences that place the column matter here; movement by
-        // row is the grid's business, not the width's.
+        // row is the grid's business, not the width's — with one exception,
+        // the erase that empties the display (see `wipe`).
+        if (final === 'J') {
+          const mode = Number.parseInt(params[0] ?? '', 10)
+          if (mode === 2) wipe()
+          index = end
+          continue
+        }
         if (final === 'H' || final === 'f' || final === 'G') {
-          const params = body.slice(index + 2, end - 1).split(';')
           const raw = Number.parseInt(final === 'G' ? params[0] ?? '' : params[1] ?? '', 10)
           rewind()
           x = Number.isFinite(raw) ? Math.max(0, raw - 1) : 0

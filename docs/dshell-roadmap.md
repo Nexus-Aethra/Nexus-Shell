@@ -2724,3 +2724,34 @@ the service structurally, the way dshell-ssh's own router does.
 changed would add (neither source knows those), and a candidate's own "no space
 after me" intent (`complete -o nospace`), which the client approximates with a
 per-kind suffix rule.
+
+## Phase 10.24 — a shell region is as tall as its screen
+
+The report: after several restarts or reconnects, the SSH session's terminal
+grows "a big block of no characters" under its last line.
+
+The cause was in the block view's measurement, and the bytes had been telling the
+story for a while. Each respawn (a harness restart, an ssh reconnect) makes the
+bridge reprint its startup line and run `clear`; the host already truncates that
+echo out of the log AFTER the send settles — but the copies written before that
+fix existed are in the persisted log, and the seed re-appends them on every
+respawn (measured: 7 copies, 183 newlines, 34 KB for the session in question).
+`regionMetrics` counted a row per newline, so a region whose screen holds 11 rows
+was measured at 180 and rendered 2880 px tall — 95% of it empty, growing by about
+one banner per reconnect until it hit the 220-row cap.
+
+The fix follows the convention the ring buffer already uses (§ 4.3): `ESC[2J`
+means the display was reset, so the walk starts over there — the rows measured
+before it are not height. `ESC[3J` (the scrollback alone) deliberately does not
+do this, and nothing is removed from the text: the pre-erase bytes stay in the
+region's own scrollback, where the reader can still scroll to them.
+
+Measured on the reported session: that region went from **180 rows / 2880 px** to
+**11 rows / 176 px**, with its ink in all eleven. The local session — no respawn
+banner in its log — is unchanged, and a region past `SPAN_MAX_ROWS` still scrolls
+inside itself.
+
+`packages/dshell/mode/tests/region-rows.spec.ts` pins it down with slices of that
+same log: a respawn banner before a clear measures as its post-clear rows, a clear
+that opens a region measures one row, `ESC[3J` alone keeps its rows, and the
+widths erased by a wipe stop widening the grid.
