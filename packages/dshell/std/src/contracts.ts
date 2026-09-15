@@ -45,14 +45,18 @@ export const DSHELL_FILES_PATH = '/api/dshell/files'
 export type DshellFileKind = 'file' | 'directory' | 'other'
 
 /**
- * A completion row's kind: a filesystem entry, or the shell's first word.
+ * A completion row's kind: a filesystem entry, the shell's command word, or a
+ * word only the shell itself could name.
  *
  * `command` is not a filesystem kind — a command is a name the shell's world
  * offers, found on its PATH — but it belongs in the same union because it is
  * the same list: the completion menu draws one glyph per kind, and a command
- * must not borrow a file's.
+ * must not borrow a file's. `flag` (`-x`/`--long`) and `word` come from the
+ * session's own shell (a subcommand, an option, a branch — the shell's
+ * completion function knows and this side does not), and `word` is the honest
+ * kind for an answer whose nature is unknown.
  */
-export type DshellCompletionKind = DshellFileKind | 'command'
+export type DshellCompletionKind = DshellFileKind | 'command' | 'flag' | 'word'
 
 /**
  * Why a completion came back with nothing, as a code rather than a sentence.
@@ -108,6 +112,12 @@ export interface DshellFilesRequest {
   readonly line?: string | undefined
   /** Caret offset within `line`, for `complete`. */
   readonly cursor?: number | undefined
+  /**
+   * Which pass of `complete` this is: the fast one (the default) answers from
+   * what this side already knows, and `refine` asks the session's own shell for
+   * the words only it has (see `DshellCompletion.pending`).
+   */
+  readonly phase?: 'fast' | 'refine' | undefined
 }
 
 /** One candidate for the shell line's last token. */
@@ -151,6 +161,19 @@ export interface DshellCompletion {
    * command word is worth a card, the same miss on a non-path argument is not).
    */
   readonly position: ShellPosition
+  /**
+   * Whether a better answer is still coming.
+   *
+   * Two sources answer this line and one of them is a shell function on the
+   * other side of the world, which is worth a round trip but not worth blocking
+   * the keystroke. So the fast answer says `pending: true` when the shell could
+   * know more than the file system does — a flag, or a bare word in an argument
+   * position — and the browser answers it by asking again with `refine`, which
+   * is the phase whose answer carries this field false. It also tells the
+   * browser not to draw an EMPTY answer yet: a note that says "no matches" while
+   * the real answer is in flight is a lie the reader would have to unsee.
+   */
+  readonly pending?: boolean | undefined
   /** Why there are no candidates, when the reason is worth showing. */
   readonly note?: DshellCompletionNote | undefined
 }

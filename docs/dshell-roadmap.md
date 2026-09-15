@@ -2665,8 +2665,62 @@ entries of kind `directory` and nothing else, `ls > <Tab>` lists 37 files and
 directories, `cd nexus<Tab>` fills in `nexus/`, and the two `<Tab>` presses that
 cycle a list still move the highlight and write the candidate into the draft.
 
-**Still open, and the next phase:** flag and subcommand candidates (`docker r<Tab>`
-→ `rename restart rm rmi run`), which need the world's own bash-completion asked
-in a separate process; and the facts the file system cannot have — an `alias`, a
-shell function, or a `PATH` a profile changed, none of which are in the command
-list today.
+**Next phase:** flag and subcommand candidates (`docker r<Tab>` →
+`rename restart rm rmi run`), which need the world's own bash-completion asked in
+a separate process — Phase 10.23 below.
+
+## Phase 10.23 — the session's own shell answers the rest
+
+10.22 taught Tab where the caret is, which fixed the KIND of answer for every
+position except one: a flag. `docker rm --force` cannot come from a directory —
+no file is named `--force` — and it cannot come from a `PATH` walk either. The
+word exists only in bash-completion's completion function for `docker`, so that
+is who gets asked: the session's own shell, in a process of its own
+(`bash -c <probe> dshell-probe <line> <caret>`), in the session's world — the
+device's own bash for a device session.
+
+The answer covers what the file system cannot: `docker r<Tab>` →
+rename/restart/rm/rmi/run, `git ch<Tab>` → checkout/cherry-pick/cherry,
+`systemctl sta<Tab>` → start/status, `sudo apt list --<Tab>` → the long options
+(`sudo` works because bash-completion's own `_comp_cmd_sudo` shifts the position,
+which is exactly why asking the first word with a spec is the right rule).
+
+Four decisions the work turned on:
+
+- **The line is data, never syntax.** It rides the command line as an argument,
+  quoted once, and the probe script is written without a single quote character —
+  an invariant the new spec asserts (`26` tests in
+  `files/tests/shell-completion.spec.ts` and `std/tests/shell-line.spec.ts`
+  together), because a script whose safety depends on every future edit
+  re-escaping correctly is one edit from an injection.
+- **Two phases, so a slow world never blocks a keystroke.** The host answers from
+  what it knows and marks it `pending`; the browser draws that immediately and
+  asks again with `refine`. The late answer is applied only while the store still
+  holds the very state it was asked about — Escape, a keystroke, a cycled
+  candidate or another Tab all drop it (verified in the browser: `git ch<Tab>`
+  then Escape or Backspace leaves an empty list behind).
+- **A refine can only add.** `NOSPEC`, an empty list, a world that will not
+  answer: the fast answer stands, so a path listing the reader is looking at is
+  never taken away by a shell that had nothing to say.
+- **A cache keyed by WORLD and line context.** Measured: the second Tab on the
+  same context is 13 ms against 436 ms cold locally, 1.8 s cold on the device —
+  and the world is part of the key because a device's bash-completion is not this
+  machine's.
+
+The switch in the settings card is `子命令与选项` (Subcommands and options), and
+its label is the promise: off, Tab still completes command names and paths for a
+device session too, and never starts a process for it. Verified with real keys
+with the switch off: `git ch<Tab>` lists nothing, `dock<Tab>` still lists the six
+commands, `cd nexus<Tab>` still lands on `nexus/`.
+
+One latent bug fell out of this: the PATH probe for a device session had been
+reading `ctx.shell` as a PROPERTY, which this route cannot (`cannot get property
+"shell" without inject`) — the throw was caught and the fallback directory list
+quietly took the device's place, which is why the device's own PATH had never
+actually been read. Both probes now go through one `runInWorld` helper that reads
+the service structurally, the way dshell-ssh's own router does.
+
+**Still open:** anything only an `alias`, a shell FUNCTION, or a `PATH` a profile
+changed would add (neither source knows those), and a candidate's own "no space
+after me" intent (`complete -o nospace`), which the client approximates with a
+per-kind suffix rule.

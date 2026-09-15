@@ -61,11 +61,13 @@ export const zh = {
   'settings.helpers.off': '已关闭 {list}',
   'settings.helpers.joiner': '、',
   'settings.helper.tabCompletion.label': 'Tab 补全',
-  'settings.helper.tabCompletion.detail': 'Tab 列出路径候选，大小写不敏感；唯一候选直接补全并纠正大小写',
+  'settings.helper.tabCompletion.detail': 'Tab 按光标处的位置补全：命令位给命令名、cd 后给目录、其余给路径；唯一候选直接补全并纠正大小写',
   'settings.helper.historyList.label': '历史列表',
   'settings.helper.historyList.detail': '↑ 打开本会话的历史命令，↑↓ 选择、Enter 填入',
   'settings.helper.commandHint.label': '智能提示',
   'settings.helper.commandHint.detail': '按最近命令在光标后显示虚影，→ 逐词采纳',
+  'settings.helper.completionShellOracle.label': '子命令与选项',
+  'settings.helper.completionShellOracle.detail': 'Tab 还能补子命令和选项：docker r 后给出 rename/rm/run，apt list 后给出 --installed 这类长选项。关掉后只补命令名和路径',
 
   // Palette names. The ids (`midnight`, `solarized`, `dracula`, `forest`) are
   // identifiers and never translated.
@@ -282,11 +284,13 @@ export const en = {
   'settings.helpers.off': 'Off: {list}',
   'settings.helpers.joiner': ', ',
   'settings.helper.tabCompletion.label': 'Tab completion',
-  'settings.helper.tabCompletion.detail': 'Tab lists path candidates, case-insensitively; a single candidate completes directly and fixes its case',
+  'settings.helper.tabCompletion.detail': 'Tab completes by where the caret is: a command name in the command position, a directory after cd, a path elsewhere; a single candidate completes directly and fixes its case',
   'settings.helper.historyList.label': 'History list',
   'settings.helper.historyList.detail': '↑ opens this session\'s command history; ↑↓ selects, Enter inserts',
   'settings.helper.commandHint.label': 'Smart hints',
   'settings.helper.commandHint.detail': 'Shows a ghost of a recent command after the caret; → accepts it word by word',
+  'settings.helper.completionShellOracle.label': 'Subcommands and options',
+  'settings.helper.completionShellOracle.detail': 'Tab also completes subcommands and options: after docker r it offers rename/rm/run, after apt list it offers long options like --installed. Off, it completes command names and paths only',
 
   'theme.midnight': 'Midnight',
   'theme.solarized': 'Solarized',

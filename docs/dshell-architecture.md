@@ -547,11 +547,53 @@ The position then picks the source, in the session's own world:
 | `argument` | a path in the world, resolved against where the shell actually stands (the bridge reads a local shell's own `cwd`; the composer's tracked value is the fallback for a device's `ssh`). Directories sort first, and a name typed with the wrong capitals is answered with the file system's spelling. |
 | `argument`, after `cd`/`pushd`/`popd` | directories only — a file in that list is a candidate the shell would refuse. What is NOT expressible this way is "files only": a path is completed a segment at a time, so `> logs/app.log<Tab>` must pass through `logs/`. |
 | `redir` | the same path listing, files and directories, for the same reason. |
-| `flag` | **nothing, yet.** Offering the directory's files for `-la` would be the wrong KIND of answer, and silence is honest until the world's own completions can be asked (the shell oracle, next phase). |
+| `flag` | **the shell's answer.** `-la` cannot come from a directory at all, so this position is asked of the world's own shell (below) and answered with nothing until that answer arrives. |
+| `argument`, a bare word | the path listing first — and then the shell, which is where subcommands, targets and branches live (`git ch<Tab>`, `systemctl sta<Tab>`). A word with a path in it, or after `cd`, is not asked: those are the file system's questions and this side already knows more. |
 
 Nothing to complete — a blank line, or an operator under the caret that names no
 word — is a definite answer too, and the client swallows the Tab rather than
 letting it move focus to the composer's buttons.
+
+### The shell oracle
+
+The file system cannot know that `--force` belongs to `docker rm`, and no PATH
+walk knows that `git` has a `cherry-pick`. What knows is the shell: bash-completion
+registers a completion function per command, and a reader pressing Tab in a real
+terminal has been getting those answers all along. dshell asks the same question,
+in a process of its own — `bash -c <probe> dshell-probe <line> <caret>`, run in
+the session's world through the same shell seam the transfer writes through (and
+so, for a device session, on the device).
+
+Five things make that safe and usable rather than clever:
+
+- **The line is data.** It travels as an argument, quoted once; the probe script
+  itself is written without a single quote character, which
+  `files/tests/shell-completion.spec.ts` asserts rather than asks future editors
+  to notice.
+- **Nothing executes the reader's line.** A completion function is handed the
+  words and reads them. The probe also never touches the session's terminal: one
+  PTY allows one active send, and that seat belongs to the reader.
+- **The functions are code on that machine.** That is the point — it is the user's
+  own Tab — and it happens in a separate, short-lived process with a read-only
+  policy (honest for a local session; for a device the command runs under the
+  device's own policy, because the only process here is `ssh`).
+- **The answer is asked for AFTER the fast one.** Two phases: the host answers
+  from what it knows and says `pending` when the shell might know more, the browser
+  draws that answer at once and asks again with `refine`. A late refine is applied
+  only while the store still holds the very state it was asked about — Escape, a
+  cycled candidate, a keystroke or another Tab all drop it — so a slow world can
+  never rewrite a line the reader has moved on from.
+- **A blank answer keeps the fast one.** `NOSPEC` (no completion registered),
+  an empty list, a world that will not answer: all of them leave the file
+  system's answer standing. A refine can only ever give more, never take away.
+
+Answers are cached per WORLD and line context (the world, the command, the word
+before the caret), each entry under the prefix it was asked for; a request that
+extends a cached prefix is filtered locally, which is what makes the second Tab
+free (13 ms against 436 ms cold locally, 1.8 s on a device). The world is part of
+the key because two sessions are not always the same machine. A flag the shell
+does not answer stays silent, as it does in a real terminal: the reader is typing
+a spelling there, not asking about the world.
 
 An empty answer carries a **reason code**, not a sentence
 (`DshellCompletionNote`): the route knows why and the browser knows the language,
@@ -563,11 +605,15 @@ answer about the world (本会话的世界里没有以这个前缀开头的命�
 carrying a slash is a path request whose miss is worth reporting (`ls none/<Tab>`
 → 目录不存在).
 
-**Not covered yet**, and deliberately: a flag or a subcommand has no source until
-the shell oracle lands (a complete of the real line inside the world's own bash,
-which is the next phase), and neither does anything an `alias`, a shell FUNCTION,
-or a user-modified `PATH` would add — the command list is the file system plus
-builtins, so a name that exists only in the reader's shell profile is not in it.
+The whole second phase can be switched off (`子命令与选项` in the settings card,
+and the label is the promise: off, Tab still completes command names and paths and
+never starts a process for it).
+
+**Not covered**, and deliberately: anything an `alias`, a shell FUNCTION, or a
+`PATH` a profile changed would add, when it is not what the command's own
+completion function knows. The command list is the file system plus the shell's
+own builtins, and the oracle answers only what bash-completion has a spec for; a
+name that exists solely in the reader's shell profile is in neither.
 
 ## 14. Test layout
 
@@ -578,18 +624,22 @@ rig that fits the feature rather than a copy of dsh's:
   `packages/*/*/tests/**/*.spec.ts`, and an alias mapping
   `@nexus-aethra/dshell-std` to its SOURCE, so a spec never depends on a build
   having run. `pnpm test` runs it.
-- `packages/dshell/std/tests/shell-line.spec.ts` is the first spec, and it drives
-  the scanner with lines that were actually typed — the project's own history,
-  `sudo rm -rf ./*`, `pwd; hostname; id -un`, `sudo apt list | grep mini`, the
-  init line the terminal bridge feeds, `make 2>&1 | tail -5`, `ls > out` — because
-  the failure that matters is not "the code throws" but "the code reads a real
-  line the way bash would".
+- `packages/dshell/std/tests/shell-line.spec.ts` drives the scanner with lines
+  that were actually typed — the project's own history, `sudo rm -rf ./*`,
+  `pwd; hostname; id -un`, `sudo apt list | grep mini`, the init line the terminal
+  bridge feeds, `make 2>&1 | tail -5`, `ls > out` — because the failure that
+  matters is not "the code throws" but "the code reads a real line the way bash
+  would".
+- `packages/dshell/files/tests/shell-completion.spec.ts` drives the oracle's
+  edges without a shell: the probe's quoting invariant, the markers a completion
+  function's own stdout must not be able to forge, and the cache's reuse, expiry
+  and boundedness.
 
-The route's own dispatch and the client's silence rule are still verified by hand
-(a `fetch` against `/api/dshell/files` on both a local and a device session, then
-real key events in the browser); the scanner is where the rules live, so the
-scanner is where the tests are. dsh's three-tier model (data / host / GUI) stays
-the target if the other packages grow rules of their own.
+Both specs are about RULES. The route's dispatch, the two-phase timing and the
+client's silence rule are verified by hand — a `fetch` against
+`/api/dshell/files` on a local and on a device session, then real key events in
+the browser (including with the shell switch OFF). dsh's three-tier model (data /
+host / GUI) stays the target if the other packages grow rules of their own.
 
 ## 15. What dshell does not introduce
 

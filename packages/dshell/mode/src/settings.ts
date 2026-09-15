@@ -35,6 +35,16 @@ export const HISTORY_LIST_FIELD = 'historyList'
 export const COMMAND_HINT_FIELD = 'commandHint'
 
 /**
+ * Field allowing completion to ask the session's own shell.
+ *
+ * The one switch here that is not about a key: it decides whether Tab may spend
+ * a round trip (and a bash process in the session's world) on the words the file
+ * system cannot know — a flag, a subcommand. Off, Tab still completes commands
+ * and paths; it just never asks the world what IT would offer.
+ */
+export const SHELL_ORACLE_FIELD = 'completionShellOracle'
+
+/**
  * Palette ids, in the order the picker shows them. The colours for each id
  * live in `client/theme.ts`; only the vocabulary is shared, so the Host schema
  * and the browser registry cannot drift apart.
@@ -57,12 +67,12 @@ export const DEFAULT_THEME_ID: DshellThemeId = 'midnight'
  */
 export const SHELL_HELPER_DEFAULT = true
 
-/** The three shell-helper switches, as the settings document names them. */
-export type DshellShellHelper = 'tabCompletion' | 'historyList' | 'commandHint'
+/** The shell-helper switches, as the settings document names them. */
+export type DshellShellHelper = 'tabCompletion' | 'historyList' | 'commandHint' | 'completionShellOracle'
 
 /** The shell-helper switches, in the order the settings card shows them. */
 export const SHELL_HELPER_FIELDS: readonly DshellShellHelper[] = [
-  'tabCompletion', 'historyList', 'commandHint',
+  'tabCompletion', 'historyList', 'commandHint', 'completionShellOracle',
 ]
 
 /** The durable dshell section. */
@@ -75,6 +85,8 @@ export interface DshellSettings {
   historyList: boolean
   /** Whether a recent command is ghosted after the caret. */
   commandHint: boolean
+  /** Whether completion may ask the session's own shell for the rest. */
+  completionShellOracle: boolean
 }
 
 /**

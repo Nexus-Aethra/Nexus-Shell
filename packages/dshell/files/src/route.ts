@@ -42,14 +42,18 @@ import type {} from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
-  DSHELL_FILES_PATH, type DshellCompletion, type DshellCompletionCandidate, type DshellFileEntry,
-  type DshellFileKind, type DshellFilesListing, type DshellFilesRequest, type DshellFilesResponse,
+  DSHELL_FILES_PATH, type DshellCompletion, type DshellCompletionCandidate, type DshellCompletionKind,
+  type DshellFileEntry, type DshellFileKind, type DshellFilesListing, type DshellFilesRequest,
+  type DshellFilesResponse,
 } from './protocol.js'
 // The line scanner straight from the shared layer: it is not part of this
 // route's wire vocabulary (the browser half reads the same module), so it is not
 // re-exported through `./protocol.js` — that module exists to hold the shapes
 // this route answers with.
 import { readShellCaret, type ShellCaret } from '@nexus-aethra/dshell-std'
+import { askShell, OracleCache } from './shell-completion.js'
+import { quote } from './shell-quote.js'
+import { runInWorld } from './world-shell.js'
 import type { TransferRoutingSeat } from './transfer.js'
 
 /**
@@ -80,17 +84,15 @@ const COMMAND_CACHE_MS = 300_000
 /** A PATH probe reads one variable; it must not outlive a blink. */
 const COMMAND_PROBE_TIMEOUT_MS = 5_000
 
+/** Bytes a PATH probe may return: a variable, not a directory. */
+const COMMAND_PROBE_STDOUT_BYTES = 4 * 1024
+
 /** JSON response in the shape the browser face parses. */
 function respond(body: DshellFilesResponse, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
   })
-}
-
-/** One shell argument, safely: single quotes, closed and reopened around each quote in the value. */
-function quote(value: string): string {
-  return `'${value.replaceAll('\'', '\'\\\'\'')}'`
 }
 
 /**
@@ -309,6 +311,7 @@ async function complete(
   cursor: number,
   cwd: string | undefined,
   shellCwd: string | undefined,
+  phase: 'fast' | 'refine',
 ): Promise<DshellCompletion | undefined> {
   // What the line expects where the caret is, and where the word it replaces
   // starts and ends. The reading is the SHELL's (std's rule table): the position
@@ -330,6 +333,125 @@ async function complete(
   // `~` resolves against that world's home either way.
   const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
   const home = worldHome(routing, sessionId)
+  const refine = phase === 'refine'
+  const refinable = shellCouldKnowMore(caret)
+  // The fast answer, which is also the refine's fallback: everything this side
+  // can say, marked provisional when the session's own shell is about to be
+  // asked for more (see `DshellCompletion.pending`).
+  const fast = await completeFast(ctx, routing, sessionId, agent, caret, base, home, !refine && refinable)
+  if (!refine || !refinable) return fast
+  const asked = await completeByShell(ctx, routing, sessionId, agent, caret, line, cursor, base, home)
+  // The shell's answer REPLACES the fast one when it has one; when it does not,
+  // the fast answer stands, no longer provisional. A blank refine must never take
+  // a candidate away: a path listing the reader is already looking at is a real
+  // answer even if the shell has nothing to add to it.
+  if (asked !== undefined) return asked
+  return fast === undefined ? undefined : { ...fast, pending: false }
+}
+
+/**
+ * Whether the session's own shell could answer better than this side can.
+ *
+ * Two positions, and each is here for its own reason. A FLAG cannot be answered
+ * from a directory at all — the file system has no idea that `--force` belongs
+ * to `docker rm` — so asking is the only way it gets an answer. A bare WORD in
+ * an argument position is where a shell keeps its own vocabulary (subcommands,
+ * targets, branches) and where the file system is a guess: `git ch<Tab>` finds
+ * nothing in the directory, and `ch` is not a path. Everything else is already
+ * answered by the side that knows: a word with a path in it is the file
+ * system's question, `cd` takes a directory and nothing else can be right, and
+ * a command name comes from the PATH walk, which is both cheaper and more
+ * complete than what `complete -A command` would give.
+ */
+function shellCouldKnowMore(caret: ShellCaret): boolean {
+  if (caret.position === 'flag') return true
+  if (caret.position !== 'argument') return false
+  if (caret.command !== undefined && CD_COMMANDS.has(caret.command)) return false
+  return caret.dirPart === '' && !caret.prefix.startsWith('~') && !caret.prefix.startsWith('.')
+}
+
+/**
+ * The word before the caret's, as a shell completion function reads it.
+ *
+ * @param line - the line as typed.
+ * @param caret - the caret's reading.
+ * @returns that word, or `''` when the caret's word is the first one.
+ */
+function previousWord(line: string, caret: ShellCaret): string {
+  const match = /(\S+)\s*$/u.exec(line.slice(0, caret.start - caret.dirPart.length))
+  return match?.[1] ?? ''
+}
+
+/**
+ * Ask the session's own shell what completes here — the completion oracle.
+ *
+ * @returns the completion its answer makes, or undefined when the shell had
+ *   nothing to say (no spec registered for the line, an empty list, or a world
+ *   that could not be asked). The caller then keeps the fast answer.
+ */
+async function completeByShell(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  agent: Agent,
+  caret: ShellCaret,
+  line: string,
+  cursor: number,
+  base: string | undefined,
+  home: string,
+): Promise<DshellCompletion | undefined> {
+  // Which world answers is part of the question. Two sessions on this machine
+  // share one world and may share one answer; a session bound to a device is a
+  // different machine with its own bash-completion, its own installed packages
+  // and its own paths, so its answer must never come out of this one's cache.
+  const world = routing()?.targetForSession(sessionId)?.device.id ?? 'local'
+  const names = await askShell(ctx, agent, {
+    line,
+    cursor,
+    // What the answer depends on besides the typed word: the world, which
+    // command's completion applies, and the word before this one — a function
+    // reads the last two, so an answer cached for one pair must not be served
+    // for another.
+    context: `${world}\u0000${caret.command ?? ''}\u0000${previousWord(line, caret)}`,
+    prefix: caret.prefix,
+    workdir: base ?? home,
+    root: home,
+  }, oracleCache)
+  if (names === undefined || names.length === 0) return undefined
+  return {
+    start: caret.start,
+    end: caret.end,
+    // The command whose own completion answered, which is the provenance worth
+    // showing: `--force` came from docker's completion, not from a directory and
+    // not from the PATH.
+    dir: caret.command ?? 'shell',
+    candidates: names.slice(0, MAX_COMPLETIONS).map(name => ({
+      name,
+      kind: (name.length > 1 && name.startsWith('-') ? 'flag' : 'word') as DshellCompletionKind,
+    })),
+    truncated: names.length > MAX_COMPLETIONS,
+    position: caret.position,
+  }
+}
+
+/**
+ * The half of the answer this side can give: the PATH cache for a command, a
+ * directory read in the session's world for anything path-shaped, and the
+ * positions that get an empty answer rather than a wrong KIND of one.
+ *
+ * @param pending - whether a refine is already on its way for this line, which
+ *   the browser has to know before it draws an empty answer.
+ */
+async function completeFast(
+  ctx: Context,
+  routing: () => TransferRoutingSeat | undefined,
+  sessionId: string,
+  agent: Agent,
+  caret: ShellCaret,
+  base: string | undefined,
+  home: string,
+  pending: boolean,
+): Promise<DshellCompletion | undefined> {
   // The command position completes from the commands the session's world offers
   // rather than from the directory the shell stands in — which is now decided by
   // the LINE (`sudo dock<Tab>`, `pwd; dock<Tab>` and `xargs dock<Tab>` all land
@@ -347,24 +469,32 @@ async function complete(
   // the time a Tab asks for it. Fire and forget: a world that cannot be read
   // answers nothing, and the Tab that needs the list reports its own miss.
   void commandNames(ctx, routing, sessionId, agent).catch(() => { /* see above */ })
-  // Nothing answers a flag yet. Offering the directory's files there would be a
-  // wrong KIND of answer (`ls -la<Tab>` is not asking for `-launcher.sh`), and
-  // silence is the honest reply until the world's own completions can be asked
-  // (the shell oracle). An empty answer on purpose: the client shows nothing.
-  if (caret.position === 'flag') return undefined
+  // Nothing here answers a flag: the directory's files would be a wrong KIND of
+  // answer (`ls -la<Tab>` is not asking for `-launcher.sh`). So the fast pass is
+  // empty on purpose, and its `pending` is what tells the browser that the real
+  // answer — the shell's — is still coming.
+  if (caret.position === 'flag') {
+    if (!pending) return undefined
+    return {
+      start: caret.start, end: caret.end, dir: 'shell', candidates: [], truncated: false,
+      position: 'flag', pending: true,
+    }
+  }
   // `cd` and its relatives take a directory and nothing else, so a file in that
   // list would be a candidate the shell refuses. Everything else — including a
   // redirection's target — is a path, and a path is walked a segment at a time,
   // so directories answer there too (`> logs/app.log<Tab>` passes through `logs/`).
   const directoryOnly = caret.command !== undefined && CD_COMMANDS.has(caret.command)
-  return await completePath(ctx, agent, caret, base, home, directoryOnly ? 'directory' : 'any')
+  return await completePath(ctx, agent, caret, base, home, directoryOnly ? 'directory' : 'any', pending)
 }
 
 /**
  * Complete one word of the line as a path in the session's world.
  *
- * `want` narrows what can answer: `directory` for a command that takes one
- * (`cd`), `any` everywhere else.
+ * @param want - what can answer: `directory` for a command that takes one
+ *   (`cd`), `any` everywhere else.
+ * @param pending - whether the shell is still going to be asked about this
+ *   line, which every answer here carries through (see `DshellCompletion.pending`).
  */
 async function completePath(
   ctx: Context,
@@ -373,6 +503,7 @@ async function completePath(
   base: string | undefined,
   home: string,
   want: 'any' | 'directory',
+  pending: boolean,
 ): Promise<DshellCompletion | undefined> {
   // A lonely `~` names a directory, and nothing is named "~": the answer is the
   // tilde itself, so the composer writes `~/` and the next Tab lists it.
@@ -384,6 +515,7 @@ async function completePath(
       candidates: [{ name: '~', kind: 'directory', hint: '目录' }],
       truncated: false,
       position: caret.position,
+      ...pending ? { pending: true } : {},
     }
   }
   const rawDir = expandHome(caret.dirPart, home)
@@ -403,7 +535,7 @@ async function completePath(
       : undefined
     return recovered ?? {
       start: caret.start, end: caret.end, dir: reading.dir, candidates: [], truncated: false,
-      position: caret.position, note: reading.note,
+      position: caret.position, ...pending ? { pending: true } : {}, note: reading.note,
     }
   }
   // Case-folded on the reader's side only: a name that matches regardless of
@@ -431,6 +563,7 @@ async function completePath(
     candidates,
     truncated: matched.length > MAX_COMPLETIONS,
     position: caret.position,
+    ...pending ? { pending: true } : {},
     ...candidates.length === 0 ? { note: 'noMatch' as const } : {},
   }
 }
@@ -453,6 +586,19 @@ interface CommandList {
 }
 
 const commandCache = new Map<string, { at: number; list: Promise<CommandList> }>()
+
+/**
+ * The completion oracle's answers, keyed by world and line context.
+ *
+ * One cache for the whole route rather than one per session, because two
+ * sessions in the same world (this machine, or one device) ask the same
+ * bash-completion the same question; the WORLD is part of every key, so a device
+ * answer can never come out of this machine's cache. The PATH walk above is per
+ * session instead, for the same reason seen from the other side: it is a walk
+ * this process performs, and the sessions it performs it for are not always the
+ * same machine.
+ */
+const oracleCache = new OracleCache()
 
 /**
  * Interactive builtins, which PATH cannot answer for.
@@ -501,20 +647,16 @@ async function worldPathDirs(
 ): Promise<string[]> {
   const target = routing()?.targetForSession(sessionId)
   if (target === undefined) return pathDirs(process.env.PATH)
-  try {
-    const spec = await ctx.agents.withInitiator(agent, () => ctx.shell.resolve({
-      command: 'printf %s "$PATH"',
-      workdir: target.remoteRoot,
-      sandboxPolicy: { mode: 'read-only', workspaceRoot: target.remoteRoot },
-      timeoutMs: COMMAND_PROBE_TIMEOUT_MS,
-    }))
-    const result = await ctx.shell.run(spec)
-    return result.exitCode === 0 ? pathDirs(result.stdout.text) : []
-  } catch {
-    // A composition without `ctx.shell`, a device that will not answer, or a
-    // policy that refuses: the caller falls back to the standard directories.
-    return []
-  }
+  const result = await runInWorld(ctx, agent, {
+    command: 'printf %s "$PATH"',
+    workdir: target.remoteRoot,
+    root: target.remoteRoot,
+    timeoutMs: COMMAND_PROBE_TIMEOUT_MS,
+    stdoutMaxBytes: COMMAND_PROBE_STDOUT_BYTES,
+  })
+  // A world that will not answer leaves the caller to fall back to the standard
+  // directories rather than to report "no commands".
+  return result !== undefined && result.exitCode === 0 ? pathDirs(result.stdout.text) : []
 }
 
 /**
@@ -674,7 +816,7 @@ export function createFilesRoute(
         return {
           completion: await complete(
             ctx, routing, input.sessionId, input.line ?? '', input.cursor ?? 0, input.cwd,
-            bridge?.shellCwd(input.sessionId),
+            bridge?.shellCwd(input.sessionId), input.phase === 'refine' ? 'refine' : 'fast',
           ),
         }
       default:

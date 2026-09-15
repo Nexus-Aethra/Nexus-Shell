@@ -12,7 +12,7 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { readShellCaret, type ShellCaret } from '@nexus-aethra/dshell-std'
 import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { ShellCompletion } from './completion.js'
+import type { CompletionState, ShellCompletion } from './completion.js'
 import type { CommandHints } from './command-hint.js'
 import { useShellHelpers } from './shell-settings.js'
 import { useDshellTheme } from './theme.js'
@@ -220,13 +220,16 @@ export function DshellLeftControls(props: {
      * an argument position (`echo hi<Tab>`) is not a failed completion — `hi` is
      * just a word, and a card saying nothing matched would be noise; a word
      * carrying a slash (`ls none/<Tab>`) is a path request, so its miss is
-     * reported. The position comes from the line scanner, so this rule and the
-     * host's dispatch agree by construction rather than by both sides
+     * reported. A FLAG is the one position that says nothing about a miss: the
+     * shell's own completion is silent there (`git checkout --<Tab>` lists
+     * nothing and says nothing), and the reader is typing a spelling, not asking
+     * about the world. The position comes from the line scanner, so this rule and
+     * the host's dispatch agree by construction rather than by both sides
      * remembering the same rule.
      */
     const worthSaying = (caret: ShellCaret): boolean =>
       caret.position === 'command' || caret.position === 'redir'
-      || caret.position === 'flag' || pathLike(caret.dirPart + caret.prefix)
+      || pathLike(caret.dirPart + caret.prefix)
     const onCompletionKey = (event: KeyboardEvent): boolean => {
       const sessionId = sessionIdRef.current
       if (modeRef.current !== 'shell' || sessionId === undefined || clearDraft === undefined) return false
@@ -262,30 +265,62 @@ export function DshellLeftControls(props: {
         && draftRef.current === draftNow
         && helpersRef.current[gesture]
       /**
+       * Put one answer up — the whole gesture, from either phase.
+       *
+       * One candidate is applied and closes the list (a directory with its
+       * slash, a finished word with the space after it, which is how the shell's
+       * rhythm resumes), several open it, and an empty answer the reader was not
+       * owed stays quiet rather than showing a card.
+       *
+       * @param caret - the line's reading, from the shared scanner.
+       * @param state - the host's answer, or null when it had none.
+       */
+      const settle = (draftNow: string, caret: ShellCaret, state: CompletionState | null): void => {
+        if (state === null) { completion.store.set(null); return }
+        // An empty answer that is still on its way is held rather than drawn:
+        // the list renders nothing for it, and holding it is what lets the
+        // refine below prove it is answering the SAME question.
+        if (state.items.length === 0 && state.pending) { completion.store.set(state); return }
+        if (state.items.length === 0 && !worthSaying(caret)) { completion.store.set(null); return }
+        if (state.items.length === 1) {
+          const next = completion.apply(state, 0, draftNow)
+          if (next !== undefined) writeDraft(next.text)
+          completion.store.set(null)
+          return
+        }
+        completion.store.set(state)
+      }
+      /**
+       * Ask the session's own shell for the words only it has — the second pass.
+       *
+       * The fast answer is already on screen, so this one is allowed to be late:
+       * it is applied only while the store still holds the very state it was
+       * asked about, which `pending` marks and any other gesture (Escape, a
+       * cycled candidate, another Tab, a keystroke) clears. That is what keeps a
+       * late list from appearing over a line the reader has since changed.
+       */
+      const refine = (sid: string, draftNow: string, caret: ShellCaret, from: CompletionState): void => {
+        if (!helpersRef.current.tabCompletion || !helpersRef.current.completionShellOracle) return
+        void completion.request(sid, draftNow, caret.end, 'refine').then((answer) => {
+          if (!stillWanted(sid, draftNow, 'tabCompletion')) return
+          if (completion.store.getSnapshot() !== from) return
+          settle(draftNow, caret, answer)
+        }).catch(() => { /* the fast answer stands */ })
+      }
+      /**
        * Ask the host for the candidates under the caret and put the answer up.
        *
-       * The whole gesture lands here: one candidate is applied and closes the
-       * list (a directory with its slash, which is how the shell's rhythm
-       * resumes), several open it, and an empty answer the reader was not owed
-       * stays quiet rather than showing a card.
-       *
-       * @param caret - the line's reading, from the shared scanner. The request
-       *   carries the line and the caret offset, not the token: the host reads
-       *   the line itself, so it is the one that decides what is where.
+       * The request carries the line and the caret offset, not a token: the host
+       * reads the line itself, so it is the one that decides what is where — and
+       * when its answer says more is coming (`pending`), the shell gets asked
+       * too, without making the reader wait for it.
        */
       const ask = (sid: string, draftNow: string, caret: ShellCaret): void => {
         dismissStock()
         void completion.request(sid, draftNow, caret.end).then((state) => {
           if (!stillWanted(sid, draftNow, 'tabCompletion')) return
-          if (state === null) { completion.store.set(null); return }
-          if (state.items.length === 0 && !worthSaying(caret)) { completion.store.set(null); return }
-          if (state.items.length === 1) {
-            const next = completion.apply(state, 0, draftNow)
-            if (next !== undefined) writeDraft(next.text)
-            completion.store.set(null)
-            return
-          }
-          completion.store.set(state)
+          settle(draftNow, caret, state)
+          if (state !== null && state.pending) refine(sid, draftNow, caret, state)
         }).catch(() => { completion.store.set(null) })
       }
       const open = completion.store.getSnapshot()

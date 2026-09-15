@@ -150,7 +150,7 @@ All three live in the `$ shell` input line and each can be switched off independ
 
 | Gesture | Behaviour |
 |---|---|
-| `Tab` | Completes the word under the caret, from **what the line says that word is**: a command name in the command position (`dock` + `Tab`, and equally `sudo dock` + `Tab` or `pwd; host` + `Tab`), a directory after `cd`, a path anywhere else (a redirection's target included). Commands come from the session's own world — this machine's `PATH` for a local session, the device's for an SSH session — so the two answer with different names. The comparison **folds ASCII case, but the completion carries the real spelling**: `cd nexus-sh` + `Tab` becomes `Nexus-shell/`, correcting the line as it completes. A single candidate lands directly; several open a floating list (`Tab`/`↑`/`↓` to move, `Enter` to take, `Esc` to close) |
+| `Tab` | Completes the word under the caret, from **what the line says that word is**: a command name in the command position (`dock` + `Tab`, and equally `sudo dock` + `Tab` or `pwd; host` + `Tab`), a directory after `cd`, a path anywhere else (a redirection's target included) — and the subcommands and options the session's own shell knows, so `docker r` + `Tab` offers rename/rm/run and `apt list --` + `Tab` offers the long options. Names come from the session's own world — this machine's `PATH` for a local session, the device's for an SSH session — so the two answer with different names. The comparison **folds ASCII case, but the completion carries the real spelling**: `cd nexus-sh` + `Tab` becomes `Nexus-shell/`, correcting the line as it completes. A single candidate lands directly; several open a floating list (`Tab`/`↑`/`↓` to move, `Enter` to take, `Esc` to close) |
 | `↑` | Opens this session's history (`↑↓` to move, `Enter` to take), listing only commands that share a prefix with what you have typed |
 | `→` | Shows a **ghost hint** after the caret: the newest command that exactly extends your draft. Each `→` takes **one word** of it, and the ghost disappears with the last word |
 
@@ -331,7 +331,7 @@ exists. (32 MB per file, 20 000 entries or 2 GiB per plan.)
 
 | Card | Contents |
 |---|---|
-| **`终端与输入辅助`** | `终端配色` — `午夜` (default), `柔和`, `神秘`, `森林`, applied instantly; `输入辅助` — the `Tab 补全`, `历史列表`, `智能提示` switches |
+| **`终端与输入辅助`** | `终端配色` — `午夜` (default), `柔和`, `神秘`, `森林`, applied instantly; `输入辅助` — the `Tab 补全`, `历史列表`, `智能提示`, `子命令与选项` switches |
 | **`SSH 设备`** | The device list, each row offering `测试` / `编辑` / `删除` |
 
 Settings are stored on the host and **shared by every browser on it** — turn an assist off here and it
