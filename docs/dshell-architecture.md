@@ -508,50 +508,88 @@ read-only mirror), so `Tab` is dshell's to answer: dsh's own menu only fires on
 the `/` and `@` triggers, and the browser cannot resolve anything itself, because
 a path means one thing on this machine and another on a device.
 
-Two sources, decided by WHERE the token sits in the line:
+The first question is not *what* to offer but *where the caret is*: `dock` names
+a command, `cd dock` an argument, `tee > dock` a file — and none of that is
+visible in the word itself, only in the line around it. So the rule is one pure
+function over the line, in the shared layer
+(`packages/dshell/std/src/shell-line.ts`), and BOTH halves call it: the host to
+decide which source answers, the browser to decide when an empty answer is worth
+showing. It used to be two functions — a host-side "the first word is the
+command" and a client-side "a slash means a path" — and the two copies drifted
+the first time a line had more than one word in it.
 
-- **The first word is the command.** It completes from the names the session's
-  WORLD offers — the directories on that world's `PATH`, plus the shell's
-  interactive builtins, which are builtins precisely because no directory holds
-  them. A local session's shell is spawned by the terminal bridge as a child of
-  this process with `--noprofile --norc`, so its `PATH` IS the harness's and is
-  read directly. A device session's `PATH` belongs to the device and is derivable
-  from nothing here, so that world is asked once, through the same shell seam
-  (fenced read-only) the transfer writes through.
-- **Everything after it is an argument,** so it names a path in the same world
-  even without a slash (`ls comp<Tab>`), resolved against the shell's own
-  directory. A first token spelled like a path (`./build.sh`) is one too, which
-  is why the host, not the client, decides which source answers.
+`readShellCaret(line, cursor)` tokenizes the line up to the caret (quotes
+respected, unterminated quotes kept whole because they are still being typed),
+walks the tokens before the caret, and reports a position, the command the word
+belongs to, and the span a completion replaces. The walk is a table, not a
+parser, and every entry exists because bash's grammar says so:
 
-The command list is per session and cached, holding the in-flight PROMISE rather
-than the answer: a device world pays a probe plus a round trip per directory, and
-a background warm started from a path completion means the first command `Tab`
-usually finds the list already built. The directories are listed concurrently for
-the same reason — a sequential walk takes the sum of a dozen round trips.
+- `;` `&` `&&` `||` `|` `(` `$(` `` ` `` open a **command position**, and a new
+  command position clears the command it belonged to.
+- Wrapper words (`sudo`, `env`, `time`, `xargs`, `nice`, `nohup`, …) and the
+  keywords that open a list (`if`, `then`, `do`) do **not** become the command:
+  they hand the command position to the next word. This is why `sudo dock<Tab>`
+  completes commands, which it never did.
+- A redirection with a target (`>`, `>>`, `<`, `2>`) expects a **file**; a
+  descriptor duplication (`2>&1`, `>&2`) names no file at all and leaves the
+  expectation alone — the one distinction that decides whether the next Tab
+  offers a filename or a digit.
+- A `-word` after the command is a **flag**, and a lone `-` is not (`docker r -`
+  is the stdin convention).
+- `>` with the caret right after it is a file slot holding an EMPTY word, so Tab
+  there lists the directory — which is exactly what bash does.
+
+The position then picks the source, in the session's own world:
+
+| position | answer |
+| --- | --- |
+| `command` | the world's command names: every directory on its `PATH` (listed CONCURRENTLY — a device world pays a round trip per directory) plus the shell's interactive builtins, cached per session by holding the in-flight PROMISE. A local shell is spawned by the bridge as a child of this process with `--noprofile --norc`, so its `PATH` is the harness's, read directly; a device's is asked once through the same read-only shell seam the transfer writes through. |
+| `argument` | a path in the world, resolved against where the shell actually stands (the bridge reads a local shell's own `cwd`; the composer's tracked value is the fallback for a device's `ssh`). Directories sort first, and a name typed with the wrong capitals is answered with the file system's spelling. |
+| `argument`, after `cd`/`pushd`/`popd` | directories only — a file in that list is a candidate the shell would refuse. What is NOT expressible this way is "files only": a path is completed a segment at a time, so `> logs/app.log<Tab>` must pass through `logs/`. |
+| `redir` | the same path listing, files and directories, for the same reason. |
+| `flag` | **nothing, yet.** Offering the directory's files for `-la` would be the wrong KIND of answer, and silence is honest until the world's own completions can be asked (the shell oracle, next phase). |
+
+Nothing to complete — a blank line, or an operator under the caret that names no
+word — is a definite answer too, and the client swallows the Tab rather than
+letting it move focus to the composer's buttons.
 
 An empty answer carries a **reason code**, not a sentence
 (`DshellCompletionNote`): the route knows why and the browser knows the language,
 so the same division the rest of the wire uses decides who writes the line. The
-two sources are silent about different things, and the client decides that too: a
-non-path ARGUMENT with no match is usually not a path at all (`echo hi<Tab>`),
-while a command with no match is a real answer about the world.
+answer also carries the **position** it was produced for, which is what the
+client's silence rule reads: a non-path argument with no match is usually not a
+path at all (`echo hi<Tab>` stays quiet), while a command with no match is a real
+answer about the world (本会话的世界里没有以这个前缀开头的命令) and a word
+carrying a slash is a path request whose miss is worth reporting (`ls none/<Tab>`
+→ 目录不存在).
+
+**Not covered yet**, and deliberately: a flag or a subcommand has no source until
+the shell oracle lands (a complete of the real line inside the world's own bash,
+which is the next phase), and neither does anything an `alias`, a shell FUNCTION,
+or a user-modified `PATH` would add — the command list is the file system plus
+builtins, so a name that exists only in the reader's shell profile is not in it.
 
 ## 14. Test layout
 
-Each package follows dsh's three-tier model (data / host / GUI):
+The repo had no test runner until completion needed one, so this is the smallest
+rig that fits the feature rather than a copy of dsh's:
 
-- **Data layer specs** (Node side) for `dshell-terminal-bridge`
-  (`PtyBuffer`, ring buffer, mode-id resolution) and `dshell-mode`
-  (prefix parsing, context truncation).
-- **Host specs** (Node + Cordis) for the bundle, registering against a
-  test profile and asserting the ws upgrade route, target
-  registration, and Cordis service shape.
-- **GUI specs** (jsdom) for `dshell-conversation` ViewBuilder and
-  `dshell-mode` composer patch. `// @vitest-environment jsdom` per
-  file.
+- Root `vitest` devDependency and one `vitest.config.ts`: node environment,
+  `packages/*/*/tests/**/*.spec.ts`, and an alias mapping
+  `@nexus-aethra/dshell-std` to its SOURCE, so a spec never depends on a build
+  having run. `pnpm test` runs it.
+- `packages/dshell/std/tests/shell-line.spec.ts` is the first spec, and it drives
+  the scanner with lines that were actually typed — the project's own history,
+  `sudo rm -rf ./*`, `pwd; hostname; id -un`, `sudo apt list | grep mini`, the
+  init line the terminal bridge feeds, `make 2>&1 | tail -5`, `ls > out` — because
+  the failure that matters is not "the code throws" but "the code reads a real
+  line the way bash would".
 
-Coverage gate follows the client `100%` rule on browser halves and
-the standard Node-side target on host halves.
+The route's own dispatch and the client's silence rule are still verified by hand
+(a `fetch` against `/api/dshell/files` on both a local and a device session, then
+real key events in the browser); the scanner is where the rules live, so the
+scanner is where the tests are. dsh's three-tier model (data / host / GUI) stays
+the target if the other packages grow rules of their own.
 
 ## 15. What dshell does not introduce
 

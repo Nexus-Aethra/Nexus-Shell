@@ -2,7 +2,7 @@
  * The file navigator's route: one exact `/api` endpoint behind dsh's existing
  * trust and authentication fence, mirroring the other dshell routes.
  *
- * Two actions, both against ONE directory, in the session's own execution
+ * Four actions, all against ONE directory, in the session's own execution
  * world. The world is chosen by the filesystem seam itself, not here: every call
  * runs inside `ctx.agents.withInitiator`, and `ctx.fs` resolves the ambient
  * session — a device-bound session's tree is read over its own SSH route, this
@@ -18,6 +18,11 @@
  *    the command is tracked and rendered like any command the user types. It is
  *    the bridge's session-keyed entry, so the path handed over is the canonical
  *    one in that world — a device session's shell cds on the device.
+ *  - `resolve` canonicalizes one path without moving anything, which is how the
+ *    composer learns what a `cd` did.
+ *  - `complete` answers the composer's shell line: which source answers is
+ *    decided by the LINE itself (`./shell-line.ts` in the standard layer), so
+ *    the command position is a position rather than "the first word".
  *
  * Listing is a read, and every sandbox mode permits reads (the policy fence
  * covers mutations only), so this route adds no gate the session did not
@@ -40,6 +45,11 @@ import {
   DSHELL_FILES_PATH, type DshellCompletion, type DshellCompletionCandidate, type DshellFileEntry,
   type DshellFileKind, type DshellFilesListing, type DshellFilesRequest, type DshellFilesResponse,
 } from './protocol.js'
+// The line scanner straight from the shared layer: it is not part of this
+// route's wire vocabulary (the browser half reads the same module), so it is not
+// re-exported through `./protocol.js` — that module exists to hold the shapes
+// this route answers with.
+import { readShellCaret, type ShellCaret } from '@nexus-aethra/dshell-std'
 import type { TransferRoutingSeat } from './transfer.js'
 
 /**
@@ -150,37 +160,15 @@ async function cd(
 }
 
 /**
- * The last token of a shell line, with the span the composer should replace.
+ * The commands that take a directory and nothing else.
  *
- * Whitespace splits tokens, except inside single or double quotes; the token is
- * split again at its last `/` so the basename is the part substituted and
- * everything before it — a relative prefix, `~/`, an absolute directory — stays
- * exactly as the user typed it.
+ * `cd` is the reason this exists at all, and a completion that offered a file
+ * there would be offering something the shell refuses. The mirror-image rule —
+ * a command that takes only FILES — is not expressible this way, which is why
+ * there is no `file` counterpart: a path is completed a segment at a time, so
+ * `less logs/app.log<Tab>` has to pass through `logs/` before it ever names a file.
  */
-function lastToken(before: string): { start: number; dirPart: string; prefix: string } | undefined {
-  let quote: '"' | "'" | undefined
-  let tokenStart = 0
-  for (let index = 0; index < before.length; index += 1) {
-    const char = before[index]
-    if (quote === undefined && (char === '"' || char === "'")) { quote = char; continue }
-    if (quote !== undefined && char === quote) { quote = undefined; continue }
-    if (quote === undefined && /\s/u.test(char as string)) tokenStart = index + 1
-  }
-  // An unterminated quote means the token is still being written: keep it whole.
-  const token = before.slice(tokenStart)
-  if (token.length === 0) {
-    // A line that ends in whitespace is starting a NEW argument — `ls ` wants
-    // the shell's directory listed, so the completion is a bare prefix against
-    // it. Nothing before the space means there is no argument yet.
-    if (before.slice(0, tokenStart).trim().length === 0) return undefined
-    return { start: before.length, dirPart: '', prefix: '' }
-  }
-  // A leading dash is a flag, not a path.
-  if (token.startsWith('-')) return undefined
-  const slash = token.lastIndexOf('/')
-  const dirPart = slash < 0 ? '' : token.slice(0, slash + 1)
-  return { start: tokenStart + dirPart.length, dirPart, prefix: token.slice(slash + 1) }
-}
+const CD_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd'])
 
 /** The home of a session's world: a device's remote root, or this machine's. */
 function worldHome(routing: () => TransferRoutingSeat | undefined, sessionId: string): string {
@@ -270,7 +258,7 @@ async function readDirectory(
 async function completeDirectorySegment(
   ctx: Context,
   agent: Agent,
-  token: { start: number; dirPart: string; prefix: string },
+  token: ShellCaret,
   base: string | undefined,
   home: string,
 ): Promise<DshellCompletion | undefined> {
@@ -308,6 +296,7 @@ async function completeDirectorySegment(
     dir: reading.dir,
     candidates,
     truncated: matched.length > MAX_COMPLETIONS,
+    position: token.position,
   }
 }
 
@@ -321,9 +310,14 @@ async function complete(
   cwd: string | undefined,
   shellCwd: string | undefined,
 ): Promise<DshellCompletion | undefined> {
-  const before = line.slice(0, Math.max(0, Math.min(cursor, line.length)))
-  const token = lastToken(before)
-  if (token === undefined) return undefined
+  // What the line expects where the caret is, and where the word it replaces
+  // starts and ends. The reading is the SHELL's (std's rule table): the position
+  // is a property of the line, and both halves of this feature must not each
+  // decide it — a first-word rule and a client-side "looks like a path" guess is
+  // what drifted before. A blank line, or an operator under the caret, has
+  // nothing to complete and says so.
+  const caret = readShellCaret(line, cursor)
+  if (caret === undefined) return undefined
   const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
   if ('error' in resolved) throw new Error(`会话不可用：${resolved.error.code}`)
   const agent = resolved.agent
@@ -336,14 +330,14 @@ async function complete(
   // `~` resolves against that world's home either way.
   const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
   const home = worldHome(routing, sessionId)
-  // The line's FIRST word is the command, so it completes from the commands the
-  // session's world offers rather than from the directory the shell stands in.
-  // Everything else is an argument and names a path: a token with a slash is one
-  // wherever it sits (`./build.sh<Tab>`, `src/<Tab>`), and an empty first token
-  // is an empty line, which completes nothing.
-  if (token.dirPart === '' && token.prefix.length > 0
-    && before.slice(0, token.start).trim().length === 0) {
-    return await completeCommand(ctx, routing, sessionId, agent, token, before.length)
+  // The command position completes from the commands the session's world offers
+  // rather than from the directory the shell stands in — which is now decided by
+  // the LINE (`sudo dock<Tab>`, `pwd; dock<Tab>` and `xargs dock<Tab>` all land
+  // here), not by a word happening to be first. A command word with a slash is
+  // still a path (`./build.sh<Tab>`, `/usr/bin/doc<Tab>`): it names a file in the
+  // world, and the PATH's names cannot answer it.
+  if (caret.position === 'command' && caret.dirPart === '' && caret.prefix.length > 0) {
+    return await completeCommand(ctx, routing, sessionId, agent, caret)
   }
   // Build this session's command list in the background, whoever asked for what.
   // A device world answers each directory over its own route, so the FIRST
@@ -353,18 +347,46 @@ async function complete(
   // the time a Tab asks for it. Fire and forget: a world that cannot be read
   // answers nothing, and the Tab that needs the list reports its own miss.
   void commandNames(ctx, routing, sessionId, agent).catch(() => { /* see above */ })
+  // Nothing answers a flag yet. Offering the directory's files there would be a
+  // wrong KIND of answer (`ls -la<Tab>` is not asking for `-launcher.sh`), and
+  // silence is the honest reply until the world's own completions can be asked
+  // (the shell oracle). An empty answer on purpose: the client shows nothing.
+  if (caret.position === 'flag') return undefined
+  // `cd` and its relatives take a directory and nothing else, so a file in that
+  // list would be a candidate the shell refuses. Everything else — including a
+  // redirection's target — is a path, and a path is walked a segment at a time,
+  // so directories answer there too (`> logs/app.log<Tab>` passes through `logs/`).
+  const directoryOnly = caret.command !== undefined && CD_COMMANDS.has(caret.command)
+  return await completePath(ctx, agent, caret, base, home, directoryOnly ? 'directory' : 'any')
+}
+
+/**
+ * Complete one word of the line as a path in the session's world.
+ *
+ * `want` narrows what can answer: `directory` for a command that takes one
+ * (`cd`), `any` everywhere else.
+ */
+async function completePath(
+  ctx: Context,
+  agent: Agent,
+  caret: ShellCaret,
+  base: string | undefined,
+  home: string,
+  want: 'any' | 'directory',
+): Promise<DshellCompletion | undefined> {
   // A lonely `~` names a directory, and nothing is named "~": the answer is the
   // tilde itself, so the composer writes `~/` and the next Tab lists it.
-  if (token.dirPart === '' && token.prefix === '~') {
+  if (caret.dirPart === '' && caret.prefix === '~') {
     return {
-      start: token.start,
-      end: before.length,
+      start: caret.start,
+      end: caret.end,
       dir: home,
       candidates: [{ name: '~', kind: 'directory', hint: '目录' }],
       truncated: false,
+      position: caret.position,
     }
   }
-  const rawDir = expandHome(token.dirPart, home)
+  const rawDir = expandHome(caret.dirPart, home)
   const start = rawDir.length === 0 ? base : rawDir
   if (start === undefined) throw new Error('这个会话没有工作目录，无法补全相对路径')
   const reading = await readDirectory(ctx, agent, start, base)
@@ -377,18 +399,20 @@ async function complete(
     // did not ask for (`ls foo/` must not become `ls foo.d/` just because the
     // slash was wrong for a file).
     const recovered = reading.note === 'noDirectory'
-      ? await completeDirectorySegment(ctx, agent, token, base, home)
+      ? await completeDirectorySegment(ctx, agent, caret, base, home)
       : undefined
     return recovered ?? {
-      start: token.start, end: before.length, dir: reading.dir, candidates: [], truncated: false, note: reading.note,
+      start: caret.start, end: caret.end, dir: reading.dir, candidates: [], truncated: false,
+      position: caret.position, note: reading.note,
     }
   }
   // Case-folded on the reader's side only: a name that matches regardless of
   // capitals is still answered with its own spelling, so `nexus-sh` completes to
   // `Nexus-shell/`, and a set that matches either way — `nexus-study` beside
   // `Nexus-shell` under `nexus-` — is listed rather than guessed at.
-  const needle = foldAscii(token.prefix)
+  const needle = foldAscii(caret.prefix)
   const matched = reading.children
+    .filter(child => want !== 'directory' || child.type === 'directory')
     .filter(child => foldAscii(child.name).startsWith(needle))
     .sort((left, right) => {
       if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
@@ -401,11 +425,12 @@ async function complete(
     hint: child.type === 'directory' ? '目录' : child.size === undefined ? '' : `${String(child.size)} B`,
   }))
   return {
-    start: token.start,
-    end: before.length,
+    start: caret.start,
+    end: caret.end,
     dir: reading.dir,
     candidates,
     truncated: matched.length > MAX_COMPLETIONS,
+    position: caret.position,
     ...candidates.length === 0 ? { note: 'noMatch' as const } : {},
   }
 }
@@ -556,7 +581,7 @@ async function buildCommandNames(
 }
 
 /**
- * Complete the line's first word as a command name.
+ * Complete a word in the command position as a command name.
  *
  * The names come from the session's own world, so a device session completes
  * the device's commands — the same rule the path side follows (see the module
@@ -568,17 +593,17 @@ async function completeCommand(
   routing: () => TransferRoutingSeat | undefined,
   sessionId: string,
   agent: Agent,
-  token: { start: number; prefix: string },
-  end: number,
+  caret: ShellCaret,
 ): Promise<DshellCompletion> {
   const list = await commandNames(ctx, routing, sessionId, agent)
-  const matches = list.names.filter(name => name.startsWith(token.prefix))
+  const matches = list.names.filter(name => name.startsWith(caret.prefix))
   return {
-    start: token.start,
-    end,
+    start: caret.start,
+    end: caret.end,
     dir: 'PATH',
     candidates: matches.slice(0, MAX_COMPLETIONS).map(name => ({ name, kind: 'command' as const })),
     truncated: matches.length > MAX_COMPLETIONS,
+    position: caret.position,
     ...matches.length === 0 ? { note: 'noCommand' as const } : {},
   }
 }

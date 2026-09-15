@@ -150,7 +150,7 @@ All three live in the `$ shell` input line and each can be switched off independ
 
 | Gesture | Behaviour |
 |---|---|
-| `Tab` | Completes paths. The comparison **folds ASCII case, but the completion carries the real spelling**: `cd nexus-sh` + `Tab` becomes `Nexus-shell/`, correcting the line as it completes. A single candidate lands directly; several open a floating list (`Tab`/`↑`/`↓` to move, `Enter` to take, `Esc` to close) |
+| `Tab` | Completes the word under the caret, from **what the line says that word is**: a command name in the command position (`dock` + `Tab`, and equally `sudo dock` + `Tab` or `pwd; host` + `Tab`), a directory after `cd`, a path anywhere else (a redirection's target included). Commands come from the session's own world — this machine's `PATH` for a local session, the device's for an SSH session — so the two answer with different names. The comparison **folds ASCII case, but the completion carries the real spelling**: `cd nexus-sh` + `Tab` becomes `Nexus-shell/`, correcting the line as it completes. A single candidate lands directly; several open a floating list (`Tab`/`↑`/`↓` to move, `Enter` to take, `Esc` to close) |
 | `↑` | Opens this session's history (`↑↓` to move, `Enter` to take), listing only commands that share a prefix with what you have typed |
 | `→` | Shows a **ghost hint** after the caret: the newest command that exactly extends your draft. Each `→` takes **one word** of it, and the ghost disappears with the last word |
 
@@ -362,7 +362,7 @@ have something to say:
 | Where | Action | What it does |
 |---|---|---|
 | Input line | click `$ shell` / `✦ agent` | switch modes |
-| Input line | `Tab` | path completion (case-insensitive match, real spelling applied) |
+| Input line | `Tab` | completion: commands in the command position, directories after `cd`, paths elsewhere (case-insensitive match, real spelling applied) |
 | Input line | `↑` | command history list |
 | Input line | `→` | take one word of the ghost hint |
 | Input line | `Ctrl+C` / `Ctrl+Shift+V` | interrupt / paste into the terminal |

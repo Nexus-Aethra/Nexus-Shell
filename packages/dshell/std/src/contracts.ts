@@ -3,11 +3,12 @@
  * cross them.
  *
  * Layering rule for this file, and for this package as a whole: it declares
- * FACTS, not behaviour. No imports, no dsh packages, no runtime state — so both
- * halves of every plugin (host route and browser face) can import the same
- * declaration, and a contract change is a compile error on both sides instead of
- * a silent drift. The browser faces used to restate these shapes by hand
- * precisely because there was nowhere shared to put them.
+ * FACTS, not behaviour. No dsh packages, no runtime state, and no imports except
+ * types from this package's own sibling modules — so both halves of every plugin
+ * (host route and browser face) can import the same declaration, and a contract
+ * change is a compile error on both sides instead of a silent drift. The browser
+ * faces used to restate these shapes by hand precisely because there was nowhere
+ * shared to put them.
  *
  * Sections below were moved verbatim from the packages' own protocol modules,
  * which now re-export from here; the package-local headers are kept because they
@@ -16,6 +17,12 @@
 
 // ─── files — the file navigator: listing, completion, their requests/responses ───
 // moved from packages/dshell/files/src/protocol.ts
+
+// The one import this file has, and it is a type: completion answers carry the
+// position the shell reads (see `DshellCompletion.position`), and that type
+// belongs to the line scanner rather than to this file because the host and the
+// scanner must agree on exactly one spelling of it.
+import type { ShellPosition } from './shell-line.js'
 
 /**
  * The file navigator's wire vocabulary, shared by the host route and the
@@ -132,6 +139,18 @@ export interface DshellCompletion {
   readonly candidates: readonly DshellCompletionCandidate[]
   /** The listing hit the route's cap, so candidates are missing. */
   readonly truncated: boolean
+  /**
+   * Where in the line this completion happened, as the SHELL reads it.
+   *
+   * The host decides it from the whole line (`./shell-line.ts`) because a
+   * position is a property of the line and not of the word — `dock` names a
+   * command, `cd dock` an argument, `tee > dock` a file. Answering with it keeps
+   * the browser from re-deriving the same thing from the token's shape, which is
+   * how the two halves of this feature drifted apart once already: the client
+   * needs it to know when an empty answer deserves to be shown (`noCommand` on a
+   * command word is worth a card, the same miss on a non-path argument is not).
+   */
+  readonly position: ShellPosition
   /** Why there are no candidates, when the reason is worth showing. */
   readonly note?: DshellCompletionNote | undefined
 }
