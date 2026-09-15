@@ -71,7 +71,7 @@ describe('SingleFlight', () => {
 })
 
 describe('ReadingCache', () => {
-  it('serves a reading inside its life and reads again after it', async () => {
+  it('serves a fresh reading without reading again', async () => {
     const clock = clockFrom(1_000)
     const cache = new ReadingCache(3_000, clock.now)
     let reads = 0
@@ -80,11 +80,47 @@ describe('ReadingCache', () => {
     clock.advance(2_999)
     await cache.read('k', produce)
     expect(reads).toBe(1)
-    // The listing is the one answer a reader compares against their own screen,
-    // so its life is seconds: a file a command just made has to appear.
-    clock.advance(2)
+  })
+
+  it('answers at once with a reading that is only usable, and refreshes behind it', async () => {
+    const clock = clockFrom(1_000)
+    const cache = new ReadingCache(3_000, clock.now)
+    let reads = 0
+    const produce = async (): Promise<DirectoryReading> => { reads += 1; return listing('/w', [`v${String(reads)}.txt`]) }
     await cache.read('k', produce)
+    clock.advance(10_000)
+    // The reader gets their list NOW: waiting for a device to re-list a directory
+    // they may not have touched is the wait this feature exists to remove.
+    const served = await cache.read('k', produce)
+    expect(served).toEqual(listing('/w', ['v1.txt']))
+    await Promise.resolve()
+    await Promise.resolve()
+    // …and the truth is fetched behind the answer, so the next Tab has it.
     expect(reads).toBe(2)
+    const next = await cache.read('k', produce)
+    expect(next).toEqual(listing('/w', ['v2.txt']))
+  })
+
+  it('stops answering once a reading is old enough to be a claim nobody checked', async () => {
+    const clock = clockFrom(1_000)
+    const cache = new ReadingCache(3_000, clock.now, 60_000)
+    await cache.read('k', async () => listing('/w', ['old.txt']))
+    clock.advance(60_001)
+    expect(cache.peek('k')).toBeUndefined()
+    const fresh = await cache.read('k', async () => listing('/w', ['new.txt']))
+    expect(fresh).toEqual(listing('/w', ['new.txt']))
+  })
+
+  it('tells a fresh reading from a usable one', async () => {
+    const clock = clockFrom(1_000)
+    const cache = new ReadingCache(3_000, clock.now)
+    await cache.read('k', async () => listing('/w', ['a.txt']))
+    expect(cache.fresh('k')).toBe(true)
+    clock.advance(3_001)
+    // Still answerable from memory (so a fast pass can answer), no longer fresh
+    // (so a pass that may read goes and reads).
+    expect(cache.fresh('k')).toBe(false)
+    expect(cache.peek('k')).toEqual(listing('/w', ['a.txt']))
   })
 
   it('shares one read between callers of the same key', async () => {

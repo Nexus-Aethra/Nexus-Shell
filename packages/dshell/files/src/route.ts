@@ -438,14 +438,26 @@ async function warm(
   shellCwd: string | undefined,
   oracle: boolean,
 ): Promise<void> {
-  const caret = readShellCaret(line, cursor)
-  if (caret === undefined) return
   const resolved = await ctx.sessionController.resolveAgent(SessionId(sessionId))
   if ('error' in resolved) return
   const agent = resolved.agent
   const base = shellCwd ?? (cwd !== undefined && cwd.length > 0 ? cwd : agent.session.header.cwd)
   const home = worldHome(routing, sessionId)
   const world = worldOf(routing, sessionId)
+  const caret = readShellCaret(line, cursor)
+  if (caret === undefined) {
+    // A line that names no word — which is what the composer holds right after a
+    // command was sent, and the moment the world has just changed: the shell may
+    // have moved, files may have appeared or gone. What a Tab here would read is
+    // the directory the shell stands in (`cd <Tab>` and `ls <Tab>` both list it)
+    // plus the command list a fresh word comes from. Reading it now costs the
+    // reader nothing, because it happens while they read the command's output.
+    if (base !== undefined && base.length > 0) {
+      void readDirectoryCached(ctx, agent, base, base, world).catch(() => undefined)
+    }
+    await commandNames(ctx, routing, sessionId, agent).catch(() => undefined)
+    return
+  }
   const refinable = shellCouldKnowMore(caret)
   // Both halves of what a Tab on this line asks for, and both started before
   // either is awaited: the shell's own vocabulary (the answer the reader is

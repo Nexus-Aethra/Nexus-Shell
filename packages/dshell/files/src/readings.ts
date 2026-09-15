@@ -13,15 +13,20 @@
  * So a reading is remembered briefly, and the two things that make remembering
  * it honest live here rather than at the call sites:
  *
- *  - **A short life.** The listing is the one answer a reader compares against
- *    what is on their screen, so a stale one is a wrong answer rather than a
- *    late one: a file a command just created must appear, and a deleted one must
- *    go. {@link DEFAULT_READING_TTL_MS} is seconds, not minutes, and the warm
- *    path is what keeps a typed line's readings fresh rather than a long TTL.
+ *  - **A short freshness window, and a longer usability window.** A listing is
+ *    the one answer a reader compares against what is on their screen, so a
+ *    reading is FRESH for seconds ({@link DEFAULT_READING_TTL_MS}); between that
+ *    and {@link DEFAULT_READING_STALE_MS} it is still served, but the refresh it
+ *    needs is started behind the answer rather than in front of the reader. That
+ *    is what keeps a Tab instant after a long pause — waiting for a device to
+ *    re-list a directory the reader may not have changed is the wait this feature
+ *    exists to remove — while a second Tab a moment later sees the new listing.
+ *    Past the stale window the answer is not served at all: by then it is a claim
+ *    about a world nobody has looked at for a minute.
  *  - **One reader per key.** A warm and the Tab it was warming for are seconds
  *    apart at most, and two in-flight reads of one key would be two device calls
  *    for one answer. {@link ReadingCache.read} therefore hands the second caller
- *    the first caller's promise.
+ *    the first caller's promise — including the background one.
  *
  * The key is the caller's: this class never interprets one. What makes a key
  * correct is that it carries everything the answer depends on — for a directory
@@ -48,8 +53,16 @@ export interface ReadingChild {
   readonly size?: number | undefined
 }
 
-/** How long a reading is served without being read again. */
+/** How long a reading is served WITHOUT going back to the world for it. */
 export const DEFAULT_READING_TTL_MS = 3_000
+
+/**
+ * How long a reading may still answer, with its refresh started behind it.
+ *
+ * Past this the entry is a claim about a world nobody has looked at for a
+ * minute, and the caller waits for a real read instead.
+ */
+export const DEFAULT_READING_STALE_MS = 60_000
 
 /** A clock, injected so a spec can move time. */
 export type ReadingClock = () => number
@@ -102,31 +115,43 @@ export class ReadingCache {
   constructor(
     private readonly ttlMs: number = DEFAULT_READING_TTL_MS,
     private readonly now: ReadingClock = () => Date.now(),
+    private readonly staleMs: number = DEFAULT_READING_STALE_MS,
   ) {}
 
   /**
-   * The reading for `key`, if one is young enough to serve.
+   * The reading for `key`, if this side has one worth answering with.
    *
    * @param key - what the reading depends on, spelled by the caller.
-   * @returns the reading, or undefined when this side must go and read.
+   * @returns the reading, or undefined when this side must go and read. A
+   *   reading past its freshness window is still returned: the caller that only
+   *   wants to answer from memory (see the route's fast pass) should answer with
+   *   what it has, and the caller that may read goes through {@link read} instead
+   *   and gets its refresh.
    */
   peek(key: string): DirectoryReading | undefined {
     const entry = this.entries.get(key)
     if (entry === undefined) return undefined
-    if (this.now() - entry.at > this.ttlMs) {
+    if (this.now() - entry.at > this.staleMs) {
       this.entries.delete(key)
       return undefined
     }
     return entry.reading
   }
 
+  /** Whether what {@link peek} would answer with is still fresh. */
+  fresh(key: string): boolean {
+    const entry = this.entries.get(key)
+    return entry !== undefined && this.now() - entry.at <= this.ttlMs
+  }
+
   /**
-   * The reading for `key`, reading it once if this side does not have it.
+   * The reading for `key`, reading it if this side does not have it.
    *
-   * A second caller for the same key joins the first caller's read instead of
-   * starting another — which is the whole point of a warm: the Tab that arrives
-   * while the warm is still on the wire waits for its answer rather than paying
-   * for a second one.
+   * A reading that is no longer fresh but still usable is returned AT ONCE, with
+   * the read that replaces it started behind the answer: the reader gets their
+   * list now and the next Tab gets the truth. A second caller for the same key
+   * joins whatever read is already in flight instead of starting another — which
+   * is the whole point of a warm, and why the background refresh is shared too.
    *
    * @param key - as {@link peek}.
    * @param produce - how to read it. A failure is NOT cached: a world that could
@@ -135,8 +160,17 @@ export class ReadingCache {
    */
   async read(key: string, produce: () => Promise<DirectoryReading>): Promise<DirectoryReading> {
     const cached = this.peek(key)
-    if (cached !== undefined) return cached
-    return await this.flight.join(key, async () => {
+    if (cached !== undefined && this.fresh(key)) return cached
+    if (cached !== undefined) {
+      void this.refresh(key, produce)
+      return cached
+    }
+    return await this.refresh(key, produce)
+  }
+
+  /** Read `key` and remember it; shared with anyone else who asks meanwhile. */
+  private refresh(key: string, produce: () => Promise<DirectoryReading>): Promise<DirectoryReading> {
+    return this.flight.join(key, async () => {
       const reading = await produce()
       this.entries.set(key, { at: this.now(), reading })
       return reading
