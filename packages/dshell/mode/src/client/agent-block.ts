@@ -268,6 +268,8 @@ function ToolStep(props: { step: Extract<Step, { kind: 'tool' }>; theme: Theme; 
 export function UserBubble(props: {
   text: string
   images?: readonly unknown[] | undefined
+  /** A quiet marker above the text, for a message that answered a running turn. */
+  label?: string | undefined
   loadImage: ImageLoader | undefined
   theme: Theme
   t: ModeTranslate
@@ -283,6 +285,11 @@ export function UserBubble(props: {
       color: props.theme.text,
     },
   },
+    props.label === undefined
+      ? null
+      : createElement('div', {
+        style: { color: props.theme.muted, opacity: 0.8, marginBottom: 3 },
+      }, props.label),
     createElement('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, sanitizeRowText(props.text)),
     createElement(RowImages, { images: props.images, loadImage: props.loadImage, theme: props.theme, t: props.t }),
   )
@@ -545,6 +552,62 @@ function formatTokens(tokens: number): string | undefined {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k tok` : `${String(tokens)} tok`
 }
 
+/** One card's rows, cut into the request and the work it produced. */
+interface CardSegment {
+  /** Identity for the rendered nodes (React keys). */
+  readonly key: string
+  /** The human message that opened this segment; absent before the first one. */
+  readonly ask: SessionRow | undefined
+  /** Thinking, tool calls and shell rows, in stream order. */
+  readonly process: readonly SessionRow[]
+  /** The model's prose, in stream order. */
+  readonly answers: readonly SessionRow[]
+}
+
+/**
+ * Cut one card's rows into a segment per human message.
+ *
+ * A card is a turn, and a turn can take more than one human message: an
+ * interjection steers the running turn instead of opening a card of its own
+ * (see `foldEvent`). Cutting here is what lets the second request be drawn
+ * after the work it interrupted — hoisting every request to the top of the card
+ * would read as if it had been sent before that work. A card with one request
+ * cuts into one segment and renders exactly as it always has.
+ *
+ * @param rows - the block's rows, in stream order.
+ * @returns one segment per message, plus a single empty segment for the rows
+ *   that precede the first message (a card opened by the turn itself).
+ */
+export function segmentsOf(rows: readonly SessionRow[]): CardSegment[] {
+  const segments: CardSegment[] = []
+  let ask: SessionRow | undefined
+  let process: SessionRow[] = []
+  let answers: SessionRow[] = []
+  const flush = (): void => {
+    // An empty stretch only survives as the card's first segment: the summary
+    // line is rendered with it, so a turn the model has not answered yet still
+    // gets its card.
+    if (ask !== undefined || process.length > 0 || answers.length > 0 || segments.length === 0) {
+      segments.push({
+        key: ask === undefined ? `seg:${String(segments.length)}` : `seg:${ask.key}`,
+        ask,
+        process,
+        answers,
+      })
+    }
+    ask = undefined
+    process = []
+    answers = []
+  }
+  for (const row of rows) {
+    if (row.role === 'user') { flush(); ask = row; continue }
+    if (row.role === 'assistant') answers.push(row)
+    else process.push(row)
+  }
+  flush()
+  return segments
+}
+
 /**
  * One agent task.
  *
@@ -566,26 +629,22 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
   useEffect(() => { injectFoldCss() }, [])
   const endedAt = block.notice?.time ?? now
   // The fold mutates `rows` in place, so the array identity stays put while a
-  // step streams and its length is what says a row was appended. Partitioning
-  // with fresh filters on every render would defeat both memos below and
-  // re-parse the whole answer on every streamed frame.
-  const { asked, answers, process } = useMemo(() => ({
-    asked: block.rows.filter(row => row.role === 'user'),
-    answers: block.rows.filter(row => row.role === 'assistant'),
-    process: block.rows.filter(row => row.role !== 'user' && row.role !== 'assistant'),
-  }), [block.rows, block.rows.length])
-  const steps = useMemo(() => buildSteps(process, block.startedAt, t), [process, block.startedAt, t])
-  const tokens = formatTokens(block.tokens)
-  const failed = block.status === 'failed' || block.status === 'aborted'
-  // Answers are written to be read: render their markdown rather than the raw
-  // syntax they arrived in, and keep the result until the rows change.
-  const answerNodes = useMemo(
-    () => answers.flatMap(row => [
+  // step streams and its length is what says a row was appended. Cutting the
+  // card into segments and rendering them here, rather than partitioning with
+  // fresh filters, keeps that: one memo per streamed frame either way, and the
+  // answers are parsed once.
+  const segments = useMemo(() => segmentsOf(block.rows).map(segment => ({
+    ...segment,
+    steps: buildSteps(segment.process, segment.ask?.time ?? block.startedAt, t),
+    // Answers are written to be read: render their markdown rather than the raw
+    // syntax they arrived in.
+    answers: segment.answers.flatMap(row => [
       ...renderMarkdown(sanitizeRowText(row.text), theme, row.key),
       createElement(RowImages, { key: `${row.key}:img`, images: row.images, loadImage: props.loadImage, theme, t }),
     ]),
-    [answers, theme, props.loadImage, t],
-  )
+  })), [block.rows, block.rows.length, block.startedAt, theme, props.loadImage, t])
+  const tokens = formatTokens(block.tokens)
+  const failed = block.status === 'failed' || block.status === 'aborted'
   // The live line the model is still writing. It renders through the same
   // paths, in the same position, as the durable rows that supersede it, so
   // settlement neither moves nor restyles the text.
@@ -615,6 +674,11 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
   const liveText = stream === undefined || stream.text.length === 0
     ? undefined
     : `${sanitizeRowText(stream.text)}${running ? '▍' : ''}`
+  // The card reads request → work → answer, and a turn may take more than one
+  // request (an interjection steers the running turn instead of opening a card
+  // of its own), so each segment is drawn where it happened. The summary line
+  // belongs to the card as a whole — it reports the whole turn's duration and
+  // tokens — so it follows the first request, where it has always been.
   return createElement('div', {
     'data-dshell-block': 'agent',
     // The bookmark rail looks each block up by its stable key, so the
@@ -624,59 +688,69 @@ export function AgentBlock(props: { block: TurnBlock; theme: Theme; loadImage: I
     // stream it came from read at one size.
     style: { margin: '14px 0 18px', overflow: 'hidden', fontSize: SPAN_FONT_SIZE, lineHeight: 1.6 },
   },
-    ...asked.map(row => createElement(UserBubble, {
-      key: row.key,
-      text: row.text,
-      images: row.images,
-      loadImage: props.loadImage,
-      theme,
-      t,
-    })),
-    createElement('div', {
-      'data-dshell-fold': '',
-      onClick: () => { setExpanded(value => !value) },
-      style: {
-        display: 'flex', alignItems: 'baseline', gap: '6px',
-        // A failed block reads as a stopped session, not an alert. The whole
-        // row stays on the same muted label tier as a normal-done block; the
-        // failure is signalled by a thin left rail in the error alias, the
-        // error-toned fish, and the "已中断" word. This matches dsh's stock
-        // philosophy: colour is reserved for the part of the line the
-        // reader has to act on, not the whole row.
-        color: theme.muted, fontSize: 12,
-        margin: '6px -6px 4px', padding: '1px 6px 1px 8px', borderRadius: '6px', cursor: 'pointer',
-        borderLeft: failed ? '2px solid var(--dsw-alias-state-error-primary)' : '2px solid transparent',
+    ...segments.flatMap((segment, index) => [
+      segment.ask === undefined ? null : createElement(UserBubble, {
+        key: segment.ask.key,
+        text: segment.ask.text,
+        images: segment.ask.images,
+        label: segment.ask.label,
+        loadImage: props.loadImage,
+        theme,
+        t,
+      }),
+      index > 0 ? null : createElement('div', {
+        key: 'fold',
+        'data-dshell-fold': '',
+        onClick: () => { setExpanded(value => !value) },
+        style: {
+          display: 'flex', alignItems: 'baseline', gap: '6px',
+          // A failed block reads as a stopped session, not an alert. The whole
+          // row stays on the same muted label tier as a normal-done block; the
+          // failure is signalled by a thin left rail in the error alias, the
+          // error-toned fish, and the "已中断" word. This matches dsh's stock
+          // philosophy: colour is reserved for the part of the line the
+          // reader has to act on, not the whole row.
+          color: theme.muted, fontSize: 12,
+          margin: '6px -6px 4px', padding: '1px 6px 1px 8px', borderRadius: '6px', cursor: 'pointer',
+          borderLeft: failed ? '2px solid var(--dsw-alias-state-error-primary)' : '2px solid transparent',
+        },
       },
-    },
-      running
-        ? createElement(FishMark, { tone: 'shimmer' })
-        : createElement(FishMark, { tone: 'muted' }),
-      running
-        ? createElement('span', { 'data-dshell-running-text': '' },
-            t('agent.running', { duration: formatDuration(t, endedAt - block.startedAt) }))
-        : createElement('span', null,
-            failed
-              ? t('agent.interrupted', { duration: formatDuration(t, endedAt - block.startedAt) })
-              : t('agent.worked', { duration: formatDuration(t, endedAt - block.startedAt) })),
-      tokens === undefined ? null : createElement('span', null, `· ${tokens}`),
-      createElement(Chevron, { open: expanded, theme }),
-    ),
-    // Fold body: when the block is running, a single running-row container
-    // gives every internal step dsh's stock "sweep" running signal. When
-    // the block is done or failed, no container — the steps read as a quiet
-    // monochrome archive. The notice line that used to render below the
-    // answer (a red "AI 回答已中断 · 22:43") was a duplicate of the fold
-    // header; the header now carries the failure state on its own, so the
-    // duplicate is gone.
-    expanded ? createElement('div', running ? { 'data-dshell-running-row': '' } : undefined,
-      ...steps.map(step => (step.kind === 'tool'
-        ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage, t })
-        : step.kind === 'group'
-          ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage, t })
-          : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage, t }))),
-      liveReasoning,
-    ) : null,
-    ...answerNodes,
+        running
+          ? createElement(FishMark, { tone: 'shimmer' })
+          : createElement(FishMark, { tone: 'muted' }),
+        running
+          ? createElement('span', { 'data-dshell-running-text': '' },
+              t('agent.running', { duration: formatDuration(t, endedAt - block.startedAt) }))
+          : createElement('span', null,
+              failed
+                ? t('agent.interrupted', { duration: formatDuration(t, endedAt - block.startedAt) })
+                : t('agent.worked', { duration: formatDuration(t, endedAt - block.startedAt) })),
+        tokens === undefined ? null : createElement('span', null, `· ${tokens}`),
+        createElement(Chevron, { open: expanded, theme }),
+      ),
+      // Fold body: when the block is running, a single running-row container
+      // gives every internal step dsh's stock "sweep" running signal. When
+      // the block is done or failed, no container — the steps read as a quiet
+      // monochrome archive. The notice line that used to render below the
+      // answer (a red "AI 回答已中断 · 22:43") was a duplicate of the fold
+      // header; the header now carries the failure state on its own, so the
+      // duplicate is gone. The in-flight reasoning line closes the last
+      // segment, so a stream still being written never lands above it.
+      !expanded || segment.steps.length === 0
+        ? null
+        : createElement('div', {
+          key: `${segment.key}:steps`,
+          ...running ? { 'data-dshell-running-row': '' } : {},
+        },
+          ...segment.steps.map(step => (step.kind === 'tool'
+            ? createElement(ToolStep, { key: step.key, step, theme, loadImage: props.loadImage, t })
+            : step.kind === 'group'
+              ? createElement(ToolGroup, { key: step.key, step, theme, loadImage: props.loadImage, t })
+              : createElement(TextStep, { key: step.key, step, theme, loadImage: props.loadImage, t }))),
+          index === segments.length - 1 ? liveReasoning : null,
+        ),
+      ...segment.answers,
+    ].filter(node => node !== null)),
     liveText === undefined
       ? null
       : createElement('div', { 'data-dshell-stream': '' }, ...renderMarkdown(liveText, theme, 'stream')),

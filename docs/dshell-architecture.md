@@ -436,7 +436,72 @@ Those are the agent's interface — written once and read by the model — and a
 per-language variant would make the model's data depend on the UI language. They
 stay single-language, exactly as dsh's own tool copy does.
 
-## 11. Test layout
+## 11. Buffer addressing
+
+A buffer path is rooted at `/`, and its first segment is a **mapping name** —
+the `as` a grant declared, unique across every live grant the reader holds, not
+across the pipe that produced it. Everything after that name is a path inside
+the mapped area.
+
+The split lives in exactly one place: `splitBufferPath` in
+`packages/dshell/buffer/src/paths.ts`. Its contract is what makes the two halves
+of a resolution fit together:
+
+- `name` selects the grant (`BufferService.resolveBufferPath` searches every
+  live grant addressed to the caller and refuses an ambiguous name rather than
+  guessing).
+- `rest` is **area-relative**: never absolute, never leading with a separator,
+  `''` for the area itself (which the service turns into `.`).
+
+`rest` in that shape is then joined onto the area's canonical root and put
+through the containment test. That test expects a relative path by design — an
+absolute one is refused as a path-escape attempt — so the invariant is
+load-bearing in the direction that is easy to get wrong: stripping a mapping
+name must consume its separator **and** the caller's leading `/`, or
+`/name/file` arrives at the containment test as `/file` and every subpath under
+a mapped directory is refused. The refusal reads to the caller as a permissions
+problem ("这个位置不在受权的范围内"), not as a path-shape problem, which is what
+made it expensive to diagnose from the outside: `ls` on the mapped root
+succeeded throughout, because a lone name resolves to `.`.
+
+Tool arguments are the only place this form is authored by a model; the panel's
+buffer browser navigates a grant directly and never re-derives the split, so one
+rule serves both surfaces.
+
+## 12. The block view's fold, and dsh's trajectory
+
+`dshell-mode` owns the `chat` view cell (the 会话 tab); dsh's trajectory (轨迹)
+stays dsh's. Both show one session, and they are built from different models: a
+**card** per turn (or per supervised phase inside a turn) here, a **timeline** of
+turns there. Keeping the two in step is a requirement, not a nicety — the reader
+compares one against the other.
+
+The case that used to break it: a **human message admitted into a running
+turn**. dsh supports this (its composer can steer), and such a message belongs to
+the turn it steered — the trajectory draws it at that turn's step. The fold must
+therefore append it to the running block:
+
+- A card of its own would carry no turn number. `assembleTimeline` orders
+  turn-carrying blocks against the PTY's own turn blocks and places turn-less
+  ones by timestamp against the shell regions, so the card could land between
+  the wrong regions; and the next `turn/start` adopts any open block with no turn
+  number, so the interjection's card would be relabelled as the *next* turn.
+- The two surfaces would then disagree about the session's shape while showing
+  the same events.
+
+Steering is not a property of the durable `user/message`; it has to be
+reconstructed, and dsh's own client already defines how (ui-chat's
+`SteeringHistory`, which this fold mirrors): a `next-step` inbox splice that is
+not cancelled hands its removed prompt ids to the running turn, and the
+`user/message` naming one of them was claimed by that turn. `foldEvent` reads the
+splices itself for this reason — the rule belongs to the fold, not to the view
+that drives it.
+
+Within a card, rows are cut into one **segment** per human message: the request,
+then the work and the answers it produced. A card with one request cuts into one
+segment and renders exactly as it always has.
+
+## 13. Test layout
 
 Each package follows dsh's three-tier model (data / host / GUI):
 
@@ -453,7 +518,7 @@ Each package follows dsh's three-tier model (data / host / GUI):
 Coverage gate follows the client `100%` rule on browser halves and
 the standard Node-side target on host halves.
 
-## 12. What dshell does not introduce
+## 14. What dshell does not introduce
 
 - No changes to dsh source. No fork.
 - No new model-facing tool *other than* the two terminal tools
@@ -466,7 +531,7 @@ the standard Node-side target on host halves.
 
 These mirror `dshell-design.md` § 2 and are normative.
 
-## 13. Phase plan
+## 15. Phase plan
 
 See [`dshell-roadmap.md`](./dshell-roadmap.md). The architecture above
 fully specifies what each phase's plugins must produce. The next

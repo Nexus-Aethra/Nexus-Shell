@@ -39,7 +39,7 @@ import type { DshellBufferHostTranslate } from './host-locales.js'
 import {
   sessionLabel, renderRequestNotice, renderSettlementNotice, requestSummary, settlementSummary,
 } from './notice.js'
-import { isUnder } from './paths.js'
+import { isUnder, splitBufferPath } from './paths.js'
 import type { PipeLine } from './prompt.js'
 import {
   BUFFER_PLUGIN,
@@ -270,23 +270,27 @@ export class BufferService {
    * holds. The mapped name selects the grant and area; the rest is the
    * area-relative path the authorize path already understands. Ambiguity (the
    * same name mapped on two pipes) is refused rather than guessed.
+   *
+   * The split itself lives in {@link splitBufferPath}, which guarantees the
+   * rest is relative: stripping the name must consume the separator too, or
+   * `/name/file` reaches the containment test as the absolute `/file` and every
+   * subpath under a mapped directory is refused as a path escape.
    */
   resolveBufferPath(callerId: string, bufferPath: string): { grantId: string; path: string } {
-    const clean = bufferPath.replace(/^\/+$/u, '').replace(/^\/+/u, '')
-    const first = clean.split('/')[0] ?? ''
-    if (first.length === 0) throw new Error('缓冲区根 `/` 下没有文件，映射目录挂在其下一层；用 action=ls 查看缓冲区结构')
-    const rest = clean.slice(first.length).replace(/^\/+$/u, '')
+    const address = splitBufferPath(bufferPath)
+    if (address === undefined) throw new Error('缓冲区根 `/` 下没有文件，映射目录挂在其下一层；用 action=ls 查看缓冲区结构')
+    const { name, rest } = address
     const matches: { grantId: string }[] = []
     for (const grant of this.heldGrants(callerId)) {
       for (const area of grant.areas) {
-        if (area.as !== undefined && area.as === first) matches.push({ grantId: grant.id })
+        if (area.as !== undefined && area.as === name) matches.push({ grantId: grant.id })
       }
     }
     if (matches.length === 0) {
-      throw new Error(`缓冲区里没有映射「${first}」；用 action=ls 查看当前缓冲区结构`)
+      throw new Error(`缓冲区里没有映射「${name}」；用 action=ls 查看当前缓冲区结构`)
     }
     if (matches.length > 1) {
-      throw new Error(`「${first}」这个映射名在本会话的缓冲区里出现了多次；请让用户整理对应管道的授权`)
+      throw new Error(`「${name}」这个映射名在本会话的缓冲区里出现了多次；请让用户整理对应管道的授权`)
     }
     return { grantId: matches[0].grantId, path: rest.length === 0 ? '.' : rest }
   }

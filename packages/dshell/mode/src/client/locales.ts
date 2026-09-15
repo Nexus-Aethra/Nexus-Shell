@@ -149,6 +149,10 @@ export const zh = {
   'tool.edit': '编辑',
   'tool.search': '搜索',
   'row.user': '你',
+  // A message sent into a turn that was already running, drawn inside the card
+  // it steered: the reader has to be able to tell it from the request that
+  // opened that card.
+  'row.steering': '插话',
   'row.assistant': 'AI',
   'row.reasoning': '思考过程',
   'row.call': '调用',
@@ -335,6 +339,7 @@ export const en = {
   'tool.edit': 'Edit',
   'tool.search': 'Search',
   'row.user': 'You',
+  'row.steering': 'Interjection',
   'row.assistant': 'AI',
   'row.reasoning': 'Thinking',
   'row.call': 'Call',
