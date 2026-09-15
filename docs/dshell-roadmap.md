@@ -2826,8 +2826,11 @@ warm 34 ms, the Tab behind it 1.07 s). Two more pieces:
   The reader gets their list immediately after any pause, and the Tab after it
   sees the new listing.
 
-Measured on the device afterwards: `cd <Tab>` = 2.1 ms, and a Tab a minute after
-the last read still answers in 2 ms with the re-read landing behind it.
+Measured on the device afterwards: `cd <Tab>` = 2.9 ms (was 1.07 s), and a Tab
+12 s after the last read answers in 35 ms with the re-read landing behind it, then
+2.4 ms. In the browser, in a scratch device session, a settled command was
+observed to send the warm itself (an empty-line request, answered in 76 ms) —
+which is the whole trigger, verified where it fires rather than at the route.
 
 **Still open:** a first look at a directory still costs three calls because the
 route asks the seam for `resolve`, `stat` and `listDir` separately; folding those

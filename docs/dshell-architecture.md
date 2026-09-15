@@ -661,10 +661,10 @@ So, four rules:
   shell-integration marker the host's splitter reads (`ESC ] 133 ; D`), and a
   settled command is exactly the moment the world changed while the reader is
   reading its output — so the directory the shell now stands in is read then, in
-  the background, along with the command list. The replay a fresh attach sends
-  carries the marker too, which warms a session nobody has typed in yet. This is
-  the trigger that makes `cd <Tab>` fast, because what that key reads is the
-  directory the *previous* command left the shell in.
+  the background, along with the command list. One warm also goes out when a
+  session is opened, so the first Tab of a session nobody has typed in is warm.
+  This is the trigger that makes `cd <Tab>` fast, because what that key reads is
+  the directory the *previous* command left the shell in.
 - **The host is also sent to look while the reader types.** On an edit, debounced
   250 ms and keyed by everything before the word being typed (so a word costs one
   warm rather than one per character), the browser sends `warm` — the same
@@ -673,14 +673,15 @@ So, four rules:
   the keystroke waits for the answer already on its way instead of buying a
   second one.
 
-Measured after the change, same device: a cold path Tab still costs 1.2 s (the
-price of a first look at a directory nobody has read), and every Tab the reader
-actually feels — run a command, type, Tab — costs **2–6 ms**, including
-`cd <Tab>`, which was the case the keystroke warm alone could not cover (the warm
-fires 250 ms after the last key, so a reader who types and presses Tab inside
-that window still waited for the read: measured warm 34 ms, the Tab behind it
-1.07 s). On this machine nothing regressed: the same requests are 6 ms as before,
-and a warm is a no-op nobody waits for.
+Measured after the change, same device: a cold path Tab for a directory nobody
+has read still costs 1.1 s, and every Tab the reader actually feels costs
+**2–3 ms** — including `cd <Tab>`, which was the case the keystroke warm alone
+could not cover (that warm fires 250 ms after the last key, so a reader who types
+and presses Tab inside that window still waited for the read: measured warm
+34 ms, the Tab behind it 1.07 s; with the settle warm the same Tab is 2.9 ms). A
+Tab 12 s after the last read answers in 35 ms with the re-read landing behind it,
+and 2.4 ms after that. On this machine nothing regressed: the same requests are
+6 ms as before, and a warm is a no-op nobody waits for.
 
 An empty answer carries a **reason code**, not a sentence
 (`DshellCompletionNote`): the route knows why and the browser knows the language,

@@ -183,6 +183,18 @@ export function DshellLeftControls(props: {
       completion.warm(sessionId, draft, draft.length, helpersRef.current.completionShellOracle)
     })
   }, [mode, props.sessionId, pty, completion])
+  // …and once when a session is opened, so the FIRST Tab of a session nobody has
+  // typed in is warm too. The replay a fresh attach sends usually carries the
+  // settle marker, but nothing guarantees this side was subscribed in time to see
+  // it, and one look at the directory the shell starts in is the cheapest way to
+  // make that first key feel like every other one.
+  useEffect(() => {
+    const sessionId = props.sessionId
+    if (mode !== 'shell' || sessionId === undefined) return
+    if (!helpersRef.current.tabCompletion) return
+    const draft = draftRef.current
+    completion.warm(String(sessionId), draft, draft.length, helpersRef.current.completionShellOracle)
+  }, [mode, props.sessionId, completion])
   // A gesture switched off mid-flight must not leave its list behind: the list
   // is the only place its keys are explained, so it goes with them. Which switch
   // owns the open list is the list's own `source` — Tab opened one and ↑ opened
