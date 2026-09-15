@@ -2511,3 +2511,57 @@ Verified against a live harness: route refusals in both languages
 402ms`, host-key line included), and the framework-carried `/new` result
 (`New session created: session-a410b363-…`) — with the language switched back to
 Chinese afterwards.
+
+## Phase 10.19 — a mapped directory's subpaths resolve again
+
+A device session that had been granted the artifact directory could not fetch a
+single file from it. It addressed the grant the way the tool describes
+(`/dist-artifacts/SHA256SUMS-artifacts`) and every `read` / `download` / `upload`
+was refused as out of scope, while `ls` on the same root worked.
+
+The split that turns a buffer path into "which grant" plus "where inside it" kept
+the separator it had just cut on: `rest` came out as `/SHA256SUMS-artifacts`, and
+the containment test refuses an absolute path by design, so the refusal named a
+path the caller had not written. `ls` survived because a lone mapping name
+resolves to `.`. The shape read as permissions, which is why the model spent a
+dozen turns rewriting the path instead of reporting it.
+
+The rule now lives in one place, `splitBufferPath` in
+`packages/dshell/buffer/src/paths.ts`, with the area-relative invariant written
+down as its contract (architecture § 11) — the previous shape was a chain of
+`replace` calls that read as if they stripped separators and did not.
+
+Verified by running the real service over the live grant: the reported call
+resolves to `/home/wpp/nexus/Nexus-Study/dist-artifacts/SHA256SUMS-artifacts` and
+reads the checksum list, as does a nested `read /lab/sub/deep.txt` over a lab
+grant; `ls` on the mapped root is unchanged. The only case that still fails is a
+filename the model had invented — a genuine `ENOENT`, not a scope refusal.
+
+## Phase 10.20 — an interjection stays in the turn it steered
+
+Sending a message while the agent was working produced `agent/inbox/spliced`
+moving the prompt from the next-turn queue into the running turn's `next-step`
+list, and then the durable `user/message` at the next step boundary. The fold
+treated every durable `user/message` as the start of a task, so the interjection
+opened a **second card** inside one turn — and that card carried no turn number.
+`assembleTimeline` places turn-less blocks by timestamp against the shell regions
+rather than by turn, and the next `turn/start` adopts any turn-less open block,
+so the card was also liable to be relabelled as the *next* turn. 轨迹 kept the
+message inside its turn, so the two views of one session disagreed in both order
+and shape.
+
+The fold now reconstructs steering the way dsh's own client does (ui-chat's
+`SteeringHistory`): a `next-step` splice that is not cancelled hands its removed
+ids to the running turn, and the `user/message` naming one of them joins that
+turn's open block, marked 插话 / Interjection, at the point it arrived. The card
+also cuts its rows into one segment per human message, so a request sent mid-turn
+is drawn after the work it interrupted rather than hoisted next to the request
+that opened the card; a card with one request renders exactly as before.
+
+Verified against the session that reported it: the card count dropped from four
+to three, the interjection row sits inside the turn-2 card between the work that
+preceded it and the answer it produced, and 轨迹's row order for the same turn is
+工具 → 上下文 → 用户 → 助手. The one remaining difference between the surfaces is
+deliberate and older: the injected terminal-context notice is a context row in
+轨迹 and is not drawn in 会话, because plugin-sourced messages are model input
+rather than the reader's words.
