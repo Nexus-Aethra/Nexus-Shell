@@ -32,6 +32,24 @@ const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
  */
 const WARM_DELAY_MS = 250
 
+/**
+ * The shell-integration report that closes a command record: `ESC ] 133 ; D`.
+ *
+ * The host's splitter reads the same bytes for the exit code, so this is the
+ * existing, already-trusted signal for "a command finished" — no new channel and
+ * nothing to keep in step.
+ */
+const COMMAND_DONE_MARKER = '\u001b]133;D'
+
+/**
+ * How often a settled command may start a warm.
+ *
+ * A command's output arrives in many chunks and each one may carry the marker
+ * (a prompt redraw reprints it), so the signal is throttled rather than trusted
+ * to be rare. One warm a second is far more than a reader can type into.
+ */
+const WARM_AFTER_COMMAND_MS = 1_000
+
 /** The completion seat, created once per browser face and shared with the list. */
 export interface DshellInputCompletion {
   readonly completion: ShellCompletion
@@ -135,6 +153,48 @@ export function DshellLeftControls(props: {
     if (mode !== 'shell' || props.sessionId === undefined || !helpers.commandHint) { hints.clear(); return }
     hints.offer(String(props.sessionId), draft)
   }, [mode, props.sessionId, draft, hints, helpers.commandHint])
+  // A settled command is the moment the world changed while the reader is
+  // reading its output: the shell may have moved, a directory may have gained or
+  // lost files, and the next Tab — `cd <Tab>`, `ls <Tab>` — reads exactly that
+  // directory. Reading it NOW costs nothing the reader can feel, and it is what
+  // turns a path completion after a pause from a second of waiting into a local
+  // match on a device (see the host's `readings.ts`).
+  //
+  // The signal is the shell-integration report the bridge already relies on, and
+  // it also rides the replay a fresh attach sends — which is what warms the first
+  // Tab of a session nobody has typed in yet.
+  useEffect(() => {
+    const sessionId = props.sessionId
+    if (mode !== 'shell' || sessionId === undefined || pty === undefined) return
+    let tail = ''
+    let last = 0
+    return pty.onChunk((chunkSession, chunk) => {
+      if (chunkSession !== sessionId) return
+      // The marker can straddle two chunks, so the check carries a little of the
+      // previous text rather than trusting the frame boundary.
+      const text = tail + chunk.text
+      tail = text.slice(-24)
+      if (!text.includes(COMMAND_DONE_MARKER)) return
+      const now = Date.now()
+      if (now - last < WARM_AFTER_COMMAND_MS) return
+      last = now
+      if (!helpersRef.current.tabCompletion) return
+      const draft = draftRef.current
+      completion.warm(sessionId, draft, draft.length, helpersRef.current.completionShellOracle)
+    })
+  }, [mode, props.sessionId, pty, completion])
+  // …and once when a session is opened, so the FIRST Tab of a session nobody has
+  // typed in is warm too. The replay a fresh attach sends usually carries the
+  // settle marker, but nothing guarantees this side was subscribed in time to see
+  // it, and one look at the directory the shell starts in is the cheapest way to
+  // make that first key feel like every other one.
+  useEffect(() => {
+    const sessionId = props.sessionId
+    if (mode !== 'shell' || sessionId === undefined) return
+    if (!helpersRef.current.tabCompletion) return
+    const draft = draftRef.current
+    completion.warm(String(sessionId), draft, draft.length, helpersRef.current.completionShellOracle)
+  }, [mode, props.sessionId, completion])
   // A gesture switched off mid-flight must not leave its list behind: the list
   // is the only place its keys are explained, so it goes with them. Which switch
   // owns the open list is the list's own `source` — Tab opened one and ↑ opened

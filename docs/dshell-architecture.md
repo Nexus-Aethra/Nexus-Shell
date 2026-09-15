@@ -645,27 +645,42 @@ ssh …`, so each call pays a transient systemd scope, a Node process and tsx
 transpiling dsh's runner. That price belongs to the harness, not to dshell, and
 the only thing this side controls is **how many calls a keystroke makes**.
 
-So, three rules:
+So, four rules:
 
 - **The fast pass stops reading when the shell is going to answer.** For a flag
   or a bare word, the directory listing is the *fallback* for a shell that turns
   out to have nothing, so it is deferred to the refine pass that discovers that —
   and paid for only then. The answer the reader sees first is the shell's.
-- **A reading is remembered for a few seconds** (`files/src/readings.ts`), which
-  is what turns "Tab, Tab, Tab" in one directory into one read; the life is short
-  because a listing is the answer a reader compares against their own screen.
-- **The host is sent to look BEFORE the key is pressed.** While the reader types,
-  the browser sends `warm` — the same question `complete` would ask with the
-  answer thrown away — debounced by 250 ms and keyed by everything before the
-  word being typed, so a word costs one warm rather than one per character. The
-  host warms both halves (the shell probe AND the directory this side would answer
-  from), because the fallback is one of them. A Tab that arrives while a warm is
-  still on the wire JOINS it: both caches are single-flight, so the keystroke
-  waits for the answer already on its way instead of buying a second one.
+- **A reading is remembered, and answered from memory while it is merely old**
+  (`files/src/readings.ts`): fresh for three seconds, still served for up to a
+  minute — with the refresh started BEHIND the answer rather than in front of the
+  reader — and not served at all past that. This is what makes a Tab instant
+  after a pause without ever presenting a listing nobody has checked as if it
+  were current: the next Tab sees the refreshed one.
+- **The reading happens when a command settles.** The client watches the same
+  shell-integration marker the host's splitter reads (`ESC ] 133 ; D`), and a
+  settled command is exactly the moment the world changed while the reader is
+  reading its output — so the directory the shell now stands in is read then, in
+  the background, along with the command list. One warm also goes out when a
+  session is opened, so the first Tab of a session nobody has typed in is warm.
+  This is the trigger that makes `cd <Tab>` fast, because what that key reads is
+  the directory the *previous* command left the shell in.
+- **The host is also sent to look while the reader types.** On an edit, debounced
+  250 ms and keyed by everything before the word being typed (so a word costs one
+  warm rather than one per character), the browser sends `warm` — the same
+  question `complete` would ask with the answer thrown away. A Tab that arrives
+  while a warm is still on the wire JOINS it: both caches are single-flight, so
+  the keystroke waits for the answer already on its way instead of buying a
+  second one.
 
-Measured after the change, same device: a cold path Tab still costs 1.2 s (the
-price of a first look), and every Tab the reader actually feels — type, pause,
-Tab — costs **2–6 ms**. On this machine nothing regressed: the same requests are
+Measured after the change, same device: a cold path Tab for a directory nobody
+has read still costs 1.1 s, and every Tab the reader actually feels costs
+**2–3 ms** — including `cd <Tab>`, which was the case the keystroke warm alone
+could not cover (that warm fires 250 ms after the last key, so a reader who types
+and presses Tab inside that window still waited for the read: measured warm
+34 ms, the Tab behind it 1.07 s; with the settle warm the same Tab is 2.9 ms). A
+Tab 12 s after the last read answers in 35 ms with the re-read landing behind it,
+and 2.4 ms after that. On this machine nothing regressed: the same requests are
 6 ms as before, and a warm is a no-op nobody waits for.
 
 An empty answer carries a **reason code**, not a sentence

@@ -2808,6 +2808,30 @@ went out in 41 ms, the Tab's own request took 6 ms, and the completion applied
 (`/va` → `/var/`). The local session's timings are unchanged (6 ms), and a warm
 there is a no-op nobody waits for.
 
+**The follow-up the first cut did not cover: `cd <Tab>`.** Reported next, and
+rightly: a keystroke warm fires 250 ms after the last key, so a reader who types
+`cd ` and presses Tab inside that window still waited for the read (measured:
+warm 34 ms, the Tab behind it 1.07 s). Two more pieces:
+
+- **The reading is taken when a command SETTLES**, not only when a key is
+  pressed. The client watches the shell-integration marker the host's splitter
+  already reads (`ESC ] 133 ; D`), and a settled command is the moment the world
+  changed while the reader reads its output; the directory the shell now stands
+  in is read then, plus the command list. A blank line — what the composer holds
+  after a send — now means "warm the session's own directory", because that is
+  what `cd <Tab>` and `ls <Tab>` both read, and the replay a fresh attach sends
+  carries the marker too, so a session nobody has typed in is warmed as well.
+- **A reading that is merely old answers at once**, with its refresh started
+  behind the answer (fresh for 3 s, served for up to 60 s, refused past that).
+  The reader gets their list immediately after any pause, and the Tab after it
+  sees the new listing.
+
+Measured on the device afterwards: `cd <Tab>` = 2.9 ms (was 1.07 s), and a Tab
+12 s after the last read answers in 35 ms with the re-read landing behind it, then
+2.4 ms. In the browser, in a scratch device session, a settled command was
+observed to send the warm itself (an empty-line request, answered in 76 ms) —
+which is the whole trigger, verified where it fires rather than at the route.
+
 **Still open:** a first look at a directory still costs three calls because the
 route asks the seam for `resolve`, `stat` and `listDir` separately; folding those
 into one device command would cut a cold Tab to ~0.4 s, and it belongs in
