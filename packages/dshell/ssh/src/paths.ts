@@ -9,10 +9,20 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { DSHELL_HOME_ENV } from '@nexus-aethra/dshell-std'
 
-/** The harness home these paths live under, honouring `DSH_HOME`. */
+/**
+ * The harness home these paths live under.
+ *
+ * Three sources, in the order a reader would expect: dshell's own data root
+ * (which the host half exports under the variable below before anything here
+ * asks), then the harness's home, then `~/.dsh`. The first is not an alias for
+ * the second — see `DSHELL_HOME_ENV`: moving dsh's home takes sessions and
+ * settings with it, and a reader who only wants dshell's files on another disk
+ * has to be able to say so.
+ */
 export function harnessHome(): string {
-  return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return process.env[DSHELL_HOME_ENV] ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
 }
 
 /** Device directory: registry, secrets, askpass helper, bindings, control sockets. */

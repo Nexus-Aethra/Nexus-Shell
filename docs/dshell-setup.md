@@ -275,6 +275,37 @@ the three dshell bundles (`dshell-conversation`,
 `dshell-terminal-bridge`, `dshell-mode`). Verified in-browser
 on 2026-09-09.
 
+## The data directory
+
+dshell's own files live under a harness home — `$DSH_HOME`, else `~/.dsh` — in
+two trees: `dshell/` (device registry and keys, buffer state, session tags, the
+mount points device sessions stand in) and `dshell-pty/` (transcripts, their
+timelines, the history database). Nothing else of dsh's is in them, which is why
+they can be moved on their own.
+
+Settings → 插件 → the dshell card has a 数据目录 row: 「选择…」 opens a picker that
+browses THIS machine's directories (the harness's, not a device's), 恢复默认 puts
+the choice back to the harness home. Two properties worth knowing before using
+it:
+
+- **It takes effect at the next start**, because a running harness cannot move
+  files it is writing, and the next start MOVES the trees above rather than
+  copying them. Two things deliberately stay behind: `dshell/mnt/**` (each
+  directory is a session's working directory, which dsh recorded as an absolute
+  path) and `dshell/ssh/ctl/**` (Unix sockets belonging to the running process).
+  Nothing at the destination is overwritten; a collision is reported on stderr
+  and left alone on both sides.
+- **Clearing the field brings the files back.** The default root keeps a record
+  of where its data went (`dshell/.dshell-data-root`), so 恢复默认 relocates them
+  home at the next start instead of leaving the reader with an empty registry.
+
+For scripted deployments, `DSHELL_HOME` overrides the directory from outside and
+takes precedence over the setting. It deliberately never migrates anything: a
+`DSHELL_HOME=/tmp/scratch dsh web` used as a sandbox must not relocate real data.
+
+`docs/dshell-architecture.md` § 15 has the full rules, including why the choice is
+published to the other plugins as a service rather than an environment variable.
+
 ## Where to go next
 
 - Read [`dshell-design.md`](./dshell-design.md) and

@@ -16,6 +16,7 @@
  */
 
 export * from './contracts.js'
+export * from './data-root.js'
 export * from './host-copy.js'
 export * from './shell-line.js'
 export * from './storage.js'

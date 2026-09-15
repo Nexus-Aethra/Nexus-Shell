@@ -9,10 +9,18 @@
 
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, sep } from 'node:path'
+import { DSHELL_HOME_ENV } from '@nexus-aethra/dshell-std'
 
-/** The harness home these paths live under, honouring `DSH_HOME`. */
+/**
+ * The harness home these paths live under.
+ *
+ * dshell's own data root wins over the harness's, then `~/.dsh` — the same
+ * three-source rule `dshell-ssh` uses (see `DSHELL_HOME_ENV`), because a
+ * deployment that moved one dataset and not the other would leave a reader's
+ * buffer state behind on the old disk.
+ */
 export function harnessHome(): string {
-  return process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return process.env[DSHELL_HOME_ENV] ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
 }
 
 /** Buffer state root: one document holding links, tickets and grants. */

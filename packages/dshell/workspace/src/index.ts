@@ -20,7 +20,8 @@
 
 import { join } from 'node:path'
 import { hostCopy } from './host-locales.js'
-import type { HostCopy } from '@nexus-aethra/dshell-std'
+import type { DshellDataRootSeat, HostCopy } from '@nexus-aethra/dshell-std'
+import { DSHELL_DATA_ROOT_SERVICE } from '@nexus-aethra/dshell-std'
 import { Service, type Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the agents service merge (ctx.agents).
 import type {} from '@deepseek-ai/dsh-agent'
@@ -73,13 +74,43 @@ class DshellWorkspaceRegistry extends Service {
   }
 }
 
+/**
+ * Required service: dshell's settled data root. The archive tags live under it
+ * and the load-time purge drain reads them during composition, so this apply
+ * waits for the decision rather than racing it (see `std/data-root.ts`).
+ */
+export const inject = [DSHELL_DATA_ROOT_SERVICE] as const
+
 export function apply(ctx: Context): void {
   ctx.plugin(DshellWorkspaceRegistry)
-  const tags = new SessionTagStore(join(dshHome(), 'dshell', 'tags.json'))
-  // Load-time drain: purges scheduled while their sessions were loaded. This
-  // runs during composition, before a client can resume anything, which is
-  // the only window where those log writers are guaranteed gone.
-  void drainPendingPurges(tags)
+  // The tag document lives at dshell's data root, which is a SETTING: it is
+  // settled by dshell-mode a few milliseconds after this package activates, so
+  // anything here that resolves that path during composition waits for it first
+  // (see `std/data-root.ts`). Waiting costs nothing — the drain below is the
+  // only composition-time reader, and it still runs before a client can resume
+  // a session, which is the window it exists for.
+  void (async () => {
+    const plan = await (ctx.get(DSHELL_DATA_ROOT_SERVICE) as DshellDataRootSeat).settled
+    if (plan.source !== 'harness') {
+      // Worth a line only when it is not the harness's own directory; the
+      // default deployment stays quiet (dshell-mode reports the choice).
+      console.info(`dshell-workspace: session tags are read from ${plan.root}`)
+    }
+    const tags = new SessionTagStore(() => join(dshHome(), 'dshell', 'tags.json'))
+    // Load-time drain: purges scheduled while their sessions were loaded. This
+    // runs during composition, before a client can resume anything, which is
+    // the only window where those log writers are guaranteed gone.
+    void drainPendingPurges(tags)
+    installPanel(ctx, tags)
+  })()
+}
+
+/**
+ * Install the session panel: its route, its client seats, and its menu.
+ * @param ctx - host context.
+ * @param tags - the archive tag store.
+ */
+function installPanel(ctx: Context, tags: SessionTagStore): void {
   ctx.inject(['sessions', 'agents', 'connection', 'dshellHostCopy'], (panelCtx) => {
     // This package compiles its host and client halves in one program, so the
     // client contract's `Context.sessions` (ISessions) merges over the host
@@ -130,4 +161,4 @@ export function apply(ctx: Context): void {
   })
 }
 
-export default { name, apply }
+export default { name, inject, apply }

@@ -45,6 +45,25 @@ export const COMMAND_HINT_FIELD = 'commandHint'
 export const SHELL_ORACLE_FIELD = 'completionShellOracle'
 
 /**
+ * Field naming dshell's own data root — the directory its `dshell/` and
+ * `dshell-pty/` trees are resolved under.
+ *
+ * The one field here the HOST reads for itself: every other value travels to
+ * the browser and stops there, while this one becomes `DSHELL_HOME` before any
+ * path helper asks for a path (see `data-root.ts`). It is also the one field
+ * whose change is not live — a process cannot move its own data root out from
+ * under files it is writing, so the next start applies it and the card says so.
+ *
+ * The empty string means "follow the harness home", which is why the default is
+ * empty rather than a path: a default spelling out `~/.dsh` would be a decision
+ * taken at build time about a machine that has not been seen yet.
+ */
+export const DATA_DIR_FIELD = 'dataDir'
+
+/** Value meaning "no override": resolve under the harness home, as before the field existed. */
+export const DATA_DIR_DEFAULT = ''
+
+/**
  * Palette ids, in the order the picker shows them. The colours for each id
  * live in `client/theme.ts`; only the vocabulary is shared, so the Host schema
  * and the browser registry cannot drift apart.
@@ -87,6 +106,8 @@ export interface DshellSettings {
   commandHint: boolean
   /** Whether completion may ask the session's own shell for the rest. */
   completionShellOracle: boolean
+  /** Directory dshell's own files live under; empty follows the harness home. */
+  dataDir: string
 }
 
 /**
@@ -116,4 +137,21 @@ export function readShellHelper(value: unknown, field: DshellShellHelper): boole
   if (value === null || typeof value !== 'object') return SHELL_HELPER_DEFAULT
   const stored = (value as Record<string, unknown>)[field]
   return typeof stored === 'boolean' ? stored : SHELL_HELPER_DEFAULT
+}
+
+/**
+ * Read the data-root field from a settings value of unknown shape.
+ *
+ * Same per-field reading as {@link readShellHelper}, with a different default:
+ * a value that is not a string means "follow the harness home", so a document
+ * written by an older dshell (which had no such field) resolves to the paths
+ * that dshell used before rather than to a root nobody chose.
+ *
+ * @param value - the bound settings value, possibly partial or absent.
+ * @returns the stored directory, or the empty string for the harness home.
+ */
+export function readDataDir(value: unknown): string {
+  if (value === null || typeof value !== 'object') return DATA_DIR_DEFAULT
+  const stored = (value as Record<string, unknown>)[DATA_DIR_FIELD]
+  return typeof stored === 'string' ? stored.trim() : DATA_DIR_DEFAULT
 }

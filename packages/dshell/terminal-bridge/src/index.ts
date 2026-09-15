@@ -36,11 +36,12 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import { BlockLog, blockLogPath } from './blocks.js'
 import { PtyBuffer } from './buffer.js'
 import { closeHistoryStore } from '@nexus-aethra/dshell-storage'
-import { HISTORY_STORE_FILENAME, type HistoryOutputSlice } from '@nexus-aethra/dshell-std'
+import { HISTORY_STORE_FILENAME, DSHELL_HOME_ENV, type HistoryOutputSlice } from '@nexus-aethra/dshell-std'
 import { CommandHistory, commandHistoryPath, forgetSessionHistory, MAX_COMMAND_HISTORY, type PersistedCommand } from './history.js'
 import { hostCopy, type DshellTerminalBridgeHostTranslator } from './host-locales.js'
 import { createHostCopy } from './host-copy.js'
 import { createLocaleRoute } from './locale-route.js'
+import { createDirsRoute } from './dirs-route.js'
 import { DshellPtyBackend, diagnosticTail, exitLabel, type DshellPtySession } from './pty.js'
 import { createPtyRoute } from './route.js'
 import { createStreamRoutes } from './stream.js'
@@ -140,9 +141,17 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** dshell PTY log directory: $DSH_HOME/dshell-pty. */
+/**
+ * dshell PTY log directory: `<data root>/dshell-pty`.
+ *
+ * The root is dshell's own when a data directory is configured, the harness's
+ * otherwise (`DSHELL_HOME_ENV`, then `DSH_HOME`, then `~/.dsh`) — the same rule
+ * `dshell-ssh` and `dshell-buffer` resolve their own trees with, so every
+ * dshell dataset moves together or none does.
+ */
 export function ptyLogDir(): string {
-  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dshell-pty')
+  const home = process.env[DSHELL_HOME_ENV] ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'dshell-pty')
 }
 
 /** Default canvas size for a spawned main shell; the browser resizes it. */
@@ -1707,6 +1716,14 @@ export function apply(ctx: Context): void {
     connectionCtx.effect(
       () => connectionCtx.connection.fetch.register(createLocaleRoute(copy)),
       'dshell-bridge: locale report route',
+    )
+    // The settings card's folder picker lists THIS machine's directories: the
+    // card cannot call a native dialog (a page has no host file system) and the
+    // harness is not necessarily the machine drawing it — see the route's own
+    // header for why it belongs beside the locale report.
+    connectionCtx.effect(
+      () => connectionCtx.connection.fetch.register(createDirsRoute()),
+      'dshell-bridge: directory browser route',
     )
   })
   ctx.plugin(DshellTerminalBridge)
