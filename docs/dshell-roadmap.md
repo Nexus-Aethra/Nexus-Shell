@@ -2609,3 +2609,64 @@ the six candidates with a `$` glyph and a 命令 / command hint, a unique prefix
 fills itself in with the trailing space a shell writes (`docker-p<Tab>` →
 `docker-proxy `), and `zzzznotacommand<Tab>` answers 本会话的世界里没有以这个前缀
 开头的命令.
+
+## Phase 10.22 — Tab reads the line before it answers
+
+10.21 made the first word complete, but the rule it used was "the first word is
+the command", and the client kept a second copy of the rule ("a slash means a
+path") to decide when to stay quiet. Two copies of one rule is a bug with a
+delay on it, and the first word is not where commands live anyway: `sudo dock`,
+`pwd; host`, `echo $(dock` and `xargs dock` all name a command in the second,
+third or fourth position, and every one of them completed as a PATH until now.
+
+So the position became a property of the LINE, read once, by both halves, from
+`packages/dshell/std/src/shell-line.ts`: tokenize up to the caret (quotes
+respected, unterminated quotes kept whole), walk the tokens before it, and report
+`command | argument | flag | redir` plus the span a completion replaces. Every
+entry in the walk is a fact about bash's grammar, and three of them are the ones
+that were wrong before:
+
+- **Wrapper words and list keywords do not become the command.** `sudo`, `env`,
+  `time`, `xargs`, `if`, `then`, `do` hand the command position to the next word —
+  so `sudo dock<Tab>` now lists `docker…`, and it is instant, because the names
+  come from the cache 10.21 built rather than from a process.
+- **A descriptor duplication is not a redirection.** `2>&1` names no file, so the
+  word after it is still an ordinary argument; `>` names one, so `ls > <Tab>` and
+  even `ls ><Tab>` list the directory — which is what bash does there.
+- **A dash word is a flag only after the command is named**, and a lone `-` is the
+  stdin convention rather than a flag prefix.
+
+`cd` and its relatives now take directories only. There is deliberately no mirror
+rule for "files only": a path is completed a segment at a time, so
+`> logs/app.log<Tab>` has to pass through `logs/`, and the honest rule is "any
+path" for both a redirection and an argument. A flag is answered with NOTHING
+until the shell oracle can be asked — the directory's files would be the wrong
+KIND of answer for `-la`, and silence is not a lie.
+
+The wire carries the position (`DshellCompletion.position`), which is what the
+client's silence rule reads instead of re-deriving it: `echo hi<Tab>` stays quiet
+because `hi` is a word and not a failed path, `dockz<Tab>` gets 本会话的世界里没有
+以这个前缀开头的命令, `ls none/<Tab>` gets 目录不存在, and a flag gets nothing at
+all.
+
+The repo also gained its first test rig for this: root `vitest`, a config that
+aliases the standard layer to its SOURCE so specs need no build, and
+`std/tests/shell-line.spec.ts`, which drives the scanner with lines that were
+really typed — `sudo rm -rf ./*`, `pwd; hostname; id -un`, `sudo apt list | grep
+mini`, `test -f x && dock`, `make 2>&1 | tail -5`, `ls > out`, and the init line
+the terminal bridge feeds. 21 assertions, and the two that failed first were real
+bugs in the walk (a command outliving its own command position, and `FOO='a b'`
+stopping being an assignment because its VALUE was quoted).
+
+Verified against both worlds with `fetch` and then with real key events:
+`sudo dock<Tab>` and `pwd; host<Tab>` list commands (the device answers
+`docker-compose`, this machine `docker-credential-ecr-login`), `cd <Tab>` lists 28
+entries of kind `directory` and nothing else, `ls > <Tab>` lists 37 files and
+directories, `cd nexus<Tab>` fills in `nexus/`, and the two `<Tab>` presses that
+cycle a list still move the highlight and write the candidate into the draft.
+
+**Still open, and the next phase:** flag and subcommand candidates (`docker r<Tab>`
+→ `rename restart rm rmi run`), which need the world's own bash-completion asked
+in a separate process; and the facts the file system cannot have — an `alias`, a
+shell function, or a `PATH` a profile changed, none of which are in the command
+list today.

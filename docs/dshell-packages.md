@@ -33,7 +33,10 @@ when it contributes to model-visible state.
 
 - Role: **the standard layer**. It owns what every other package would
   otherwise re-implement: the `/api/dshell/*` paths and the wire shapes
-  that cross them (`src/contracts.ts`), and — as the refactor continues —
+  that cross them (`src/contracts.ts`), the shell line's own reading
+  (`src/shell-line.ts`: tokenizer plus position classifier, a pure
+  function both halves of completion call so neither keeps its own copy
+  of the rule), and — as the refactor continues —
   the dsh seam adapters (route definition, session/world addressing,
   capability probing).
 - Why it exists: a dsh interface change used to land N times, once per
@@ -45,8 +48,10 @@ when it contributes to model-visible state.
   hand because there was nowhere shared to put them — drift there is a
   404 at runtime, not a compile error.
 - The rule that keeps it useful: it declares FACTS (paths, shapes,
-  adapters), never feature behaviour, and it is the only dshell package
-  allowed to care how dsh spells things.
+  adapters) and the pure readings two halves of one feature must agree on
+  (the shell line), never feature behaviour — nothing in it talks to a
+  service, a filesystem, or the network — and it is the only dshell
+  package allowed to care how dsh spells things.
 - dsh services depended on: none. This is deliberate — it is the layer
   that absorbs dsh changes, so it must not be spread across the graph.
 - Introduced in: the standard-layer refactor (contracts extraction,
@@ -183,8 +188,10 @@ when it contributes to model-visible state.
   with plan / AI terminal / subagents / breakpoint / pipe-task / link
   rows whose details open on click.
   In shell mode the composer additionally owns two reading gestures,
-  both in this package's browser face: Tab path completion
-  (`completion.ts`, resolved host-side by `dshell-files`' `complete`)
+  both in this package's browser face: Tab completion
+  (`completion.ts`, which reads the position off the line with the
+  standard layer's scanner and has `dshell-files`' `complete` resolve it
+  in the session's own world)
   and the command hint (`command-hint.ts`) — the tail of a recent
   command ghosted at the caret and taken one word at a time with the
   right arrow, read from the terminal bridge's per-session history.
@@ -328,9 +335,13 @@ when it contributes to model-visible state.
     execution world. `cd` sends the session's main shell into one such
     directory, through the terminal bridge's own input path — the same
     one a keystroke takes, so the command is tracked and rendered like
-    any typed command. `complete` answers one line's Tab: it splits the
-    token under the cursor, reads the directory it names in that world,
-    and returns the span plus the candidates — **matched with ASCII
+    any typed command. `complete` answers one line's Tab: the standard
+    layer's scanner reads what the line expects at the caret (a command
+    name, an argument, a flag, or a redirection's target), the route
+    picks the source accordingly — the world's `PATH` plus builtins for a
+    command, one directory read in that world for a path, directories
+    only after `cd` — and returns the span, the position and the
+    candidates — **matched with ASCII
     capitals folded**, because the comparison is a guess about what the
     reader meant while every path it looks up stays exact, and a
     candidate keeps its real spelling so choosing it (or being the only

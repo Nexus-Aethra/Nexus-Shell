@@ -22,7 +22,7 @@
 import { createElement, useEffect, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from 'react'
 import {
   DSHELL_FILES_PATH, DSHELL_PTY_PATH,
-  type DshellCompletionCandidate, type DshellCompletionNote,
+  type DshellCompletionCandidate, type DshellCompletionNote, type ShellPosition,
 } from '@nexus-aethra/dshell-std'
 import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: pulls the Conversation SlotMap (`conversation.input.overlay`) and
@@ -55,6 +55,15 @@ export interface CompletionState {
    * host sent.
    */
   readonly source: 'path' | 'command' | 'history'
+  /**
+   * Where in the line the completion happened, as the host's line scanner read
+   * it (`std/shell-line.ts`). Carried because the browser needs it to decide
+   * whether an empty answer is worth showing — and because deciding that from
+   * the token's shape here is exactly the second copy of the position rule that
+   * this feature was rebuilt to remove. Undefined for history, whose "line" is a
+   * whole command from the past.
+   */
+  readonly position: ShellPosition | undefined
   /** Offsets in the draft the candidates replace (the basename, not the prefix). */
   readonly start: number
   readonly end: number
@@ -196,15 +205,19 @@ export function createShellCompletion(): ShellCompletion {
         start: number
         end: number
         dir: string
+        position: ShellPosition
         candidates: readonly CompletionCandidate[]
         note?: DshellCompletionNote
       }
       return {
         sessionId,
-        // `dir` is the literal `PATH` when the host completed the command word
-        // and a directory otherwise, which is exactly how the two sources are
-        // told apart — one string the host already had to send.
-        source: value.dir === 'PATH' ? 'command' : 'path',
+        // The command position is the one the host read off the line: the last
+        // word before this one was not a command, so this word is its name. It
+        // used to be inferred here from the literal `dir === 'PATH'`, which was
+        // one string away from being wrong the moment a second source answered
+        // commands — and it is no longer the client's business either way.
+        source: value.position === 'command' ? 'command' : 'path',
+        position: value.position,
         start: value.start,
         end: value.end,
         dir: value.dir,
@@ -239,6 +252,7 @@ export function createShellCompletion(): ShellCompletion {
       return {
         sessionId,
         source: 'history',
+        position: undefined,
         // A command replaces the whole line, so the span is all of it.
         start: 0,
         end: draft.length,

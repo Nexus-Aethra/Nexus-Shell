@@ -16,6 +16,7 @@
     "build:host": "pnpm -r --filter @nexus-aethra/dshell-* run build:host",
     "build:client": "pnpm -r --filter @nexus-aethra/dshell-* run build:client",
     "typecheck": "tsc -b tsconfig.host.json && tsc -b tsconfig.client.json",
+    "test": "vitest run",
     "package:linux": "node scripts/package-linux.mjs",
     "package:linux:dir": "node scripts/package-linux.mjs --dir",
     "package:linux:prepare": "node scripts/package-linux.mjs --prepare-only",
@@ -24,7 +25,8 @@
   "devDependencies": {
     "@types/node": "^24",
     "tsx": "^4.23.13",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.1"
   },
   "pnpm": {
     "overrides": {

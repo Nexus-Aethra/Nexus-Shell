@@ -9,6 +9,7 @@ import {
 } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import { readShellCaret, type ShellCaret } from '@nexus-aethra/dshell-std'
 import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShellCompletion } from './completion.js'
@@ -211,22 +212,21 @@ export function DshellLeftControls(props: {
     }
     const pathLike = (token: string): boolean =>
       token.startsWith('/') || token.startsWith('.') || token.startsWith('~') || token.includes('/')
-    // The line's last whitespace-delimited token, plus whether a word precedes
-    // it. The caret is assumed to be at the end of the draft, which is where
-    // shell lines are typed. Whitespace at the end is NOT trimmed: a draft
-    // ending in a space is starting a NEW argument, and that empty token is
-    // what makes `ls <Tab>` list the directory instead of reading the whole
-    // draft as the bare command word `ls`.
-    const tokenOf = (text: string): { token: string; argument: boolean } => {
-      const cut = Math.max(
-        text.lastIndexOf(' '), text.lastIndexOf('\t'), text.lastIndexOf('\n'),
-      )
-      if (cut < 0) return { token: text, argument: false }
-      return {
-        token: text.slice(cut + 1),
-        argument: text.slice(0, cut).trim().length > 0,
-      }
-    }
+    /**
+     * Whether an empty answer is worth a card.
+     *
+     * "No matches" is the shell's answer to a path that is not there, and the
+     * reader is owed it when a word was really up for completion. A bare word in
+     * an argument position (`echo hi<Tab>`) is not a failed completion — `hi` is
+     * just a word, and a card saying nothing matched would be noise; a word
+     * carrying a slash (`ls none/<Tab>`) is a path request, so its miss is
+     * reported. The position comes from the line scanner, so this rule and the
+     * host's dispatch agree by construction rather than by both sides
+     * remembering the same rule.
+     */
+    const worthSaying = (caret: ShellCaret): boolean =>
+      caret.position === 'command' || caret.position === 'redir'
+      || caret.position === 'flag' || pathLike(caret.dirPart + caret.prefix)
     const onCompletionKey = (event: KeyboardEvent): boolean => {
       const sessionId = sessionIdRef.current
       if (modeRef.current !== 'shell' || sessionId === undefined || clearDraft === undefined) return false
@@ -262,29 +262,23 @@ export function DshellLeftControls(props: {
         && draftRef.current === draftNow
         && helpersRef.current[gesture]
       /**
-       * Ask the host for the candidates under `token` and put the answer up.
+       * Ask the host for the candidates under the caret and put the answer up.
        *
-       * Shared by a fresh Tab and by Enter descending into a directory, so both
-       * land the same way: one candidate is applied and closes the list (a
-       * directory with its slash, which is how the shell's rhythm resumes), and
-       * a bare ARGUMENT word with no match stays silent rather than showing a
-       * card.
+       * The whole gesture lands here: one candidate is applied and closes the
+       * list (a directory with its slash, which is how the shell's rhythm
+       * resumes), several open it, and an empty answer the reader was not owed
+       * stays quiet rather than showing a card.
        *
-       * @param wanted - whether the reader asked about a command or a path. The
-       *   two sources are silent about different things: `echo hi<Tab>` is not a
-       *   failed completion and says nothing, while a command that matched
-       *   nothing is a real answer ("this world has no such command") and is
-       *   worth the card.
+       * @param caret - the line's reading, from the shared scanner. The request
+       *   carries the line and the caret offset, not the token: the host reads
+       *   the line itself, so it is the one that decides what is where.
        */
-      const ask = (sid: string, draftNow: string, token: string, wanted: 'path' | 'command'): void => {
+      const ask = (sid: string, draftNow: string, caret: ShellCaret): void => {
         dismissStock()
-        void completion.request(sid, draftNow, draftNow.length).then((state) => {
+        void completion.request(sid, draftNow, caret.end).then((state) => {
           if (!stillWanted(sid, draftNow, 'tabCompletion')) return
           if (state === null) { completion.store.set(null); return }
-          // A bare word with no match is more likely a non-path argument
-          // (`echo hi<Tab>`) than a failed path completion, so it stays quiet:
-          // the shell's own answer to "no matches" is silence, not a card.
-          if (state.items.length === 0 && wanted === 'path' && !pathLike(token)) { completion.store.set(null); return }
+          if (state.items.length === 0 && !worthSaying(caret)) { completion.store.set(null); return }
           if (state.items.length === 1) {
             const next = completion.apply(state, 0, draftNow)
             if (next !== undefined) writeDraft(next.text)
@@ -382,37 +376,33 @@ export function DshellLeftControls(props: {
         if (open !== null && stales) completion.store.set(null)
         return false
       }
-      // A fresh Tab: ask the host for the candidates under this token.
+      // A fresh Tab: ask the host for the candidates under the caret.
       // Switched off, Tab is the browser's again — which in a composer is what
       // it always was: the next focusable control below.
       if (!helpersRef.current.tabCompletion) return false
       const draftNow = draftRef.current
-      const { token, argument } = tokenOf(draftNow)
+      // The caret is at the end of the draft: the composer IS the input line, and
+      // a shell line is typed left to right. The scanner is the SAME one the host
+      // answers with (`std/src/shell-line.ts`), so the two halves cannot disagree
+      // about what sits at the caret. It used to be decided here instead, by a
+      // second local rule (first word = command, a slash = path), and the two
+      // copies of the rule drifted the moment a line was more than one word.
+      const caret = readShellCaret(draftNow, draftNow.length)
+      // Nothing to complete: a blank line, or an operator under the caret (which
+      // names no word at all). Tab still must not leave the input — letting it
+      // fall through is what landed the user on the composer's buttons. Shift+Tab
+      // is left alone as the way back out.
+      if (caret === undefined) return !event.shiftKey
       // dsh's own triggers keep their keys: `@` is its file reference, whose
       // menu the stock pipeline arbitrates (a leading slash never reaches here —
       // see stockCommand).
-      if (token.startsWith('@')) return false
-      // The line's first word is the COMMAND, and the host completes it from the
-      // commands the session's world offers; a token after it is an argument, so
-      // it names a path even without a slash (`ls comp<Tab>` completes against
-      // the tracked cwd). A first token that is spelled like a path is still a
-      // path (`./build.sh<Tab>`), and an empty one is an empty line — nothing to
-      // complete. An empty token AFTER the command word is the start of an
-      // argument, which is `ls <Tab>` listing the directory.
-      const command = !argument && token.length > 0 && !pathLike(token)
-      if (!argument && token.length === 0) {
-        // Nothing here to complete, but Tab still must not leave the input:
-        // the composer IS the terminal's input line, and a terminal's Tab never
-        // moves focus — letting it fall through is what landed the user on the
-        // composer's buttons. Shift+Tab is left alone as the way back out.
-        return !event.shiftKey
-      }
+      if (caret.dirPart === '' && caret.prefix.startsWith('@')) return false
       // A visible stock menu here is a command list for what is really a path
       // (see stockCommand): close it before the one round trip, so the two
       // overlays never share the seat.
       event.preventDefault()
       event.stopImmediatePropagation()
-      ask(sessionId, draftNow, token, command ? 'command' : 'path')
+      ask(sessionId, draftNow, caret)
       return true
     }
     const onKeyDownFull = (event: KeyboardEvent): void => {
