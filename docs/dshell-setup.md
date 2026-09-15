@@ -10,18 +10,23 @@ a fresh machine.
 work reaches it by squash-merging a pull request once its acceptance
 check passes.
 
-`dev` was the branch for the initial development phase, which is over. It
-is kept for history, not for new work. Since then each development
-direction gets **its own branch** — named after the direction it serves,
-not after the phase number — so a line of work can be reviewed, paused or
-abandoned without dragging anything else with it.
+Each development direction gets **its own branch** — named after the
+direction it serves, not after the phase number — so a line of work can be
+reviewed, paused or abandoned without dragging anything else with it. The
+branch is **deleted once its pull request is squash-merged** (the
+repository's "automatically delete head branches" is on), so the repository
+holds `main` and whatever is currently in flight, and nothing else.
 
-A branch is **deleted once its pull request is squash-merged** — the
-repository's "automatically delete head branches" is on, so the merge takes
-it with itself. The work lives in `main`; a squash leaves the branch's tip
-outside `main`'s history, so a kept branch readily reads as unmerged work
-and turns the branch list into a list of questions. `dev` is the one branch
-kept regardless, because it records a phase rather than a direction.
+The branch list was longer in two ways, and neither survives. The initial
+development phase ran on a long-lived `dev`, squash-merged into `main` as
+the initial integration; `dev` was then deleted as well, so that phase is
+recorded by `main`'s history rather than by a branch. And the branches of
+the first sixteen pull requests were kept for a while: a squash leaves a
+branch's tip outside `main`'s history, so each one sat there reading as
+unmerged work. A branch is not what records what landed — `main` is. To ask
+whether a branch's work is already in `main`, compare trees
+(`git diff --stat origin/main <branch>` is empty when it is), never
+ancestry.
 
 ## Required tools
 
