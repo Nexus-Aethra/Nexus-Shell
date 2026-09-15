@@ -21,7 +21,8 @@
 
 import { createElement, useEffect, useRef, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from 'react'
 import {
-  DSHELL_FILES_PATH, DSHELL_PTY_PATH, type DshellCompletionCandidate, type DshellFileKind,
+  DSHELL_FILES_PATH, DSHELL_PTY_PATH,
+  type DshellCompletionCandidate, type DshellCompletionNote,
 } from '@nexus-aethra/dshell-std'
 import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: pulls the Conversation SlotMap (`conversation.input.overlay`) and
@@ -29,6 +30,7 @@ import { FileTypeIcon, classifyFileType, useAnchoredMaxHeight } from '@deepseek-
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { useDshellTheme } from './theme.js'
+import { NOTE_KEYS, type DshellModeKey } from './locales.js'
 
 /** The files route, from the shared contract: dshell-files owns it. */
 const FILES_PATH = DSHELL_FILES_PATH
@@ -41,27 +43,28 @@ const FILES_PATH = DSHELL_FILES_PATH
  */
 const HISTORY_PATH = DSHELL_PTY_PATH
 
-/** One candidate, with the client's own extension of the wire kinds. */
-export type CompletionCandidate = Omit<DshellCompletionCandidate, 'kind'> & {
-  /** `command` is the history source's: the wire never sends it. */
-  readonly kind: DshellFileKind | 'command'
-}
+/** One candidate, whose kind the list draws a glyph and a label for. */
+export type CompletionCandidate = DshellCompletionCandidate
 
 /** One open completion over the composer's draft. */
 export interface CompletionState {
   readonly sessionId: string
-  /** Where the candidates came from; history replaces the whole line. */
-  readonly source: 'path' | 'history'
+  /**
+   * Where the candidates came from. `history` replaces the whole line; `path`
+   * and `command` both replace the token the host measured, at the offsets the
+   * host sent.
+   */
+  readonly source: 'path' | 'command' | 'history'
   /** Offsets in the draft the candidates replace (the basename, not the prefix). */
   readonly start: number
   readonly end: number
-  /** The directory the candidates came from, in the session's world. */
+  /** Where the candidates came from, in the session's world (`PATH` for commands). */
   readonly dir: string
   readonly items: readonly CompletionCandidate[]
   /** Which candidate is highlighted. */
   readonly index: number
   /** Why the list is empty, when the host had something to say about it. */
-  readonly note: string | undefined
+  readonly note: DshellCompletionNote | undefined
   /** The draft exactly as this completion left it, so a foreign edit closes it. */
   readonly draft: string
 }
@@ -194,11 +197,14 @@ export function createShellCompletion(): ShellCompletion {
         end: number
         dir: string
         candidates: readonly CompletionCandidate[]
-        note?: string
+        note?: DshellCompletionNote
       }
       return {
         sessionId,
-        source: 'path',
+        // `dir` is the literal `PATH` when the host completed the command word
+        // and a directory otherwise, which is exactly how the two sources are
+        // told apart — one string the host already had to send.
+        source: value.dir === 'PATH' ? 'command' : 'path',
         start: value.start,
         end: value.end,
         dir: value.dir,
@@ -248,7 +254,14 @@ export function createShellCompletion(): ShellCompletion {
     apply(state, index, draft) {
       const item = state.items[index]
       if (item === undefined) return undefined
-      const name = item.kind === 'directory' ? `${item.name}/` : item.name
+      // A directory lands with the slash that opens it; a command lands with the
+      // space that ends it, the way a shell's own Tab writes both — the next
+      // word is what the reader is about to type. The span covers what was
+      // written, so cycling from `dock⇥ ` to the next candidate still replaces
+      // the whole word rather than appending to it.
+      const name = item.kind === 'directory'
+        ? `${item.name}/`
+        : item.kind === 'command' ? `${item.name} ` : item.name
       const text = draft.slice(0, state.start) + name + draft.slice(state.end)
       return {
         text,
@@ -296,6 +309,7 @@ function row(
   theme: ReturnType<typeof useDshellTheme>,
   onPick: () => void,
   activeRef: RefObject<HTMLDivElement>,
+  t: (key: DshellModeKey) => string,
 ): ReactElement {
   return createElement('div', {
     key: item.name,
@@ -317,8 +331,8 @@ function row(
   },
     createElement('span', { style: { display: 'flex', alignItems: 'center', flex: '0 0 auto', opacity: 0.85 } },
       item.kind === 'command'
-        // A command is not a file: a prompt glyph says "something this shell
-        // ran", where any file icon would lie about it.
+        // A command is not a file: a prompt glyph says "something this shell can
+        // run", where any file icon would lie about it.
         ? createElement('span', {
           style: { width: 14, textAlign: 'center', fontSize: 11, opacity: 0.6 },
         }, '$')
@@ -329,13 +343,15 @@ function row(
     createElement('span', {
       style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
     }, item.kind === 'directory' ? `${item.name}/` : item.name),
-    // Only files carry a hint (their size): the icon and the trailing slash
-    // already say "directory", so the host's kind word would just repeat them.
-    item.kind !== 'directory' && item.hint !== undefined && item.hint !== ''
-      ? createElement('span', {
-        style: { opacity: 0.6, flex: '0 0 auto' },
-      }, item.hint)
-      : null,
+    // A command's kind is what its `$` already said, so the hint column is left
+    // to files (their size) and to directories (which the slash says).
+    item.kind === 'command'
+      ? createElement('span', { style: { opacity: 0.6, flex: '0 0 auto' } }, t('completion.command'))
+      : item.kind !== 'directory' && item.hint !== undefined && item.hint !== ''
+        ? createElement('span', {
+          style: { opacity: 0.6, flex: '0 0 auto' },
+        }, item.hint)
+        : null,
   )
 }
 
@@ -383,7 +399,8 @@ export function ShellCompletionList(
     title: state.source === 'history' ? t('completion.historyCount', { count: state.items.length }) : state.dir,
   },
     state.items.length === 0
-      ? createElement('div', { style: { padding: '3px 10px', opacity: 0.6 } }, state.note ?? t('completion.noMatch'))
-      : state.items.map((item, index) => row(item, index === state.index, theme, () => { pick(index) }, activeRef)),
+      ? createElement('div', { style: { padding: '3px 10px', opacity: 0.6 } },
+          t(state.note === undefined ? 'completion.noMatch' : NOTE_KEYS[state.note]))
+      : state.items.map((item, index) => row(item, index === state.index, theme, () => { pick(index) }, activeRef, t)),
   )
 }
