@@ -12,10 +12,16 @@ check passes.
 
 `dev` was the branch for the initial development phase, which is over. It
 is kept for history, not for new work. Since then each development
-direction gets **its own branch** — `fix/session-delete` for the session
-deletion work, and so on — so a line of work can be reviewed, paused or
-abandoned without dragging anything else with it. Name a branch after the
-direction it serves, not after the phase number.
+direction gets **its own branch** — named after the direction it serves,
+not after the phase number — so a line of work can be reviewed, paused or
+abandoned without dragging anything else with it.
+
+A branch is **deleted once its pull request is squash-merged** — the
+repository's "automatically delete head branches" is on, so the merge takes
+it with itself. The work lives in `main`; a squash leaves the branch's tip
+outside `main`'s history, so a kept branch readily reads as unmerged work
+and turns the branch list into a list of questions. `dev` is the one branch
+kept regardless, because it records a phase rather than a direction.
 
 ## Required tools
 
