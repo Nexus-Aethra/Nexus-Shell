@@ -2755,3 +2755,61 @@ inside itself.
 same log: a respawn banner before a clear measures as its post-clear rows, a clear
 that opens a region measures one row, `ESC[3J` alone keeps its rows, and the
 widths erased by a wipe stop widening the grid.
+
+## Phase 10.25 — a device Tab answers from memory
+
+The report: "SSH 模式下 Tab 反应慢" — Tab in a device session takes noticeably
+longer than the same Tab on this machine.
+
+The first question was whether it was the network, and the measurements say no.
+Against the device this project tests with:
+
+| what | measured |
+| --- | --- |
+| one `ssh` command over the shared control master | 23 ms |
+| the oracle probe (a `bash` sourcing bash-completion) | 125 ms |
+| one call through dsh's subprocess seam, from the route | **0.39 s** |
+| `resolve` (2 such calls) | 0.78 s |
+| `list` / a path completion (3 such calls) | 1.17 s |
+| a flag or bare-word completion (3 calls, then the probe) | 1.6 s |
+| the same requests against a LOCAL session | 5–7 ms |
+
+A device call is 0.39 s because of how the harness runs a local command at all:
+`systemd-run --user --scope … node --import tsx …/subprocess-local/src/bin.ts --
+ssh …`. The transient systemd scope, the Node process and tsx transpiling dsh's
+own runner cost ~0.39 s, so the wire is 6% of it. That price is dsh's and is not
+ours to change; what dshell controls is the NUMBER of calls a keystroke makes, and
+a Tab was making three or four.
+
+Three changes, one direction — the reader's keystroke stops being where the work
+happens:
+
+- **The fast pass no longer reads when the shell is going to answer.** A flag and
+  a bare word are the shell's questions; the directory listing is only the
+  fallback for a shell that has nothing, so it moved into the refine pass, which
+  reaches it only after the shell has actually declined. A cold `docker r<Tab>`
+  went from 1.6 s (three calls, then the probe) to ~0.5 s (the probe).
+- **Readings are cached for a few seconds** (`files/src/readings.ts`), keyed by
+  the world and the directory, with a single-flight so two askers share one read.
+  Tab, Tab, Tab in one directory is one read; the life is short on purpose,
+  because a listing is the answer a reader compares against their own screen.
+- **The browser warms before the key lands.** On an edit, debounced 250 ms and
+  keyed by everything before the word being typed (so a word costs one warm, not
+  one per character), the client sends `warm` — the same question `complete` would
+  ask, with the answer thrown away — and the host fetches BOTH halves: the shell
+  probe and the directory its fallback would read. Both caches are single-flight,
+  so a Tab arriving while a warm is still on the wire joins it rather than buying
+  a second probe.
+
+Verified on the same device: a cold path Tab is still ~1.2 s (the honest price of
+a first look), and the Tab a reader actually feels — type, pause, Tab — is
+**2–6 ms**. In the browser, with real keys in a scratch device session: the warm
+went out in 41 ms, the Tab's own request took 6 ms, and the completion applied
+(`/va` → `/var/`). The local session's timings are unchanged (6 ms), and a warm
+there is a no-op nobody waits for.
+
+**Still open:** a first look at a directory still costs three calls because the
+route asks the seam for `resolve`, `stat` and `listDir` separately; folding those
+into one device command would cut a cold Tab to ~0.4 s, and it belongs in
+dshell-ssh's provider rather than in this route. The listing cache's freshness is
+a 3 s TTL rather than an invalidation on the shell's next command.

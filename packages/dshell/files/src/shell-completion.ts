@@ -37,6 +37,7 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import { SingleFlight } from './readings.js'
 import { quote } from './shell-quote.js'
 import { runInWorld } from './world-shell.js'
 
@@ -232,6 +233,25 @@ const CACHE_CONTEXTS = 200
  */
 export class OracleCache {
   private readonly contexts = new Map<string, Map<string, OracleAnswer>>()
+  /**
+   * One probe per context-and-prefix on the wire at a time.
+   *
+   * A device answers a probe with a process of its own, and the warm that runs
+   * while the reader is typing is still on the wire when they press Tab often
+   * enough that it matters: without this, the keystroke would start a second
+   * probe for the answer the first one is already fetching.
+   */
+  private readonly probes = new SingleFlight<readonly string[] | undefined>()
+
+  /**
+   * Run one probe, shared with whoever else is waiting for the same one.
+   *
+   * @param key - the context and the prefix the answer is for.
+   * @param produce - the probe itself.
+   */
+  probe(key: string, produce: () => Promise<readonly string[] | undefined>): Promise<readonly string[] | undefined> {
+    return this.probes.join(key, produce)
+  }
 
   /**
    * @param context - key for what the answer depends on besides the typed word
@@ -316,19 +336,21 @@ export async function askShell(
   // The line and the caret ride the command line as ARGUMENTS (their own shell
   // words, quoted once by `quote`), never as text inside the script: completion
   // reads what the reader typed, and nothing it typed may become syntax.
-  const result = await runInWorld(ctx, agent, {
-    command: `bash -c ${quote(ORACLE_PROBE)} dshell-probe ${quote(ask.line)} ${quote(String(ask.cursor))}`,
-    workdir: ask.workdir,
-    root: ask.root,
-    timeoutMs: PROBE_TIMEOUT_MS,
-    stdoutMaxBytes: PROBE_STDOUT_BYTES,
+  return await cache.probe(`${ask.context}\u0000${ask.prefix}`, async () => {
+    const result = await runInWorld(ctx, agent, {
+      command: `bash -c ${quote(ORACLE_PROBE)} dshell-probe ${quote(ask.line)} ${quote(String(ask.cursor))}`,
+      workdir: ask.workdir,
+      root: ask.root,
+      timeoutMs: PROBE_TIMEOUT_MS,
+      stdoutMaxBytes: PROBE_STDOUT_BYTES,
+    })
+    if (result === undefined) return undefined
+    const names = parseProbeOutput(result.stdout.text)
+    // An empty answer is NOT cached. "This world has no completion for that
+    // command" is stable, but "the function looked at the directory and found
+    // nothing yet" is not, and the two are indistinguishable from here.
+    if (names === undefined || names.length === 0) return names
+    cache.store(ask.context, ask.prefix, names, Date.now())
+    return names
   })
-  if (result === undefined) return undefined
-  const names = parseProbeOutput(result.stdout.text)
-  // An empty answer is NOT cached. "This world has no completion for that
-  // command" is stable, but "the function looked at the directory and found
-  // nothing yet" is not, and the two are indistinguishable from here.
-  if (names === undefined || names.length === 0) return names
-  cache.store(ask.context, ask.prefix, names, Date.now())
-  return names
 }

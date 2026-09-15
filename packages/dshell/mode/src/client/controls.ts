@@ -20,6 +20,18 @@ import type { SessionMode } from './types.js'
 
 const chipSeatStyle: CSSProperties = { position: 'relative', display: 'flex' }
 
+/**
+ * How long the reader has to stop typing before the host is sent to look.
+ *
+ * A warm is a guess about what the next Tab will ask, and the guess is only
+ * worth its cost if the answer is in memory when the key lands: too eager and a
+ * device runs a process per keystroke, too late and the Tab pays for it anyway.
+ * A quarter of a second is under the pause before a Tab and over the gap between
+ * the characters of a word, and the host's caches do the rest — a longer word
+ * reuses the answer taken for its prefix.
+ */
+const WARM_DELAY_MS = 250
+
 /** The completion seat, created once per browser face and shared with the list. */
 export interface DshellInputCompletion {
   readonly completion: ShellCompletion
@@ -102,6 +114,11 @@ export function DshellLeftControls(props: {
   const helpers = useShellHelpers()
   const helpersRef = useRef(helpers)
   helpersRef.current = helpers
+  // The pending warm, and the question it was scheduled for. Both are refs
+  // because the keydown interceptor is a DOM listener that must not be
+  // re-registered per keystroke.
+  const warmTimerRef = useRef<number | undefined>(undefined)
+  const warmKeyRef = useRef('')
   const completeOpen = useSyncExternalStore(
     completion.store.subscribe,
     () => completion.store.getSnapshot() !== null,
@@ -323,6 +340,40 @@ export function DshellLeftControls(props: {
           if (state !== null && state.pending) refine(sid, draftNow, caret, state)
         }).catch(() => { completion.store.set(null) })
       }
+      /**
+       * Get the host's caches ready for the Tab this line is heading towards.
+       *
+       * A completion against a device is a round trip the reader feels: the
+       * session's world is another machine, and everything this side needs from
+       * it — a directory's children, the shell's own vocabulary — is asked for
+       * over the wire, one process per answer. So the same question is asked
+       * EARLY, in the background, and thrown away: by the time the key lands the
+       * answer is in the host's memory and the Tab costs a local match.
+       *
+       * The question is everything BEFORE the word being typed, so typing costs
+       * one warm per word rather than one per character — `docker r` and
+       * `docker re` are the same question, and the host reuses the answer it
+       * took for the shorter prefix.
+       */
+      const scheduleWarm = (sid: string, draftNow: string): void => {
+        if (!helpersRef.current.tabCompletion) return
+        // A blank line, or an operator under the caret, names no word: there is
+        // nothing a Tab there would ask for.
+        const caret = readShellCaret(draftNow, draftNow.length)
+        if (caret === undefined) return
+        const key = `${caret.position}\u0000${draftNow.slice(0, caret.start - caret.dirPart.length)}`
+        if (key === warmKeyRef.current) return
+        if (warmTimerRef.current !== undefined) window.clearTimeout(warmTimerRef.current)
+        warmTimerRef.current = window.setTimeout(() => {
+          warmTimerRef.current = undefined
+          // The reader has stopped for a moment. Going stale the other way is
+          // what this re-check is for: the pause can end in a session switch, a
+          // mode flip, or a line that no longer looks like this one.
+          if (modeRef.current !== 'shell' || sessionIdRef.current !== sid) return
+          warmKeyRef.current = key
+          completion.warm(sid, draftRef.current, draftRef.current.length, helpersRef.current.completionShellOracle)
+        }, WARM_DELAY_MS)
+      }
       const open = completion.store.getSnapshot()
       const key = event.key
       if (key === 'Escape') {
@@ -406,9 +457,11 @@ export function DshellLeftControls(props: {
       if (key !== 'Tab') {
         // Any other edit or caret move invalidates the list: its offsets assume
         // the caret sits at the end of the draft. The next Tab rebuilds it.
-        const stales = key.length === 1 || key === 'Backspace' || key === 'Delete'
-          || key === 'ArrowLeft' || key === 'ArrowRight'
+        const edited = key.length === 1 || key === 'Backspace' || key === 'Delete'
+        const stales = edited || key === 'ArrowLeft' || key === 'ArrowRight'
         if (open !== null && stales) completion.store.set(null)
+        // The line has moved, so the answer the next Tab wants may have too.
+        if (edited) scheduleWarm(sessionId, draftRef.current)
         return false
       }
       // A fresh Tab: ask the host for the candidates under the caret.
@@ -463,6 +516,9 @@ export function DshellLeftControls(props: {
     document.addEventListener('keydown', onKeyDownFull, true)
     document.addEventListener('click', onPointerDown, true)
     return () => {
+      // A warm that has not fired yet belongs to a listener that is going away.
+      if (warmTimerRef.current !== undefined) window.clearTimeout(warmTimerRef.current)
+      warmTimerRef.current = undefined
       document.removeEventListener('keydown', onKeyDown, true)
       document.removeEventListener('keydown', onKeyDownFull, true)
       document.removeEventListener('click', onPointerDown, true)

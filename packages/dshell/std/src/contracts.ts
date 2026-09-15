@@ -100,8 +100,14 @@ export interface DshellFilesRequest {
    * `resolve` canonicalizes a path in the session's world (how the composer
    * learns what `cd` did), and `complete` answers a shell line's last token
    * from that same world.
+   *
+   * `warm` asks the same question `complete` would and throws the answer away,
+   * so that the pieces it needs are already in the host's memory when a Tab
+   * arrives. It exists because a device world answers every one of those pieces
+   * with a process of its own, and paying for them on the keystroke is what made
+   * Tab feel broken there (see the route's cache).
    */
-  readonly action: 'list' | 'cd' | 'resolve' | 'complete'
+  readonly action: 'list' | 'cd' | 'resolve' | 'complete' | 'warm'
   /** The session whose execution world the path belongs to. */
   readonly sessionId: string
   /** Absolute path in that world; omitted means the session's own directory. */
@@ -118,6 +124,14 @@ export interface DshellFilesRequest {
    * the words only it has (see `DshellCompletion.pending`).
    */
   readonly phase?: 'fast' | 'refine' | undefined
+  /**
+   * Whether `warm` may ask the session's own shell too, not only the file
+   * system. The switch that governs the oracle lives in the browser (like every
+   * other dshell switch), so the browser is the only side that can say whether
+   * the probe is wanted; without it, a warm would run a process per context for
+   * a reader who turned that off.
+   */
+  readonly oracle?: boolean | undefined
 }
 
 /** One candidate for the shell line's last token. */
@@ -187,6 +201,12 @@ export interface DshellFilesResponse {
   readonly resolved?: string | undefined
   /** The token's candidates, for the `complete` action. */
   readonly completion?: DshellCompletion | undefined
+  /**
+   * Acknowledgement of a `warm`: the work it starts runs in the background, so
+   * the answer says only that the request was understood. The browser never
+   * reads a value out of it — the whole point of a warm is that nobody waits.
+   */
+  readonly warmed?: boolean | undefined
   readonly error?: string | undefined
 }
 
