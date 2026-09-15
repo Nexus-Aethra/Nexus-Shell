@@ -501,6 +501,32 @@ Within a card, rows are cut into one **segment** per human message: the request,
 then the work and the answers it produced. A card with one request cuts into one
 segment and renders exactly as it always has.
 
+### A shell region is as tall as its screen, not as its log
+
+The terminal stretches between the cards are the PTY's own bytes, rendered
+through a real xterm instance (`dshell-mode`'s `block-terminal.ts`), and the
+region's height is **measured** rather than guessed: the region's text is walked
+once, the column each line would end on is simulated (so `\r` redraws and
+`ESC 7`/`ESC 8` overlays do not read as one enormous line), and the rows that
+follow from that width are what the region renders at. Trailing blank rows are
+dropped — a region is exactly as tall as its ink.
+
+The bytes are a LOG, and a log holds things a screen does not. A respawn (a
+harness restart, an ssh reconnect) makes the bridge reprint its startup line and
+run `clear`, and the persisted log keeps those bytes — so a region cut from the
+log can carry several copies of a banner that is not on screen at all. That is
+the same convention § 4.3's ring buffer already relies on: `ESC[2J` means the
+display was reset, and what came before it is gone. So the walk starts over
+there — `ESC[2J` forgets the rows measured so far, while `ESC[3J` (the
+scrollback alone) deliberately does not, and neither the text nor the buffer
+loses anything.
+
+Without that rule the region is measured as tall as every banner copy in its
+log, which renders a wall of empty rows under the last real line — one banner
+taller per reconnect, and past `SPAN_MAX_ROWS` a scroll box that is 95% blank.
+The pre-erase bytes stay in the region's own scrollback, where a reader who
+scrolls up can still find them.
+
 ## 13. Completing the shell line
 
 The composer IS the session's input line (the block view's terminal is a
