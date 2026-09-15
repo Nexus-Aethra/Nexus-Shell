@@ -15,7 +15,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { HostCopy } from '@nexus-aethra/dshell-std'
+import type { DshellDataRootSeat, HostCopy } from '@nexus-aethra/dshell-std'
+import { DSHELL_DATA_ROOT_SERVICE } from '@nexus-aethra/dshell-std'
 // Type-only: pulls the host agent service merge (ctx.agents.currentInitiator).
 import type {} from '@deepseek-ai/dsh-agent'
 // Type-only: pulls the host connection merge (ctx.connection.fetch).
@@ -40,22 +41,57 @@ export { harnessHome, mountBase, sshDeviceRoot } from './paths.js'
 export { mountFor, toMountPath, toRemotePath, type MountMapping } from './mount.js'
 export type { SshSettings } from './ssh-settings.js'
 
+/**
+ * Required service: dshell's settled data root.
+ *
+ * This package builds its device registry during composition AND fills the
+ * synchronous routing cache, so it must not resolve a path before the root is
+ * known — and the root comes from a SETTING, readable only by a package that
+ * waits for the settings service. Declaring the dependency is what makes the
+ * order a fact rather than a race (see `std/data-root.ts`): this apply does not
+ * start until `dshell-mode` has published its decision.
+ */
+export const inject = [DSHELL_DATA_ROOT_SERVICE] as const
+
 export function apply(ctx: Context): void {
   ctx.inject(['settings'], (settingsCtx) => {
     settingsCtx.settings.register(SSH_SETTINGS_NAMESPACE, SshSettingsSchema)
   })
-  const router = new SshRouter(sshDeviceRoot())
-  // Published so the filesystem provider — loaded as its own plugin, in place
-  // of the stock backend — can resolve a call's session without this module
-  // handing it anything directly.
-  ctx.provide(SSH_ROUTING_SERVICE, router)
-  // Bind host copy as soon as its provider is up: this package's host methods
-  // compose user-visible refusals, and the translator resolves the language at
-  // call time, so a switch needs no re-binding.
-  ctx.inject(['dshellHostCopy'], (copyCtx) => {
-    const copy = copyCtx.get('dshellHostCopy') as HostCopy
-    router.bindCopy(copy.bind(hostCopy))
-  })
+  // The device registry is the one place in this package that READS a path
+  // during composition (`SshRouter`'s constructor fills the routing cache that
+  // the synchronous `targetForSession` reads). The service above is already
+  // settled by the time this runs; the plan is awaited rather than read so the
+  // ordering survives any future async step in the settlement. Everything else
+  // here resolves paths at call time, which needs no ordering at all.
+  void (async () => {
+    const plan = await (ctx.get(DSHELL_DATA_ROOT_SERVICE) as DshellDataRootSeat).settled
+    const router = new SshRouter(() => sshDeviceRoot())
+    // Published so the filesystem provider — loaded as its own plugin, in place
+    // of the stock backend — can resolve a call's session without this module
+    // handing it anything directly.
+    ctx.provide(SSH_ROUTING_SERVICE, router)
+    // Bind host copy as soon as its provider is up: this package's host methods
+    // compose user-visible refusals, and the translator resolves the language at
+    // call time, so a switch needs no re-binding.
+    ctx.inject(['dshellHostCopy'], (copyCtx) => {
+      const copy = copyCtx.get('dshellHostCopy') as HostCopy
+      router.bindCopy(copy.bind(hostCopy))
+    })
+    installRouting(ctx, router)
+    if (plan.source !== 'harness') {
+      // Only worth a line when the root is not the harness's own: the default
+      // deployment says nothing (dshell-mode reports the choice).
+      console.info(`dshell-ssh: devices are read from ${plan.root}`)
+    }
+  })()
+}
+
+/**
+ * Wire the seam that acts on a session's assignment.
+ * @param ctx - host context.
+ * @param router - the device router.
+ */
+function installRouting(ctx: Context, router: SshRouter): void {
   // `ctx.fs` for device-bound sessions. The composition disables the stock
   // `fs-sandbox` row, because a service name has exactly one provider.
   ctx.plugin(DshellFsPlugin)
@@ -87,4 +123,4 @@ export function apply(ctx: Context): void {
   })
 }
 
-export default { name, apply }
+export default { name, inject, apply }

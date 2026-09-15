@@ -34,18 +34,36 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
 // Type-only: pulls the host agent Events merge (`agent/pre-step`).
 import type {} from '@deepseek-ai/dsh-agent'
-// Type-only: pulls the settings service merge (optional `ctx.settings`).
+// Type-only: pulls the settings service merge (optional `ctx.settings`) and the
+// owner scope this package registers its namespace with.
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-settings'
 // Type-only: pulls the bridge service merge (ctx.dshellTerminalBridge).
 import type {} from '@nexus-aethra/dshell-terminal-bridge'
-import type { TerminalCommandRecord, TerminalDelta } from '@nexus-aethra/dshell-terminal-bridge'
-import { DSHELL_SETTINGS_NAMESPACE } from './settings.js'
+import type { TerminalCommandRecord, TerminalDelta, DshellTerminalBridge } from '@nexus-aethra/dshell-terminal-bridge'
+import { DSHELL_DATA_ROOT_SERVICE, type DshellDataRootPlan, type DshellDataRootSeat } from '@nexus-aethra/dshell-std'
+import { DSHELL_SETTINGS_NAMESPACE, readDataDir } from './settings.js'
 import { DshellSettingsSchema } from './settings-schema.js'
+import { applyDataRoot, dataRootReady, harnessHome, hostHome } from './data-root.js'
 
 export const name = '@nexus-aethra/dshell-mode/host'
 
-/** Required service: the bridge owns the main-shell buffers we read. */
-export const inject = ['dshellTerminalBridge'] as const
+/**
+ * Required service: `settings`, and NOTHING heavier.
+ *
+ * This package settles dshell's data root (`settleDataRoot` below), which every
+ * other host package's path helpers then resolve, so the settlement has to
+ * happen before any of them captures a path. Waiting for a service as late as
+ * this package's own terminal bridge loses that race: the bridge is a large
+ * plugin, and a sibling like `dshell-ssh` — which waits only for `settings` —
+ * would activate first and construct its device registry against the root the
+ * reader just moved away from. A plugin's apply runs as soon as its declared
+ * dependencies are up, and Cordis notifies the plugins waiting on one service in
+ * the order they were composed, so waiting for the EARLIEST service and being
+ * composed before the rest is what makes the order deterministic instead of
+ * lucky. Everything that needs the bridge is wired in its own `inject` below.
+ */
+export const inject = ['settings'] as const
 
 /** Commands the injected block carries, newest last. */
 const WINDOW_COMMANDS = 3
@@ -132,17 +150,117 @@ function formatRaw(delta: TerminalDelta): string | undefined {
 }
 
 /**
- * Inject the terminal window before user-driven steps.
- * @param ctx - host root context.
+ * Say one thing about the data root, on both channels it has to reach.
+ *
+ * `ctx.logger` is the cordis log: it is what a deployment with an exporter
+ * reads, and the built-in ring buffer keeps it. It is NOT what the human who
+ * started the harness sees — the default logger has no console exporter, so an
+ * `info` line alone is written where nobody looks (the package's own
+ * `console.warn`s are the other half of this convention). A data root is chosen
+ * once and moved once, so both halves are worth having.
+ *
+ * @param ctx - the host context, for the cordis log.
+ * @param message - the line, already composed and in the harness's language.
+ * @param level - `warn` for something the reader may have to act on.
+ */
+function say(ctx: Context, message: string, level: 'info' | 'warn' = 'info'): void {
+  ctx.logger[level](message)
+  if (level === 'warn') console.warn(message)
+  else console.info(message)
+}
+
+/**
+ * Settle where this process keeps dshell's own files, once, at start.
+ *
+ * The card's `dataDir` field is the only input that can move a root (see
+ * `data-root.ts` for why the environment is honoured but never migrates), and
+ * the move happens HERE rather than when the field is written: a running
+ * harness cannot relocate files it is writing, so the next start is when a
+ * choice takes effect, which is also what the card tells the reader.
+ *
+ * A change made while this process runs is therefore stored and ignored. That
+ * is the whole point of reading the value once: two roots in one lifetime would
+ * mean half the transcripts on one disk and half on the other, and a device
+ * registry that exists twice.
+ *
+ * @param ctx - the host context, for the log lines.
+ * @param scope - the registered dshell settings scope.
+ */
+function settleDataRoot(ctx: Context, scope: SettingsScope<unknown>): DshellDataRootPlan {
+  const plan = applyDataRoot({
+    setting: readDataDir(scope.get()),
+    harnessHome: harnessHome(),
+    home: hostHome(),
+  })
+  const migration = plan.migration
+  if (migration !== undefined) {
+    const moved = migration.moved.length === 0 ? 'nothing to move' : migration.moved.join(', ')
+    say(ctx, `dshell: data directory is ${migration.to} (from ${migration.from}: ${moved})`)
+    if (migration.kept.length > 0) {
+      say(ctx, `dshell: ${migration.kept.join(', ')} already existed under ${migration.to} and was left as it is`)
+    }
+    if (migration.failed.length > 0) {
+      say(ctx, `dshell: ${migration.failed.join(', ')} could not be moved and is still under ${migration.from}`, 'warn')
+    }
+    return { root: plan.root, source: plan.source }
+  }
+  if (plan.source !== 'harness') {
+    say(ctx, `dshell: data directory is ${plan.root}`)
+    if (plan.source === 'setting' && !dataRootReady(plan.root)) {
+      say(ctx, `dshell: data directory ${plan.root} is not a directory yet; dshell will try to create it when it writes`, 'warn')
+    }
+  }
+  return { root: plan.root, source: plan.source }
+}
+
+/**
+ * Settle dshell's data root, then inject the terminal window before user-driven
+ * steps.
+ *
+ * The two halves are ordered by their dependencies and by nothing else, which is
+ * the point: the settlement is synchronous and waits for `settings` alone, so it
+ * finishes before any sibling host package — each of which waits on a later
+ * service — has captured a path. Everything below needs the bridge, so it runs
+ * in the bridge's own `inject`, after the settlement is already fact.
+ *
+ * @param ctx - host context, with `settings` available.
  */
 export function apply(ctx: Context): void {
+  // The seat every path-owning dshell host package waits on before it resolves
+  // anything of its own (see `std/data-root.ts` for why a service rather than an
+  // environment variable: the value comes from a SETTING, so it is knowable only
+  // once this package has read the document, and a sibling plugin that resolved
+  // a path during its own apply would otherwise keep the wrong directory for the
+  // life of the process).
+  //
+  // Provided at apply level — a service provided from inside an `inject`
+  // callback would belong to that child scope and be invisible to siblings —
+  // with a promise that settles as soon as the document has been read.
+  let settle!: (plan: DshellDataRootPlan) => void
+  const settled = new Promise<DshellDataRootPlan>((resolve) => { settle = resolve })
+  ctx.provide(DSHELL_DATA_ROOT_SERVICE, { settled } satisfies DshellDataRootSeat)
   // The settings namespace the Plugins section dispatches a card for: the
   // browser half registers its card under this same key. Registration is all
   // it takes — the Host stores the palette id without interpreting it.
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.register(DSHELL_SETTINGS_NAMESPACE, DshellSettingsSchema)
+  //
+  // The data root is settled in the same breath, and deliberately first: it is
+  // the one field here the Host acts on for itself, and the registration is the
+  // earliest moment the stored document is readable.
+  const scope = ctx.settings.register(DSHELL_SETTINGS_NAMESPACE, DshellSettingsSchema)
+  settle(settleDataRoot(ctx, scope))
+  ctx.inject(['dshellTerminalBridge'], (bridgeCtx) => {
+    const bridge = bridgeCtx.dshellTerminalBridge
+    wireTerminalWindow(bridgeCtx, bridge)
   })
-  const bridge = ctx.dshellTerminalBridge
+}
+
+/**
+ * Inject the terminal window before user-driven steps.
+ *
+ * @param ctx - host context, with `dshellTerminalBridge` available.
+ * @param bridge - the bridge service whose buffers the window reads.
+ */
+function wireTerminalWindow(ctx: Context, bridge: DshellTerminalBridge): void {
   /**
    * The last cursor each agent was handed.
    *

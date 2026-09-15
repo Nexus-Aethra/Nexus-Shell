@@ -95,21 +95,26 @@ export class DeviceStore {
   /**
    * @param root - device directory (`$DSH_HOME/dshell/ssh`).
    */
-  constructor(private readonly root: string) {}
+  /**
+   * @param root - resolves the device directory (`<data root>/dshell/ssh`),
+   *   read when it is needed rather than captured: the data root is a setting,
+   *   settled while the composition is still running (see `std/data-root.ts`).
+   */
+  constructor(private readonly root: () => string) {}
 
   /** The device document path. */
   private get documentPath(): string {
-    return join(this.root, 'devices.json')
+    return join(this.root(), 'devices.json')
   }
 
   /** The secret directory (private keys and passwords, never the document). */
   private get secretDir(): string {
-    return join(this.root, 'keys')
+    return join(this.root(), 'keys')
   }
 
   /** The askpass helper ssh runs to obtain a stored password. */
   get askpassPath(): string {
-    return join(this.root, 'askpass.sh')
+    return join(this.root(), 'askpass.sh')
   }
 
   /** Every device, in registration order. */
@@ -240,7 +245,7 @@ export class DeviceStore {
    * in `DSHELL_SSH_PASSWORD_FILE`.
    */
   private async writeAskpass(): Promise<void> {
-    await mkdir(this.root, { recursive: true, mode: 0o700 })
+    await mkdir(this.root(), { recursive: true, mode: 0o700 })
     const body = [
       '#!/bin/sh',
       '# dshell-ssh: hands ssh the password stored for one device (see askpassPath).',
@@ -270,7 +275,7 @@ export class DeviceStore {
 
   /** Rewrite the document atomically. */
   private async saveDocument(): Promise<void> {
-    await mkdir(this.root, { recursive: true })
+    await mkdir(this.root(), { recursive: true })
     const temporary = `${this.documentPath}.tmp`
     await writeFile(temporary, JSON.stringify({ devices: this.records }, null, 2), 'utf8')
     await rename(temporary, this.documentPath)

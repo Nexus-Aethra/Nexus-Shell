@@ -2858,3 +2858,71 @@ route asks the seam for `resolve`, `stat` and `listDir` separately; folding thos
 into one device command would cut a cold Tab to ~0.4 s, and it belongs in
 dshell-ssh's provider rather than in this route. The listing cache's freshness is
 a 3 s TTL rather than an invalidation on the shell's next command.
+
+## Phase 10.26 — dshell's own data directory, picked in settings
+
+The question was dsh's: "当前不时不支持自选数据目录？给整个 dsh" — does the harness
+let a reader say where its data lives? dsh resolves its home per call
+(`$DSH_HOME`, else `~/.dsh`) and offers no flag, no setting, no UI, so the answer
+was no. The follow-up scoped it: "在设置中也没添加一个选择按钮配置存储地址？保证不会影响其余
+dsh" — a picker in dshell's settings, and the rest of dsh untouched.
+
+That scoping is the whole feature, and it is why the choice is not `DSH_HOME`:
+moving the harness home moves sessions, settings and storage with it, and the
+reader's actual problem was a big transcript directory on a full disk. dshell
+keeps exactly two trees of its own — `dshell/` and `dshell-pty/` — so the setting
+names the harness home those two resolve under, and a deployment keeps its
+sessions where they were.
+
+What was built:
+
+- **A row in the dshell settings card** (数据目录) with a 「选择…」 button and
+  恢复默认, both stored in the existing `dshell` settings namespace (`dataDir`).
+- **A host-side directory browser** (`POST /api/dshell/dirs`,
+  `terminal-bridge/src/dirs-route.ts`): the browser cannot open a native folder
+  dialog for a host path, and in a remote `dsh web` the browser is not even on the
+  harness's machine, so the host lists its own directories and the card draws
+  breadcrumb + up + home + a path field. Directories only; a symlink to one counts
+  as one; a path it cannot read is reported as `noDirectory` / `notDirectory` /
+  `noAccess`, and a directory that cannot be written is refused in words.
+- **A settlement at start** (`mode/src/data-root.ts`): the choice takes effect at
+  the NEXT start, because a running harness cannot move the files it is holding
+  open. At that start the trees that travel are moved (`dshell/ssh` minus sockets
+  and the regenerated askpass helper, `dshell/buffer`, `dshell/tags.json`,
+  `dshell-pty`), the ones that must not (`dshell/mnt/**` — session working
+  directories recorded as absolute paths; `dshell/ssh/ctl/**`) stay, collisions at
+  the destination are reported and never overwritten, and a record in the default
+  root lets 恢复默认 bring everything home again.
+- **A published seat** (`std/src/data-root.ts`): the root is a SETTING, so it is
+  knowable only after the settings service is up — and a plugin that resolves a
+  path in its own apply keeps that value for the life of the process. `dshell-ssh`
+  and `dshell-workspace` declare the seat in their `inject` lists, so their applies
+  begin after the decision; everything that resolves a path later (routes, shell
+  spawns, file listings) needs no ordering at all.
+
+Verified live, on this machine, with the user's own data: picked
+`/home/wpp/.dshell-move-test` through the picker, restarted → the registry, keys,
+buffer state, tags and all 72 transcripts moved (checksums unchanged for
+`devices.json` and `state.json`), `dshell/mnt` and `ctl` stayed, the log said so,
+and the moved root's devices were visible in the UI. Then 恢复默认, restarted →
+everything came home, the devices were visible again, and the test directory, the
+record and the settings line were removed afterwards. `pnpm test` (80 specs),
+`pnpm typecheck` and `pnpm build` are clean.
+
+**The bug this phase actually cost, worth recording:** the first cut published the
+root as a `DSHELL_HOME` environment variable set at composition. The restart then
+produced an EMPTY device list — the file intact under the old root, `dshell-ssh`
+having built its registry a few milliseconds before the variable was set, and its
+`targetForSession` cache being synchronous on purpose (so the value could not
+simply be re-read later). Two rounds of "wait for settings, then settle" were not
+enough either: a sibling's apply is not ordered after another sibling's by row
+order. Declaring the dependency is what made it deterministic. The lesson is
+recorded in `std/data-root.ts` and architecture § 15: a cross-package fact that
+must exist before an apply needs a service edge, not a coincidence.
+
+**Not covered:** the picker lists directories but does not create them (a typed
+path that does not exist is refused rather than created); migrating a root that is
+an NFS mount or has a symlinked `dshell/` inside it is untested; the settings
+document's `dataDir` and the record file can disagree if the document is edited by
+hand while the harness runs, in which case the next start settles the document's
+value and rewrites the record.

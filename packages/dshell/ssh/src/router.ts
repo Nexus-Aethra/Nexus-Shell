@@ -82,13 +82,14 @@ class BindingStore {
   private loaded = false
   private entries = new Map<string, Assignment>()
 
-  constructor(private readonly path: string) {}
+  /** @param path - resolves the document path, read when it is first needed. */
+  constructor(private readonly path: () => string) {}
 
   async load(): Promise<void> {
     if (this.loaded) return
     this.loaded = true
     try {
-      const parsed = JSON.parse(await readFile(this.path, 'utf8')) as unknown
+      const parsed = JSON.parse(await readFile(this.path(), 'utf8')) as unknown
       if (typeof parsed !== 'object' || parsed === null) return
       for (const [sessionId, value] of Object.entries(parsed as Record<string, unknown>)) {
         // A bare string is the shape written before sessions could pick their
@@ -145,10 +146,10 @@ class BindingStore {
       const mounted = mount === null || mount.trim() === '' ? {} : { mount: mount.trim() }
       this.entries.set(sessionId, { deviceId, ...override, ...mounted })
     }
-    await mkdir(dirname(this.path), { recursive: true })
-    const temporary = `${this.path}.tmp`
+    await mkdir(dirname(this.path()), { recursive: true })
+    const temporary = `${this.path()}.tmp`
     await writeFile(temporary, JSON.stringify(Object.fromEntries(this.entries), null, 2), 'utf8')
-    await rename(temporary, this.path)
+    await rename(temporary, this.path())
   }
 }
 
@@ -166,11 +167,32 @@ export class SshRouter {
    */
   private t!: DshellSshTranslate
 
-  /** @param root - device directory (`$DSH_HOME/dshell/ssh`). */
-  constructor(root: string) {
+  /**
+   * @param root - resolves the device directory (`<data root>/dshell/ssh`).
+   *
+   * A RESOLVER rather than a path, so nothing here freezes a value that is
+   * settled elsewhere: `apply` waits for dshell's data root before constructing
+   * the router, and the resolver keeps that ordering visible at the point where
+   * the path is actually used.
+   */
+  constructor(root: () => string) {
     this.devices = new DeviceStore(root)
-    this.bindings = new BindingStore(join(root, 'bindings.json'))
+    this.bindings = new BindingStore(() => join(root(), 'bindings.json'))
+    // Eagerly, and deliberately: `targetForSession` below is synchronous
+    // because `spawn`/`resolve` cannot await, so this cache has to be filled
+    // before the first call that reads it. `apply` awaiting the settled data
+    // root first is what makes that safe.
     this.ready = this.reload()
+  }
+
+  /**
+   * The one-time load: the device document, the assignments, and the control
+   * socket directory.
+   *
+   * @returns the load already in flight.
+   */
+  private ensureReady(): Promise<void> {
+    return this.ready
   }
 
   /**
@@ -183,7 +205,7 @@ export class SshRouter {
 
   /** Every configured device. */
   async list() {
-    await this.ready
+    await this.ensureReady()
     return await this.devices.list()
   }
 

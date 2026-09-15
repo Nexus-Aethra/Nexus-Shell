@@ -28,7 +28,7 @@ import type { PtyStreamService } from '@nexus-aethra/dshell-terminal-bridge/clie
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { MessageImageLoader } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../settings.js'
+import { DATA_DIR_FIELD, DSHELL_SETTINGS_NAMESPACE, type DshellSettings } from '../settings.js'
 import { BlockView, type SshSeat } from './block-view.js'
 import type { PipeSeat, PipeTicket } from './status-card.js'
 import { injectSidebarCompactCss } from './sidebar-compact.js'
@@ -39,6 +39,7 @@ import { DshellComposerStats } from './composer-stats.js'
 import { DshellSettingsCard } from './settings-card.js'
 import { adoptTheme, connectThemeSettings } from './theme.js'
 import { adoptShellHelperSettings, connectShellHelperSettings } from './shell-settings.js'
+import { adoptDataDir, connectDataDirSettings } from './data-dir.js'
 import type { DshellModeKey } from './locales.js'
 import { en, zh } from './locales.js'
 import type { ModelChipFace, ModelDirectoryFace, SessionMode } from './types.js'
@@ -315,11 +316,16 @@ export function apply(ctx: Context): void {
     if (!dshellSettings.getSnapshot().writable) return
     void dshellSettings.set(field, next).catch(() => { /* the scope republishes on failure */ })
   })
+  connectDataDirSettings((next) => {
+    if (!dshellSettings.getSnapshot().writable) return
+    void dshellSettings.set(DATA_DIR_FIELD, next).catch(() => { /* the scope republishes on failure */ })
+  })
   const syncSettings = (): void => {
     const snapshot = dshellSettings.getSnapshot()
     if (snapshot.status !== 'ready') return
     adoptTheme(snapshot.value?.theme)
     adoptShellHelperSettings(snapshot.value)
+    adoptDataDir(snapshot.value)
   }
   ctx.effect(() => dshellSettings.subscribe(syncSettings), 'dshell-mode: dshell settings mirror')
   syncSettings()

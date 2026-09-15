@@ -744,6 +744,16 @@ rig that fits the feature rather than a copy of dsh's:
   key are answered by ONE read, that a failure is not remembered, and that the
   world is part of the key — the mistake that once served a device's directory out
   of this machine's memory.
+- `packages/dshell/mode/tests/data-root.spec.ts` drives the data root against a
+  real directory tree: which trees travel and which stay, that nothing at the
+  destination is ever overwritten, that a drained root has nothing left to move,
+  and that going out, coming home and going out again to the same directory all
+  work.
+- `packages/dshell/terminal-bridge/tests/dirs-route.spec.ts` drives the picker's
+  path rules: `~`, a relative path (resolved against the home, never the
+  process's cwd, which a browser cannot see), a path that merely looks like
+  `~someone`, and what counts as a directory below the listed one — including a
+  symlink to one, which is how people actually move a data root to another disk.
 
 Both specs are about RULES. The route's dispatch, the two-phase timing and the
 client's silence rule are verified by hand — a `fetch` against
@@ -751,7 +761,90 @@ client's silence rule are verified by hand — a `fetch` against
 the browser (including with the shell switch OFF). dsh's three-tier model (data /
 host / GUI) stays the target if the other packages grow rules of their own.
 
-## 15. What dshell does not introduce
+## 15. Where dshell keeps its files
+
+dshell's own data sits under a harness home, exactly as dsh's does: `dshell/`
+(device registry and keys, buffer links and grants, session tags, the mount
+points device sessions stand in) and `dshell-pty/` (transcripts, their timelines,
+the command-history database). The home itself comes from dsh — `$DSH_HOME`, else
+`~/.dsh` — and for a long time that was the whole story: to put dshell's files on
+another disk you had to move the harness with them.
+
+The settings card now names that directory itself (`dshell` → `dataDir`), and the
+distinction is the feature rather than a detail: moving dsh's home moves sessions,
+settings and storage, while a reader with a full disk and a big transcript
+directory wants only the second. The field is applied by `dshell-mode`'s host
+half, and everything about how it is applied follows from two decisions.
+
+**It takes effect at the next start, and the files MOVE.** A running harness
+cannot relocate the files it is writing — the transcript of the session on screen
+is an open handle — so the choice is stored now and settled when the process next
+starts. The settlement runs before anything reads a path: it moves what the old
+root was holding, records where the data came from, and reports what it did as a
+line on stderr (the harness's own logger has no console exporter, so
+`ctx.logger.info` alone is written where nobody looks). What travels is stated as
+a list, not derived by scanning, so a tree dshell adds later has to be considered
+on purpose:
+
+| what | where it goes |
+| --- | --- |
+| `dshell/ssh` (minus `ctl/` and the regenerated `askpass.sh`), `dshell/buffer`, `dshell/tags.json`, `dshell-pty` | moves — dshell's own records, which mean the same thing under either root |
+| `dshell/mnt/**` | **stays** — each directory is a session's working directory, and dsh recorded that as an absolute path when the session was created; moving them would break every existing device session |
+| `dshell/ssh/ctl/**` | stays — Unix sockets belonging to the process that is running right now, recreated on demand |
+
+Nothing at the destination is ever replaced. A file that is already there is
+reported and left alone, on both sides, so a reader whose new directory happens
+to hold dshell data can diff the two rather than discover a silent overwrite. A
+file that cannot move is reported too, and stays where it is.
+
+**The default root remembers where the data went.** The setting can be cleared
+again, and "follow the default" has to mean the files come home: a record file in
+the default root's `dshell/` names the root currently in force, and the next start
+moves everything back. Without it, clearing the field would be a one-way door —
+the harness would start with an empty registry while the reader's devices and
+transcripts sat on the other disk, intact and undiscovered.
+
+### Why the root is a service and not an environment variable
+
+The obvious shape for this is dsh's own: read an environment variable per call.
+The first cut did exactly that — `DSHELL_HOME`, set by the host half at
+composition — and it broke a device registry in testing.
+
+The reason is that a SETTING is readable only once the settings service is up,
+and by then other plugins have already applied. `dshell-ssh` builds its device
+registry during its own apply AND fills a cache that `targetForSession` reads
+synchronously (because `spawn` and `resolve` cannot await), so the directory it
+resolves at that moment is the one it keeps for the life of the process. Setting
+the variable a few milliseconds later was too late: the reader's devices
+disappeared, their `devices.json` sitting intact under the old root.
+
+Declaring a dependency is what makes the order a fact instead of a race. The
+settlement publishes a seat (`std/src/data-root.ts`,
+`DSHELL_DATA_ROOT_SERVICE`) whose value is a promise that settles with the
+decision; `dshell-ssh` and `dshell-workspace` declare it in their `inject` lists,
+so their applies do not even start until the root is known. A package that only
+reads a path LATER — a route call, a shell spawn, a file listing — needs no such
+declaration: those all happen after composition, and reading the path where it is
+used is the cheaper and equally safe rule. `DSHELL_HOME` still exists as an
+override for a deployment that wants to pin the directory from outside, in which
+case it wins and nothing moves.
+
+### The picker is dshell's own, and it has to be
+
+The field is a directory on the host machine, and there is no browser primitive
+for choosing one: a page cannot read the host's file system, and in the
+compositions dshell runs in the browser is not even necessarily on that machine
+(a remote `dsh web`, the desktop shell). The host therefore lists its own
+directories (`/api/dshell/dirs`, `terminal-bridge/src/dirs-route.ts`) and the card
+draws a picker: breadcrumb, up, home, a path field for typing or pasting, and one
+button that takes the directory being shown. The route reads DIRECTORIES only
+(this names a data root), counts a symlink to a directory as one — `~/dshell-data
+-> /mnt/big/dshell` is the normal way to move a data root to another disk — and
+reports why it could not read a path (`noDirectory`, `notDirectory`, `noAccess`)
+and whether the directory it listed can be written to, because a read-only choice
+is refused in words rather than becoming a failure to write after a restart.
+
+## 16. What dshell does not introduce
 
 - No changes to dsh source. No fork.
 - No new model-facing tool *other than* the two terminal tools
@@ -764,7 +857,7 @@ host / GUI) stays the target if the other packages grow rules of their own.
 
 These mirror `dshell-design.md` § 2 and are normative.
 
-## 16. Phase plan
+## 17. Phase plan
 
 See [`dshell-roadmap.md`](./dshell-roadmap.md). The architecture above
 fully specifies what each phase's plugins must produce. The next

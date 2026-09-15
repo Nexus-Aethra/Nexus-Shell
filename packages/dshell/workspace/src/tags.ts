@@ -35,8 +35,12 @@ export class SessionTagStore {
   private archived: string[] = []
   private pending: string[] = []
 
-  /** @param path - absolute location of the tag document. */
-  constructor(private readonly path: string) {}
+  /**
+   * @param path - resolves the tag document's location, read when it is first
+   *   needed rather than captured: the document lives at dshell's data root,
+   *   which is settled from a setting while the composition is still running.
+   */
+  constructor(private readonly path: () => string) {}
 
   /** The archived session ids, in archive order. */
   async list(): Promise<readonly string[]> {
@@ -123,7 +127,7 @@ export class SessionTagStore {
     if (this.loaded) return
     this.loaded = true
     try {
-      const document = JSON.parse(await readFile(this.path, 'utf8')) as TagDocument
+      const document = JSON.parse(await readFile(this.path(), 'utf8')) as TagDocument
       this.archived = readIds(document.archived)
       this.pending = readIds(document.pendingPurge).filter(id => this.archived.includes(id))
     } catch {
@@ -135,10 +139,10 @@ export class SessionTagStore {
 
   /** Rewrite the whole document atomically. */
   private async save(): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true })
+    await mkdir(dirname(this.path()), { recursive: true })
     const body = JSON.stringify({ archived: this.archived, pendingPurge: this.pending }, null, 2)
-    const temporary = `${this.path}.tmp`
+    const temporary = `${this.path()}.tmp`
     await writeFile(temporary, body, 'utf8')
-    await rename(temporary, this.path)
+    await rename(temporary, this.path())
   }
 }

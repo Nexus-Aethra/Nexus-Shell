@@ -18,14 +18,21 @@
 
 import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { DSHELL_HOME_ENV } from '@nexus-aethra/dshell-std'
 import type { SessionTagStore } from './tags.js'
 
 /** A session id safe to interpolate into a path: one plain path segment. */
 const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
-/** dsh's harness home: $DSH_HOME, else ~/.dsh. */
+/**
+ * The harness home sibling trees are read from: dshell's own data root when one
+ * is configured, else `$DSH_HOME`, else `~/.dsh`.
+ *
+ * Called once per purge rather than captured, so a root configured after this
+ * module loaded still applies (see `DSHELL_HOME_ENV`).
+ */
 export function dshHome(): string {
-  return process.env.DSH_HOME ?? join(process.env.HOME ?? '/', '.dsh')
+  return process.env[DSHELL_HOME_ENV] ?? process.env.DSH_HOME ?? join(process.env.HOME ?? '/', '.dsh')
 }
 
 /**

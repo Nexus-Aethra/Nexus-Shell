@@ -802,3 +802,88 @@ export const DSHELL_STREAM_PATH = '/api/dshell/stream'
  * with. Answers with no body; the stream is the only place results appear.
  */
 export const DSHELL_STREAM_SEND_PATH = '/api/dshell/stream/send'
+
+// ─── dshell's own data root, and the directory browser that picks it ───
+
+/**
+ * Environment variable holding the directory dshell keeps its own files under.
+ *
+ * dshell derives every one of its paths from a harness home — `DSH_HOME` when
+ * the deployment sets one, `~/.dsh` otherwise — and puts `dshell/` (device
+ * registry, buffer state, session tags, mount points) and `dshell-pty/`
+ * (transcripts, their timelines, the history database) beneath it.
+ *
+ * This variable overrides that home for dshell ALONE. The distinct name is the
+ * whole point: `DSH_HOME` belongs to the harness and moving it moves sessions,
+ * settings and storage too, while a reader who wants their shell transcripts on
+ * another disk is not asking to relocate dsh. Two deployments set it — the
+ * settings card (`dataDir` in the `dshell` namespace, applied by the host half
+ * at start) and a user or unit file exporting it directly, which is what the
+ * packaged builds use.
+ *
+ * It is read at each path resolution rather than cached, for the same reason
+ * dsh's own resolution is: the value is a fact about the process, set once
+ * before anything asks.
+ */
+export const DSHELL_HOME_ENV = 'DSHELL_HOME'
+
+/**
+ * Exact `/api` route path owned by dshell's directory browser.
+ *
+ * The settings card's data-directory field cannot be typed by everyone and
+ * cannot be a native folder dialog: a browser has no access to a host path, and
+ * the harness may not even be on the machine drawing the page (the desktop
+ * shell and a remote `dsh web` are the same client). So the host lists its own
+ * directories and the card draws them — the picker is an ordinary route on the
+ * shared `/api` channel, under the same trust and authentication policy as the
+ * rest of dshell's routes.
+ */
+export const DSHELL_DIRS_PATH = '/api/dshell/dirs'
+
+/** One request body: the directory to list, or nothing for the home directory. */
+export interface DshellDirsRequest {
+  /**
+   * A path on the HOST machine. Absolute, or `~`-prefixed; anything else is
+   * resolved against the home directory rather than the process's cwd, which is
+   * the one thing a browser could not know and would surprise a reader either
+   * way.
+   */
+  readonly path?: string | undefined
+}
+
+/** One directory below the listed one. Files are not offered: this names a data root. */
+export interface DshellDirsEntry {
+  /** The directory's own name (the last path segment). */
+  readonly name: string
+  /** Its absolute path; what the field stores. */
+  readonly path: string
+}
+
+/**
+ * One answer.
+ *
+ * `parent` is `null` at the file system root, which is how the picker knows to
+ * stop drawing an up-one-level control. `writable` describes the listed
+ * directory itself — the card refuses a read-only choice in words rather than
+ * letting the harness fail to write after a restart — and is absent when the
+ * host could not tell. `home` is where the picker opens and what 「跟随默认」
+ * points at.
+ */
+export interface DshellDirsResponse {
+  /** The resolved directory that was listed. */
+  readonly path?: string
+  /** Its parent, `null` at the root, absent when nothing was listed. */
+  readonly parent?: string | null
+  /** The host user's home directory. */
+  readonly home?: string
+  /** The directories below `path`, sorted the way the picker draws them. */
+  readonly entries?: readonly DshellDirsEntry[]
+  /** Whether `path` is writable by the harness; absent when unknown. */
+  readonly writable?: boolean
+  /** Whether the host cut the listing at its cap; the picker says so rather than lying by omission. */
+  readonly truncated?: boolean
+  /** Why the answer carries no listing, when it does not. */
+  readonly note?: 'noDirectory' | 'notDirectory' | 'noAccess'
+  /** A refusal the card shows verbatim. */
+  readonly error?: string
+}
