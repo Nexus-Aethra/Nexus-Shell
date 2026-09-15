@@ -2565,3 +2565,47 @@ preceded it and the answer it produced, and 轨迹's row order for the same turn
 deliberate and older: the injected terminal-context notice is a context row in
 轨迹 and is not drawn in 会话, because plugin-sourced messages are model input
 rather than the reader's words.
+
+## Phase 10.21 — Tab completes commands, from the session's own world
+
+`dock<Tab>` did nothing, and it was deliberate: the interceptor's own comment
+said "a lone first token could be a command name, which this does not do yet" and
+returned early, so a bare command word never even reached the host. Arguments did
+complete (as paths) and showed the candidate list; the first word had no source
+at all.
+
+That word now completes from the commands the session's **world** offers: the
+directories on that world's `PATH`, plus the shell's interactive builtins (which
+exist because no directory holds them). A local session's shell is a child of the
+harness with `--noprofile --norc`, so its `PATH` is read straight from the
+process; a device session's `PATH` belongs to the device, so that world is asked
+once with a read-only `printf %s "$PATH"` through the same shell seam the file
+transfer writes through. Everything after the first word still completes as a
+path, and a first word spelled like one (`./build.sh`) still does.
+
+Four things the work had to get right, all measured:
+
+- **The list is per session and cached, holding the in-flight promise.** A device
+  world charges a probe plus one round trip per directory; listing the directories
+  CONCURRENTLY is what makes that a Tab press instead of a hang (1534 ms cold on
+  the device session, against the ~7–14 s a sequential walk would take; 107 ms
+  cold locally, 4–5 ms warm for both).
+- **A path completion warms it in the background.** The reader completes a path
+  before they complete a command, so the walk is usually already done.
+- **The client no longer decides which source answers** — it asks, and only its
+  SILENCE rule is source-aware: a non-path argument with no match stays quiet
+  (`echo hi<Tab>`), a command with no match gets the card.
+- **Empty answers became reason codes** (`DshellCompletionNote`), so
+  `目录不存在` / `不是目录` / `无匹配` — host-authored Chinese shown verbatim in an
+  English UI until now — are written by the browser in the reader's language.
+
+The two worlds really are different: this machine answers `dock` with
+`docker`, `docker-credential-ecr-login`, `docker-proxy`, `dockerd…`, and the
+device session with `docker`, `docker-compose`, `docker-proxy`, `dockerd…` —
+one list has `docker-compose`, the other has `docker-credential-ecr-login`.
+
+Verified in the browser with real key events on both sessions: `dock<Tab>` lists
+the six candidates with a `$` glyph and a 命令 / command hint, a unique prefix
+fills itself in with the trailing space a shell writes (`docker-p<Tab>` →
+`docker-proxy `), and `zzzznotacommand<Tab>` answers 本会话的世界里没有以这个前缀
+开头的命令.
